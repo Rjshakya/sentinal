@@ -7,12 +7,9 @@ export function useConnections() {
   return useQuery<Connection[], ApiError>({
     queryKey: CONNECTIONS_KEY,
     queryFn: () => apiClient.connections(),
-    staleTime: 30_000,
   });
 }
 
-export function getGithubConnection(
-  connections: Connection[] | undefined,
-): Connection | undefined {
+export function getGithubConnection(connections: Connection[] | undefined): Connection | undefined {
   return connections?.find((c) => c.slug === "github");
 }

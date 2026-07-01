@@ -93,3 +93,16 @@ async def authorize_data_integration(slug: str, user_id: str, return_to: str) ->
         return_to=return_to,
     )
     return response.url
+
+
+async def get_github_access_token(user_id: str) -> str:
+    """Mint a fresh GitHub access token via WorkOS Pipes for the given user."""
+    response = await _get_client().pipes.get_access_token(
+        provider="github",
+        user_id=user_id,
+    )
+    if response.access_token is None:
+        raise RuntimeError(
+            f"WorkOS returned no GitHub access token (error={response.error})"
+        )
+    return response.access_token.access_token

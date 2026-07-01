@@ -18,6 +18,30 @@ export type Connection = {
   connected_at: string | null;
 };
 
+export type Repo = {
+  id: number;
+  name: string;
+  full_name: string;
+  owner: string;
+  private: boolean;
+  description: string | null;
+  default_branch: string;
+  html_url: string;
+  stargazers_count: number;
+  language: string | null;
+  updated_at: string;
+};
+
+export type IndexingRepo = {
+  id: number;
+  full_name: string;
+  html_url: string;
+};
+
+export type IndexingResponse = {
+  accepted: number;
+};
+
 export class ApiError extends Error {
   status: number;
   body: string;
@@ -46,7 +70,13 @@ export const apiClient = {
   session: () => request<Session>("/auth/session"),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
   connections: () => request<Connection[]>("/pipes/connections"),
-  connectGitHub: () => request<void>("/pipes/connections/github/authorize"),
+  repos: () => request<Repo[]>("/github/repos"),
+  startIndexing: (repos: IndexingRepo[]) =>
+    request<IndexingResponse>("/ai/code/indexing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repos }),
+    }),
 };
 
 export const apiBaseUrl = BASE;

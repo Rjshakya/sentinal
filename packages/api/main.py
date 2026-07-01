@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.db import create_db_and_tables
 from app.core.middleware import AuthMiddleware
-from app.routers import auth, health, pipes
+from app.routers import ai, auth, github, health, pipes
 
 
 @asynccontextmanager
@@ -35,6 +35,8 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix=settings.api_prefix)
     app.include_router(auth.router, prefix=settings.api_prefix)
     app.include_router(pipes.router, prefix=settings.api_prefix)
+    app.include_router(github.router, prefix=settings.api_prefix)
+    app.include_router(ai.router, prefix=settings.api_prefix)
 
     return app
 

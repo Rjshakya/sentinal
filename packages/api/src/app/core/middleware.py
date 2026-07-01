@@ -19,12 +19,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
     On failure, returns 401.
     """
 
-    PROTECTED_PREFIXES: tuple[str, ...] = ("/api/pipes",)
+    PROTECTED_PREFIXES: tuple[str, ...] = ("/api/pipes", "/api/github", "/api/ai")
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next):
+
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         if not any(request.url.path.startswith(p) for p in self.PROTECTED_PREFIXES):
             return await call_next(request)
 
