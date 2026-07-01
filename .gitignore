@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info/
+.venv/
+.uv-cache/
+
+# Environments / secrets
+.env
+.env.local
+.env.*.local
+
+# Node / frontend (apps/web, etc.)
+node_modules/
+dist/
+.output/
+.vite/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
