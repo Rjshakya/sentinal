@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
@@ -7,7 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.db import create_db_and_tables
 from app.core.middleware import AuthMiddleware
-from app.routers import ai, auth, github, health, pipes
+from app.routers import ai, auth, github, health, pipes, users
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 
 
 @asynccontextmanager
@@ -37,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(pipes.router, prefix=settings.api_prefix)
     app.include_router(github.router, prefix=settings.api_prefix)
     app.include_router(ai.router, prefix=settings.api_prefix)
+    app.include_router(users.router, prefix=settings.api_prefix)
 
     return app
 

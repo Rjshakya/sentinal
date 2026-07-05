@@ -35,3 +35,11 @@ class ReviewVerdict(str, enum.Enum):
     APPROVE = "APPROVE"
     COMMENT = "COMMENT"
     REQUEST_CHANGES = "REQUEST_CHANGES"
+
+
+class SandboxState(str, enum.Enum):
+    STARTED = "STARTED"
+    PAUSED = "PAUSED"
+    STOPPED = "STOPPED"
+    DELETED = "DELETED"
+    ARCHIVED = "ARCHIVED"

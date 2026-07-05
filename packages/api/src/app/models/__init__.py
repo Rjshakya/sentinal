@@ -1,5 +1,4 @@
 from app.models.code_comment import CodeComment
-from app.models.commit_snapshot import CommitSnapshot
 from app.models.enums import (
     AnalysisStatus,
     CommentSeverity,
@@ -7,10 +6,12 @@ from app.models.enums import (
     CommentState,
     PRStatus,
     ReviewVerdict,
+    SandboxState,
 )
 from app.models.pull_request import PullRequest
 from app.models.repo import Repo
 from app.models.review_summary import ReviewSummary
+from app.models.sandbox import Sandbox
 
 __all__ = [
     "AnalysisStatus",
@@ -18,10 +19,11 @@ __all__ = [
     "CommentSeverity",
     "CommentSide",
     "CommentState",
-    "CommitSnapshot",
     "PRStatus",
     "PullRequest",
     "Repo",
     "ReviewSummary",
     "ReviewVerdict",
+    "Sandbox",
+    "SandboxState",
 ]

@@ -5,7 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { protectPage } from "@/lib/auth";
 import { getGithubConnection, useConnections } from "@/lib/connections";
 import type { IndexingRepo } from "@/lib/api";
-import { useRepos, useStartIndexing } from "@/lib/repos";
+import { useRepos, useStartIndexing, useUserRepos } from "@/lib/repos";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -30,27 +30,44 @@ function RepositoriesPage() {
         </p>
       </div>
 
-      {!isConnected ? (
-        <GithubConnectionCard />
-      ) : (
-        <ConnectedView />
-      )}
+      {!isConnected ? <GithubConnectionCard /> : <ConnectedView />}
     </div>
   );
 }
 
 function ConnectedView() {
   const { data: repos, isLoading, isError, refetch } = useRepos();
+  const { data: userRepos } = useUserRepos();
   const startIndexing = useStartIndexing();
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const indexedIds = useMemo<Set<string>>(() => {
+    if (!userRepos) return new Set();
+    return new Set(userRepos.map((r) => r.id));
+  }, [userRepos]);
 
   const selectedPayload = useMemo<IndexingRepo[]>(() => {
     if (!repos) return [];
     return Array.from(selected)
       .map((fullName) => repos.find((r) => r.full_name === fullName))
       .filter((r): r is NonNullable<typeof r> => r !== undefined)
-      .map((r) => ({ id: r.id, full_name: r.full_name, html_url: r.html_url }));
-  }, [repos, selected]);
+      .filter((r) => !indexedIds.has(String(r.id)))
+      .map((r) => ({
+        id: r.id.toString(),
+        name: r.name,
+        full_name: r.full_name,
+        html_url: r.html_url,
+        private: r.private,
+        default_branch: r.default_branch,
+        clone_url: r.html_url,
+        owner: r.owner,
+      }));
+  }, [repos, selected, indexedIds]);
+
+  const indexableCount = useMemo(() => {
+    if (!repos) return 0;
+    return repos.filter((r) => !indexedIds.has(String(r.id))).length;
+  }, [repos, indexedIds]);
 
   function handleToggle(fullName: string) {
     setSelected((prev) => {
@@ -90,9 +107,7 @@ function ConnectedView() {
   if (isError) {
     return (
       <div className="rounded-lg border p-6 text-center">
-        <p className="text-muted-foreground text-sm">
-          Failed to load GitHub repositories.
-        </p>
+        <p className="text-muted-foreground text-sm">Failed to load GitHub repositories.</p>
         <Button variant="outline" className="mt-3" onClick={() => refetch()}>
           Retry
         </Button>
@@ -112,18 +127,24 @@ function ConnectedView() {
 
   return (
     <div className="space-y-4">
-      <RepoList repos={repos} selected={selected} onToggle={handleToggle} />
+      <RepoList repos={repos} selected={selected} onToggle={handleToggle} indexed={indexedIds} />
       <div className="flex items-center justify-between border-t pt-4">
         <p className="text-muted-foreground text-sm">
           {selected.size} selected
+          {indexedIds.size > 0 ? ` · ${indexedIds.size} already indexed` : ""}
         </p>
         <Button
-          disabled={selected.size === 0 || startIndexing.isPending}
+          disabled={selectedPayload.length === 0 || startIndexing.isPending}
           onClick={handleStart}
         >
           {startIndexing.isPending ? "Starting..." : "Start indexing"}
         </Button>
       </div>
+      {indexableCount === 0 && (
+        <p className="text-muted-foreground text-center text-sm">
+          All your repositories are already indexed.
+        </p>
+      )}
     </div>
   );
 }

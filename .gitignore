@@ -12,6 +12,7 @@ wheels/
 .env
 .env.local
 .env.*.local
+**/sandbox.env
 
 # Node / frontend (apps/web, etc.)
 node_modules/

@@ -33,13 +33,32 @@ export type Repo = {
 };
 
 export type IndexingRepo = {
-  id: number;
+  id: string;
+  name: string;
   full_name: string;
   html_url: string;
+  private: boolean;
+  default_branch: string;
+  clone_url: string;
+  owner: string;
+  github_installation_id?: number;
 };
 
 export type IndexingResponse = {
   accepted: number;
+};
+
+export type UserRepo = {
+  id: string;
+  user_id: string;
+  org_id: string | null;
+  repo_name: string;
+  repo_owner: string;
+  url: string | null;
+  private: boolean;
+  default_branch: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export class ApiError extends Error {
@@ -71,6 +90,7 @@ export const apiClient = {
   logout: () => request<void>("/auth/logout", { method: "POST" }),
   connections: () => request<Connection[]>("/pipes/connections"),
   repos: () => request<Repo[]>("/github/repos"),
+  userRepos: () => request<UserRepo[]>("/users/repos"),
   startIndexing: (repos: IndexingRepo[]) =>
     request<IndexingResponse>("/ai/code/indexing", {
       method: "POST",

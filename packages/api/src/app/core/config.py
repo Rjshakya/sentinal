@@ -56,6 +56,59 @@ class Settings(BaseSettings):
         description="Cookie / session lifetime in seconds.",
     )
 
+    # --- Daytona sandbox ---
+    daytona_api_key: str = Field(
+        default="",
+        description="Daytona API key.",
+    )
+
+    # daytona_default_cpu: int = Field(
+    #     default=2,
+    #     description="Default vCPU for newly created sandboxes.",
+    # )
+    # daytona_default_memory: int = Field(
+    #     default=4,
+    #     description="Default memory (GB) for newly created sandboxes.",
+    # )
+    # daytona_default_disk: int = Field(
+    #     default=10,
+    #     description="Default disk (GB) for newly created sandboxes.",
+    # )
+
+    # --- LLM / Embedding (consumed by the in-sandbox script) ---
+    # llm_provider: str = Field(
+    #     default="openai",
+    #     description="LLM provider (openai, gemini, anthropic, ollama, ...).",
+    # )
+    # llm_model: str = Field(
+    #     default="openai/gpt-5-mini",
+    #     description="LLM model in 'provider/model-name' format.",
+    # )
+    # llm_api_key: str = Field(
+    #     default="",
+    #     description="LLM API key.",
+    # )
+    # embedding_provider: str = Field(
+    #     default="openai",
+    #     description="Embedding provider.",
+    # )
+    # embedding_model: str = Field(
+    #     default="openai/text-embedding-3-small",
+    #     description="Embedding model in 'provider/model-name' format.",
+    # )
+    # embedding_dimensions: int = Field(
+    #     default=1536,
+    #     description="Embedding dimensions; must match the chosen model.",
+    # )
+    # embedding_api_key: str = Field(
+    #     default="",
+    #     description="Embedding API key. Falls back to llm_api_key when empty.",
+    # )
+
+    @property
+    def daytona_configured(self) -> bool:
+        return bool(self.daytona_api_key)
+
     @property
     def workos_configured(self) -> bool:
         return bool(
@@ -67,6 +120,14 @@ class Settings(BaseSettings):
     @property
     def cookie_secure(self) -> bool:
         return self.frontend_url.startswith("https://")
+
+    # @property
+    # def effective_embedding_api_key(self) -> str:
+    #     return self.embedding_api_key or self.llm_api_key
+    #
+    @property
+    def cognee_dataset_prefix(self) -> str:
+        return "sentinel:repo:"
 
 
 print(f"DEBUG: Looking for .env at: {BASE_DIR / '.env'}")

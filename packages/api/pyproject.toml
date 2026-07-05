@@ -12,6 +12,8 @@ dependencies = [
     "pydantic-settings>=2.6",
     "workos>=8.0",
     "githubkit>=0.16.0",
+    "deepagents>=0.6.12",
+    "daytona>=0.193.0",
 ]
 
 [build-system]
@@ -20,3 +22,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/app"]
+
+[dependency-groups]
+dev = [
+    "cognee>=1.2.2",
+    "tree-sitter-language-pack>=1.12.2",
+]
