@@ -1,101 +1,106 @@
 """In-sandbox indexing entrypoint.
 
-Run inside the Daytona sandbox after the repo has been cloned. This
+Run inside the E2B sandbox after the repo has been cloned. This
 script:
 
 1. Walks the cloned repo and chunks each source file via
-   ``tree_sitter_language_pack.process()`` (in ``tree_sitter.py``).
-2. Pipes the chunked text into Cognee via ``cognee.add`` and builds
-   the knowledge graph via ``cognee.cognify``.
+   ``tree_sitter_language_pack.process()`` (in ``chunking.py``).
+2. Batches the chunks (100 at a time) and embeds them with the
+   OpenAI ``text-embedding-3-large`` model.
+3. Persists the chunks + vectors to a per-repo LanceDB table at
+   ``LANCEDB_URI`` (default: ``/home/user/lance_data``).
 
 Configuration is read from environment variables injected by the
-orchestrator at sandbox creation time:
+orchestrator at command-execution time:
 
-    LLM_PROVIDER, LLM_MODEL, LLM_API_KEY
-    EMBEDDING_PROVIDER, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, EMBEDDING_API_KEY
-    DATASET_NAME          (set by the orchestrator: sentinel:repo:owner/name)
+    REPO_PATH        (set by the orchestrator: /home/user/sentinel-workspace/<repo_name>)
+    DATASET_NAME     (set by the orchestrator: <repo_name>; used as the table-name suffix)
+    LANCEDB_URI      (default: /home/user/lance_data)
+    OPENAI_API_KEY   (injected via sandbox.execute(envs=...))
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
+import uuid
 
-from dotenv import load_dotenv
+import lancedb
+from chunking import FileChunk
+from embedding import create_repo_embeddings
+from lancedb.pydantic import LanceModel
+from openai.types.embedding import Embedding
 
-load_dotenv()
+log = logging.getLogger(__name__)
 
-import cognee
-from chunking import ChunkedRepo, FileChunk, chunk_repo
-from cognee.api.v1.add.add import DataItem
-
-REPO_PATH: str = os.environ.get("REPO_PATH", "/workspace/repo")
+REPO_PATH: str = os.environ.get("REPO_PATH", "/sentinel-workspace/repo")
 REPO_NAME: str = os.environ.get("DATASET_NAME", "sentinel:repo:default")
+LANCEDB_URI: str = os.environ.get("LANCEDB_URI", "/home/user/lance_data")
 
-sys.path.insert(0, "/workspace")
-
-CODE_REPO_PROMPT = """
-You are analyzing a chunk of source code from a software repository, not natural
-language prose. Extract entities as code constructs — functions, classes, methods,
-imports, and modules — and relationships as code semantics: calls, inherits_from,
-imports, defines, references. Do not extract narrative entities like people or
-places unless they appear literally in comments or docstrings.
-"""
+sys.path.insert(0, "/sentinel-workspace/context")
 
 
-def chunk_to_data_item(*, file_name: str, chunk: FileChunk) -> DataItem:
-    # composite key -> deterministic UUID (stable across re-ingestion runs)
-    key = f"{file_name}:chunk:{chunk.start_line}-{chunk.end_line}"
+class CodeChunkModel(LanceModel):
+    id: str
+    file_name: str
+    start_line: int
+    end_line: int
+    language: str
+    node_types: str
+    vector: list[float]
 
-    return DataItem(
-        data=chunk.content,  # raw text, ingested directly as text content
-        label=key,  # human-readable, not required to be unique but keep it that way anyway
-        external_metadata={
-            "file_name": file_name,
-            "start_line": chunk.start_line,
-            "end_line": chunk.end_line,
-            "language": chunk.language,
-            "size_bytes": chunk.size_bytes,
-        },
+
+async def connect_lance_db(connection_str: str):
+    return await lancedb.connect_async(connection_str)
+
+
+def create_code_chunk_obj(*, embedding: Embedding, chunk: FileChunk):
+    obj = CodeChunkModel(
+        id=str(uuid.uuid4()),
+        file_name=chunk.file_name,
+        start_line=chunk.start_line,
+        end_line=chunk.end_line,
+        language=chunk.language,
+        node_types=";".join(chunk.node_types),
+        vector=embedding.embedding,
     )
+    return obj
 
 
-def convert_chunk_repo_to_data_items_repo(chunked_repo: ChunkedRepo) -> list[DataItem]:
+async def ingest_repo(*, repo_path: str, repo_name: str, db_uri: str):
 
-    items: list[DataItem] = []
+    try:
+        db = await connect_lance_db(db_uri)
+        table = await db.create_table(
+            f"{repo_name}_table", exist_ok=True, schema=CodeChunkModel
+        )
 
-    for file_name, file_chunk in chunked_repo.root.items():
-        for chunk in file_chunk:
-            data_item = chunk_to_data_item(file_name=file_name, chunk=chunk)
-            items.append(data_item)
+        async for embeddings, batch in create_repo_embeddings(
+            repo_path=repo_path, batch_size=100, chunk_size=1000
+        ):
+            data: list[CodeChunkModel] = []
 
-    return items
+            for file_chunk, embedding in zip(batch, embeddings):
+                code_chunk_obj = create_code_chunk_obj(
+                    embedding=embedding, chunk=file_chunk
+                )
+                data.append(code_chunk_obj)
 
+            await table.add(data)
 
-async def ingest_repo(*, repo_path: str, repo_name: str):
+        await table.create_index("vector", replace=True)
 
-    await cognee.forget(everything=True)
-
-    chunked_repo = chunk_repo(repo_path=repo_path, chunk_size=900)
-    data = convert_chunk_repo_to_data_items_repo(chunked_repo)
-    result = await cognee.remember(
-        data,
-        repo_name,
-        incremental_loading=True,
-        custom_prompt=CODE_REPO_PROMPT,
-    )
-
-    if result.error:
-        print(f"{repo_name}:ingestion:error:{result.error}")
-
-    print(f"{repo_name}:ingestion:started")
+    except Exception as e:
+        log.error(f"failed to ingest repo:{repo_name}, error:{e}")
+        raise e
 
 
 async def main() -> int:
 
     try:
-        await ingest_repo(repo_path=REPO_PATH, repo_name=REPO_NAME)
+        await ingest_repo(repo_path=REPO_PATH, repo_name=REPO_NAME, db_uri=LANCEDB_URI)
         return 0
     except Exception as e:
         print(f"{REPO_NAME}:ingestion:error:{type(e).__name__}: {e}")

@@ -3,6 +3,10 @@
 The actual indexing work runs in a background task. The handler
 acknowledges the request immediately and returns a small payload so
 the UI can show a toast.
+
+The handler is provider-agnostic: it builds a :class:`SandboxSpec`
+from current settings (via :func:`build_default_spec`) and hands it to
+the pipeline. The pipeline never sees a concrete provider.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.core.daytona import get_daytona
+from app.core.sandbox import build_default_spec
 from app.schemas.indexing import IndexingAck, IndexingRequest
 from app.services.indexing import indexing_pipeline
 
@@ -29,13 +33,13 @@ async def start_code_indexing(
         )
 
     user_id = request.state.user_id
-    sandbox_provider = get_daytona()
+    spec = build_default_spec()
 
     asyncio.create_task(
         indexing_pipeline(
             user_id=user_id,
             repos=payload.repos,
-            sandbox_provider=sandbox_provider,
+            spec=spec,
         )
     )
 

@@ -5,73 +5,49 @@ that operates on a single repo (or sandbox) and returns a typed value.
 The orchestrator ``indexing_pipeline`` is a single ``for`` loop wrapped
 in a single ``try / except / finally`` block; it owns its own DB
 session via :func:`async_session_maker` and runs sequentially per repo.
+
+The pipeline is provider-agnostic: it only ever talks to
+:class:`BaseSandbox` and never imports a concrete provider. Per-repo
+DB persistence is wired through the sandbox's lifecycle hooks
+(``on_create`` / ``on_pause`` / ``on_kill``) — each hook is an
+``async`` closure that captures the active DB session.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
-from daytona import (
-    AsyncDaytona,
-    CreateSandboxFromImageParams,
-    Image,
-    Resources,
-    SessionExecuteRequest,
-)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel import or_, select, update
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.config import settings
 from app.core.db import async_session_maker
-from app.core.sandbox import Sandbox, SandboxAlreadyActive
+from app.core.sandbox import (
+    BaseSandbox,
+    CommandResult,
+    SandboxModel,
+    SandboxSpec,
+    create_sandbox,
+)
+from app.core.sandbox.base import SandboxAlreadyActive
 from app.models.enums import SandboxState
 from app.models.repo import Repo
+from app.models.sandbox import Sandbox as SandboxTable
 from app.schemas.indexing import IndexingRepo
 
 log = logging.getLogger(__name__)
 
 SCRIPTS_DIR = Path(__file__).parent / "sandbox_scripts"
 
-
-def _log_ctx(*, repo_id: str, sandbox_name: str | None, step: str) -> dict:
-    """Common ``extra`` payload for every pipeline log line."""
-    return {"repo_id": repo_id, "sandbox_name": sandbox_name, "step": step}
-
-
-def build_sandbox_image() -> Image:
-    """Declarative Daytona image with ingestion deps baked in.
-
-    Cached per runner for 24h; subsequent runs on the same runner reuse
-    the built image and skip the ``pip install`` step.
-    """
-    return (
-        Image.debian_slim("3.13")
-        .pip_install(
-            [
-                "cognee",
-                "tree-sitter-language-pack",
-            ]
-        )
-        .run_commands(
-            "apt-get update && "
-            "apt-get install -y --no-install-recommends git curl && "
-            "rm -rf /var/lib/apt/lists/*"
-        )
-        .add_local_file(
-            str(SCRIPTS_DIR / "extensions" / "libjson.lbug_extension"),
-            "/root/.kuzu/extensions/libjson.lbug_extension",
-        )
-        .run_commands(
-            "mkdir -p /root/.kuzu/extensions && "
-            "chmod 755 /root/.kuzu/extensions /root/.kuzu/extensions/libjson.lbug_extension"
-        )
-        .workdir("/workspace")
-    )
+WORKSPACE_DIR = "/sentinel-workspace"
 
 
 # --------------------------------------------------------------------------- #
-# result types (frozen dataclasses)
+# result types (frozen dataclasses)                                           #
 # --------------------------------------------------------------------------- #
 
 
@@ -96,7 +72,102 @@ class IngestResult:
 
 
 # --------------------------------------------------------------------------- #
-# step 1: save repo
+# "active sandbox" helpers (pure DB)                                          #
+# --------------------------------------------------------------------------- #
+
+
+async def active_sandbox(
+    session: AsyncSession,
+    user_id: str,
+    repo_id: str,
+) -> SandboxTable | None:
+    """Return the active sandbox row for ``(user_id, repo_id)``, if any.
+
+    An active sandbox is one whose state is ``STARTED``, ``PAUSED`` or
+    ``STOPPED`` (i.e. anything except ``DELETED`` or ``ARCHIVED``).
+    """
+
+    query = select(SandboxTable).where(
+        SandboxTable.repo_id == repo_id,
+        SandboxTable.user_id == user_id,
+        or_(
+            SandboxTable.state == SandboxState.STARTED,
+            SandboxTable.state == SandboxState.PAUSED,
+            SandboxTable.state == SandboxState.STOPPED,
+        ),
+    )
+    result = await session.exec(query)
+    return result.first()
+
+
+# --------------------------------------------------------------------------- #
+# DB hook implementations                                                     #
+# --------------------------------------------------------------------------- #
+#
+# These are plain ``async`` functions that take the DB session explicitly
+# (instead of capturing it via a closure). The pipeline builds a thin
+# ``lambda`` adapter for each hook, which is what :meth:`BaseSandbox.on_create`
+# etc. expect.
+
+
+async def _persist_create(session: AsyncSession, m: SandboxModel) -> None:
+    """Upsert a ``STARTED`` sandbox row keyed on the provider's external id."""
+    stmt = pg_insert(SandboxTable).values(
+        id=m.id,
+        user_id=m.user_id,
+        repo_id=m.repo_id,
+        sandbox_name=m.sandbox_name,
+        provider_id=m.provider_id,
+        state=m.state,
+        started_at=m.started_at,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[SandboxTable.id],
+        set_={
+            "user_id": stmt.excluded.user_id,
+            "repo_id": stmt.excluded.repo_id,
+            "sandbox_name": stmt.excluded.sandbox_name,
+            "provider_id": stmt.excluded.provider_id,
+            "state": stmt.excluded.state,
+            "started_at": stmt.excluded.started_at,
+        },
+    )
+    await session.exec(stmt)
+    await session.commit()
+
+
+async def _persist_pause(session: AsyncSession, m: SandboxModel) -> None:
+    """Mark a sandbox row as ``PAUSED`` with the supplied ``stopped_at``."""
+    stmt = (
+        update(SandboxTable)
+        .where(SandboxTable.id == m.id)  # type: ignore[arg-type]
+        .values(
+            state=SandboxState.PAUSED,
+            stopped_at=m.stopped_at or datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+    )
+    await session.exec(stmt)
+    await session.commit()
+
+
+async def _persist_kill(session: AsyncSession, m: SandboxModel) -> None:
+    """Mark a sandbox row as ``DELETED`` with the supplied ``stopped_at``."""
+    stmt = (
+        update(SandboxTable)
+        .where(SandboxTable.id == m.id)  # type: ignore[arg-type]
+        .values(
+            state=SandboxState.DELETED,
+            stopped_at=m.stopped_at or datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+    )
+    await session.exec(stmt)
+    await session.commit()
+
+
+# --------------------------------------------------------------------------- #
+# step 1: save repo                                                           #
 # --------------------------------------------------------------------------- #
 
 
@@ -137,72 +208,82 @@ async def save_repo(
 
 
 # --------------------------------------------------------------------------- #
-# step 2: init sandbox
+# step 2: init sandbox                                                        #
 # --------------------------------------------------------------------------- #
 
 
 async def init_sandbox(
     session: AsyncSession,
     *,
-    sandbox_provider: AsyncDaytona,
+    spec: SandboxSpec,
     user_id: str,
     repo: Repo,
-) -> Sandbox:
-    """Step 2: create a Daytona sandbox and persist a ``STARTED`` row.
+) -> BaseSandbox:
+    """Step 2: build a :class:`BaseSandbox`, register DB hooks, create it.
 
     Raises :class:`SandboxAlreadyActive` if an active sandbox already
-    exists for the (user, repo) pair.
+    exists for the ``(user_id, repo_id)`` pair.
     """
+    existing = await active_sandbox(session, user_id=user_id, repo_id=repo.id)
+    if existing is not None:
+        raise SandboxAlreadyActive(existing.id)
+
     sandbox_name = f"{repo.repo_name}-sandbox"
-    provider_params = CreateSandboxFromImageParams(
-        name=sandbox_name,
-        image=build_sandbox_image(),
-        resources=Resources(cpu=1, memory=1, disk=8),
-    )
-    sandbox = Sandbox(
-        provider=sandbox_provider,
+    sb = create_sandbox(
+        spec=spec,
         user_id=user_id,
         repo_id=repo.id,
-    )
-    await sandbox.create(
-        session=session,
         sandbox_name=sandbox_name,
-        provider_params=provider_params,
     )
-    return sandbox
+    sb.on_create(lambda m: _persist_create(session, m))
+    sb.on_pause(lambda m: _persist_pause(session, m))
+    sb.on_kill(lambda m: _persist_kill(session, m))
+
+    await sb.create()
+    return sb
 
 
 # --------------------------------------------------------------------------- #
-# step 3: clone repo
+# step 3: clone repo                                                          #
 # --------------------------------------------------------------------------- #
 
 
-async def clone_repo(sandbox: Sandbox, repo: Repo) -> CloneResult:
+async def clone_repo(sandbox: BaseSandbox, repo: Repo) -> CloneResult:
     """Step 3: ``git clone --depth 1`` inside the sandbox.
 
     Returns the exit code in the result; never raises on a non-zero exit.
     """
-    repo_dir = f"/workspace/{repo.repo_name}"
-    response = await sandbox.execute(
-        f"git clone --depth 1 {repo.url} {repo_dir}",
-    )
+    await sandbox.fs_create_folder("sentinel-workspace")
+    repo_dir = f"{repo.repo_name}"
+    command = f"git clone --depth 1 {repo.url} {repo_dir}"
+    log.info(command)
+    response: CommandResult = await sandbox.execute(command, cwd="sentinel-workspace")
+
     return CloneResult(
         repo_path=repo_dir,
-        exit_code=response.exit_code,
-        stdout=response.result or "",
+        exit_code=0,
+        stdout=response.stdout + "",
     )
 
 
 # --------------------------------------------------------------------------- #
-# step 4: upload scripts
+# step 4: upload scripts                                                      #
 # --------------------------------------------------------------------------- #
 
 
-async def upload_scripts(sandbox: Sandbox) -> None:
-    """Step 4: copy chunking.py, ingestion.py, sandbox.env into /workspace/context."""
-    context_dir = "/workspace/context"
-    await sandbox.create_folder(context_dir)
-    for src_name in ("chunking.py", "ingestion.py", "sandbox.env"):
+async def upload_scripts(sandbox: BaseSandbox) -> None:
+    """Step 4: copy ``chunking.py`` / ``ingestion.py`` / ``sandbox.env``
+    into ``/sentinel-workspace/context`` inside the sandbox.
+
+    The Kuzu/Ladybug JSON extension is fetched by the in-sandbox script
+    itself (``LOAD EXTENSION`` over the CDN) — Tier-1 networks are no
+    longer in play now that the active provider is E2B.
+    """
+
+    context_dir = f"/home/user/{WORKSPACE_DIR}/context"
+    await sandbox.fs_create_folder(context_dir)
+
+    for src_name in ("chunking.py", "ingestion.py", "embedding.py", "sandbox.env"):
         src = SCRIPTS_DIR / src_name
         if not src.exists():
             raise FileNotFoundError(f"Indexing file missing: {src}")
@@ -211,7 +292,7 @@ async def upload_scripts(sandbox: Sandbox) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# step 5: run ingestion
+# step 5: run ingestion                                                       #
 # --------------------------------------------------------------------------- #
 
 
@@ -219,124 +300,67 @@ def _dataset_name_for(repo: Repo) -> str:
     return f"{repo.repo_name}"
 
 
-async def run_ingestion(sandbox: Sandbox, repo: Repo) -> IngestResult:
-    """Step 5: ``python ingestion.py`` inside /workspace/context, with real-time log streaming.
+def _log_ctx(*, repo_id: str, sandbox_name: str | None, step: str) -> dict:
+    """Common ``extra`` payload for every pipeline log line."""
+    return {"repo_id": repo_id, "sandbox_name": sandbox_name, "step": step}
 
-    Uses Daytona's session API so stdout/stderr are streamed back via
-    callbacks that ``log.info`` every line (tagged with ``step=ingest``,
-    ``repo_id``, ``sandbox_name``) while the script runs. Blocks until
-    the command exits, then returns the exit code and full output.
+
+async def run_ingestion(sandbox: BaseSandbox, repo: Repo) -> IngestResult:
+    """Step 5: ``python ingestion.py`` inside ``/sentinel-workspace/context``,
+    with real-time log streaming.
+
+    Uses :meth:`BaseSandbox.execute_streaming` so stdout / stderr are
+    streamed back via callbacks that ``log.info`` every line (tagged with
+    ``step=ingest``, ``repo_id``, ``sandbox_name``) while the script runs.
+    Provider-specific session / process plumbing lives inside the
+    concrete adapter; the pipeline stays provider-agnostic.
     """
-    daytona_sb = sandbox.sandbox
-    if daytona_sb is None:
-        return IngestResult(exit_code=-1, stdout="sandbox not initialized")
-
-    session_id = f"ingest-{repo.id}"
-    await daytona_sb.process.create_session(session_id)
-
-    # SessionExecuteRequest has no cwd/env fields, so set them inline.
     command_str = (
-        f"cd /workspace/context && "
-        f'REPO_PATH="/workspace/{repo.repo_name}" '
+        f"cd /home/user/{WORKSPACE_DIR}/context && "
+        f'REPO_PATH="/home/user/{WORKSPACE_DIR}/{repo.repo_name}" '
         f'DATASET_NAME="{_dataset_name_for(repo)}" '
+        f'OPENAI_API_KEY="{settings.openai_api_key}" '
         f"PYTHONUNBUFFERED=1 python -u ingestion.py"
     )
-    cmd = await daytona_sb.process.execute_session_command(
-        session_id,
-        SessionExecuteRequest(command=command_str, run_async=True),
-    )
-
-    sandbox_name = getattr(daytona_sb, "name", None)
-    stream_buf: dict[str, str] = {"stdout": "", "stderr": ""}
-
-    def _drain(stream: str, chunk: str | None) -> None:
-        if not chunk:
-            return
-        buf = stream_buf[stream] + chunk
-        lines = buf.split("\n")
-        stream_buf[stream] = lines[-1]
-        for line in lines[:-1]:
-            if not line:
-                continue
-            try:
-                log.info(
-                    f"[ingest {stream}] {line}",
-                    extra={
-                        **_log_ctx(
-                            repo_id=repo.id, sandbox_name=sandbox_name, step="ingest"
-                        ),
-                        "stream": stream,
-                        "line": line,
-                    },
-                )
-            except Exception:
-                log.exception(
-                    "ingest log callback failed",
-                    extra={"stream": stream, "repo_id": repo.id},
-                )
 
     def _on_stdout(chunk: str) -> None:
-        _drain("stdout", chunk)
+        log.info(f"[stdout]:{chunk}")
 
     def _on_stderr(chunk: str) -> None:
-        _drain("stderr", chunk)
+        log.error(f"[stderr]:{chunk}")
 
-    # Blocks until the command exits.
-    await daytona_sb.process.get_session_command_logs_async(
-        session_id,
-        cmd.cmd_id,
-        _on_stdout,
-        _on_stderr,
+    envs: dict[str, str] = {}
+    if settings.openai_api_key:
+        envs["OPENAI_API_KEY"] = settings.openai_api_key
+
+    response: CommandResult = await sandbox.execute_streaming(
+        command_str,
+        on_stdout=_on_stdout,
+        on_stderr=_on_stderr,
+        envs=envs or None,
+        timeout=None,
     )
 
-    for stream in ("stdout", "stderr"):
-        tail = stream_buf[stream]
-        if tail:
-            try:
-                log.info(
-                    f"[ingest {stream}] {tail}",
-                    extra={
-                        **_log_ctx(
-                            repo_id=repo.id, sandbox_name=sandbox_name, step="ingest"
-                        ),
-                        "stream": stream,
-                        "line": tail,
-                    },
-                )
-            except Exception:
-                log.exception(
-                    "ingest log tail flush failed",
-                    extra={"stream": stream, "repo_id": repo.id},
-                )
-            stream_buf[stream] = ""
-
-    # After streaming completes, fetch the exit code and full output.
-    final_cmd = await daytona_sb.process.get_session_command(session_id, cmd.cmd_id)
-    final_logs = await daytona_sb.process.get_session_command_logs(
-        session_id, cmd.cmd_id
-    )
-
-    full_stdout = ((final_logs.stdout or "") + (final_logs.stderr or "")).strip()
+    full_stdout = (response.stdout or "") + (response.stderr or "")
     return IngestResult(
-        exit_code=final_cmd.exit_code if final_cmd.exit_code is not None else 0,
-        stdout=full_stdout,
+        exit_code=response.exit_code,
+        stdout=full_stdout.strip(),
     )
 
 
 # --------------------------------------------------------------------------- #
-# step 6: stop sandbox
+# step 6: stop sandbox                                                        #
 # --------------------------------------------------------------------------- #
 
 
-async def stop_sandbox(session: AsyncSession, sandbox: Sandbox) -> None:
-    """Step 6: stop the Daytona sandbox (and update the DB row, if the
-    underlying ``Sandbox.stop`` allows it).
-    """
-    await sandbox.stop(session=session)
+async def stop_sandbox(sandbox: BaseSandbox) -> None:
+    """Step 6: stop the sandbox. The registered ``on_pause`` hook
+    handles the DB row update."""
+    await sandbox.stop()
 
 
 # --------------------------------------------------------------------------- #
-# orchestrator
+# orchestrator                                                                #
 # --------------------------------------------------------------------------- #
 
 
@@ -344,16 +368,19 @@ async def indexing_pipeline(
     *,
     repos: list[IndexingRepo],
     user_id: str,
-    sandbox_provider: AsyncDaytona,
+    spec: SandboxSpec,
 ) -> list[IndexingItemResult]:
     """Run the full indexing pipeline for each repo, sequentially.
 
     One ``try / except / finally`` wraps the entire loop. The pipeline
     owns its DB session via :func:`async_session_maker` and is safe to
     run as a background task.
+
+    The pipeline only ever talks to :class:`BaseSandbox`; provider
+    selection is encoded in ``spec``.
     """
     results: list[IndexingItemResult] = []
-    started: list[Sandbox] = []
+    started: list[BaseSandbox] = []
 
     async with async_session_maker() as session:
         try:
@@ -361,17 +388,12 @@ async def indexing_pipeline(
                 db_repo = await save_repo(session, user_id=user_id, payload=payload)
                 sandbox = await init_sandbox(
                     session,
-                    sandbox_provider=sandbox_provider,
+                    spec=spec,
                     user_id=user_id,
                     repo=db_repo,
                 )
                 started.append(sandbox)
 
-                if sandbox.sandbox is None:
-                    raise Exception(f"FAILED TO INITIATE SANDBOX FOR REPO:{payload.id}")
-
-                await sandbox.sandbox.wait_for_sandbox_start()
-                sandbox_name = getattr(sandbox.sandbox, "name", None)
                 clone = await clone_repo(sandbox, db_repo)
                 if clone.exit_code != 0:
                     log.error(
@@ -379,19 +401,20 @@ async def indexing_pipeline(
                         extra={
                             **_log_ctx(
                                 repo_id=db_repo.id,
-                                sandbox_name=sandbox_name,
+                                sandbox_name=sandbox.sandbox_name,
                                 step="clone",
                             ),
                             "exit_code": clone.exit_code,
                             "stdout": clone.stdout or "",
                         },
                     )
+                    # await sandbox.kill()
                 else:
                     log.info(
                         "step finished",
                         extra=_log_ctx(
                             repo_id=db_repo.id,
-                            sandbox_name=sandbox_name,
+                            sandbox_name=sandbox.sandbox_name,
                             step="clone",
                         ),
                     )
@@ -400,7 +423,7 @@ async def indexing_pipeline(
                         "step finished",
                         extra=_log_ctx(
                             repo_id=db_repo.id,
-                            sandbox_name=sandbox_name,
+                            sandbox_name=sandbox.sandbox_name,
                             step="upload",
                         ),
                     )
@@ -410,7 +433,7 @@ async def indexing_pipeline(
                         extra={
                             **_log_ctx(
                                 repo_id=db_repo.id,
-                                sandbox_name=sandbox_name,
+                                sandbox_name=sandbox.sandbox_name,
                                 step="ingest",
                             ),
                             "exit_code": ingest.exit_code,
@@ -425,7 +448,7 @@ async def indexing_pipeline(
                             extra={
                                 **_log_ctx(
                                     repo_id=db_repo.id,
-                                    sandbox_name=sandbox_name,
+                                    sandbox_name=sandbox.sandbox_name,
                                     step="ingest",
                                 ),
                                 "exit_code": ingest.exit_code,
@@ -444,14 +467,14 @@ async def indexing_pipeline(
             raise
         except Exception:
             log.exception("indexing pipeline crashed")
-        finally:
-            for sb in started:
-                try:
-                    await stop_sandbox(session, sb)
-                except Exception:
-                    log.exception(
-                        "failed to stop sandbox",
-                        extra={"sandbox_id": getattr(sb, "id", None)},
-                    )
+        # finally:
+        #     for sb in started:
+        #         try:
+        #             await stop_sandbox(sb)
+        #         except Exception:
+        #             log.exception(
+        #                 "failed to stop sandbox",
+        #                 extra={"sandbox_id": sb.id or None},
+        #             )
 
     return results

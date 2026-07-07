@@ -14,6 +14,11 @@ dependencies = [
     "githubkit>=0.16.0",
     "deepagents>=0.6.12",
     "daytona>=0.193.0",
+    "e2b>=2.30.0",
+    "lancedb>=0.34.0",
+    "openai>=2.44.0",
+    "pyarrow>=18",
+    "tree-sitter-language-pack>=1.12.5",
 ]
 
 [build-system]
@@ -26,5 +31,4 @@ packages = ["src/app"]
 [dependency-groups]
 dev = [
     "cognee>=1.2.2",
-    "tree-sitter-language-pack>=1.12.2",
 ]

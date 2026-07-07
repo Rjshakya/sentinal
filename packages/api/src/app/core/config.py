@@ -56,58 +56,64 @@ class Settings(BaseSettings):
         description="Cookie / session lifetime in seconds.",
     )
 
-    # --- Daytona sandbox ---
+    # --- Sandbox provider ---
+    sandbox_provider: str = Field(
+        default="e2b",
+        description="Active sandbox provider tag ('e2b' or 'daytona').",
+    )
+
+    # --- E2B sandbox ---
+    e2b_api_key: str = Field(
+        # default="",
+        description="E2B API key.",
+    )
+    e2b_template: str = Field(
+        default="sentinel-indexing",
+        description="E2B template name.",
+    )
+    e2b_cpu_count: int = Field(
+        default=1,
+        description="vCPU count for newly created E2B sandboxes.",
+    )
+    e2b_memory_mb: int = Field(
+        default=1024,
+        description="Memory (MB) for newly created E2B sandboxes.",
+    )
+    e2b_timeout_s: int = Field(
+        default=600,
+        description="Timeout (seconds) for newly created E2B sandboxes.",
+    )
+
+    # --- Daytona sandbox (kept for the adapter; the active provider is e2b by default) ---
     daytona_api_key: str = Field(
         default="",
         description="Daytona API key.",
     )
+    daytona_template: str = Field(
+        default="",
+        description="Daytona image name.",
+    )
 
-    # daytona_default_cpu: int = Field(
-    #     default=2,
-    #     description="Default vCPU for newly created sandboxes.",
-    # )
-    # daytona_default_memory: int = Field(
-    #     default=4,
-    #     description="Default memory (GB) for newly created sandboxes.",
-    # )
-    # daytona_default_disk: int = Field(
-    #     default=10,
-    #     description="Default disk (GB) for newly created sandboxes.",
-    # )
-
-    # --- LLM / Embedding (consumed by the in-sandbox script) ---
-    # llm_provider: str = Field(
-    #     default="openai",
-    #     description="LLM provider (openai, gemini, anthropic, ollama, ...).",
-    # )
-    # llm_model: str = Field(
-    #     default="openai/gpt-5-mini",
-    #     description="LLM model in 'provider/model-name' format.",
-    # )
-    # llm_api_key: str = Field(
-    #     default="",
-    #     description="LLM API key.",
-    # )
-    # embedding_provider: str = Field(
-    #     default="openai",
-    #     description="Embedding provider.",
-    # )
-    # embedding_model: str = Field(
-    #     default="openai/text-embedding-3-small",
-    #     description="Embedding model in 'provider/model-name' format.",
-    # )
-    # embedding_dimensions: int = Field(
-    #     default=1536,
-    #     description="Embedding dimensions; must match the chosen model.",
-    # )
-    # embedding_api_key: str = Field(
-    #     default="",
-    #     description="Embedding API key. Falls back to llm_api_key when empty.",
-    # )
+    # --- Embeddings ---
+    openai_api_key: str = Field(
+        default="",
+        description="OpenAI API key. Injected into the indexing sandbox as "
+        "OPENAI_API_KEY and used to compute text-embedding-3-large vectors. "
+        "Leave empty to disable embedding-dependent routes.",
+    )
 
     @property
     def daytona_configured(self) -> bool:
         return bool(self.daytona_api_key)
+
+    @property
+    def sandbox_configured(self) -> bool:
+        """True when the active provider's API key is set."""
+        if self.sandbox_provider == "e2b":
+            return bool(self.e2b_api_key)
+        if self.sandbox_provider == "daytona":
+            return bool(self.daytona_api_key)
+        return False
 
     @property
     def workos_configured(self) -> bool:
@@ -118,13 +124,14 @@ class Settings(BaseSettings):
         )
 
     @property
+    def embeddings_configured(self) -> bool:
+        """True when an OpenAI key is set and embeddings can be computed."""
+        return bool(self.openai_api_key)
+
+    @property
     def cookie_secure(self) -> bool:
         return self.frontend_url.startswith("https://")
 
-    # @property
-    # def effective_embedding_api_key(self) -> str:
-    #     return self.embedding_api_key or self.llm_api_key
-    #
     @property
     def cognee_dataset_prefix(self) -> str:
         return "sentinel:repo:"

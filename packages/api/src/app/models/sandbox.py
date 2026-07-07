@@ -28,7 +28,7 @@ class Sandbox(SQLModel, table=True):
     )
     sandbox_name: str = Field(nullable=False)
     state: SandboxState = Field(default=SandboxState.STARTED, nullable=False)
-    daytona_sandbox_id: str | None = Field(default=None, nullable=True)
+    provider_id: str | None = Field(default=None, nullable=True)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
