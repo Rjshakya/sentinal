@@ -123,6 +123,9 @@ def chunk_repo(
 
             file_chunks: list[FileChunk] = []
             for chunk in result.chunks:
+                if chunk.start_line == chunk.end_line:
+                    continue
+
                 file_chunk = FileChunk(
                     file_name=str(file_path),
                     content=chunk.content,

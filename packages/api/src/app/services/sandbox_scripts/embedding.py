@@ -1,38 +1,30 @@
+"""Embedding model + legacy helper used by the in-sandbox scripts.
+
+The new ingestion flow (``ingestion.py``) uses the lancedb registry
+``model`` declared below — LanceDB computes and stores the ``vector``
+column on ``table.add(...)`` itself, so ingestion no longer pre-embeds
+chunks.
+
+``create_embeddings`` is kept as a thin async shim for ``search.py``,
+which still embeds the query by hand before calling ``table.query()``.
+That call is on the to-do list; the shim keeps the search path working
+unchanged in the meantime.
+"""
+
 from __future__ import annotations
 
 import logging
 
-from chunking import FileChunk, chunks_batch
+from lancedb.embeddings import get_registry
 from openai import AsyncClient
 
 log = logging.getLogger(__name__)
 
-client = AsyncClient()
+# Used by ingestion.py for auto-embedding on table.add(...).
+model = get_registry().get("openai").create(name="text-embedding-3-large")
+
+_client = AsyncClient()
 
 
 async def create_embeddings(input: list[str]):
-    return await client.embeddings.create(input=input, model="text-embedding-3-large")
-
-
-def create_embedding_input(chunk: FileChunk) -> str:
-    return f"# language: {chunk.language}\n# file: {chunk.file_name}\n content: {chunk.content}"
-
-
-async def create_repo_embeddings(*, repo_path: str, batch_size: int, chunk_size: int):
-
-    for batch in chunks_batch(
-        repo_path=repo_path, batch_size=batch_size, chunk_size=chunk_size
-    ):
-        embedding_input: list[str] = []
-        for file_chunk in batch:
-            result = create_embedding_input(file_chunk)
-            embedding_input.append(result)
-        try:
-            embeddings = await create_embeddings(embedding_input)
-        except Exception as e:
-            log.warning(
-                f"Failed to create embedding of batch (size={len(embedding_input)}); "
-                f"dropping {len(embedding_input)} chunks: {e}"
-            )
-            continue
-        yield (embeddings.data, batch)
+    return await _client.embeddings.create(input=input, model="text-embedding-3-large")

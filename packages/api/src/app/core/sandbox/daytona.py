@@ -16,6 +16,7 @@ import inspect
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
 
 from daytona import (
     AsyncDaytona,
@@ -42,6 +43,10 @@ from app.models.enums import SandboxState
 from app.models.sandbox import Sandbox as SandboxModel
 
 log = logging.getLogger(__name__)
+
+
+class DaytonaSandboxSpec(SandboxSpec):
+    provider: Literal["daytona"] = "daytona"
 
 
 # --------------------------------------------------------------------------- #

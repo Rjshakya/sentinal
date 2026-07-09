@@ -30,10 +30,10 @@ from app.core.sandbox import (
     BaseSandbox,
     CommandResult,
     SandboxModel,
-    SandboxSpec,
     create_sandbox,
 )
 from app.core.sandbox.base import SandboxAlreadyActive
+from app.core.sandbox.e2b import E2BSandboxSpec
 from app.models.enums import SandboxState
 from app.models.repo import Repo
 from app.models.sandbox import Sandbox as SandboxTable
@@ -215,7 +215,7 @@ async def save_repo(
 async def init_sandbox(
     session: AsyncSession,
     *,
-    spec: SandboxSpec,
+    spec: E2BSandboxSpec,
     user_id: str,
     repo: Repo,
 ) -> BaseSandbox:
@@ -283,7 +283,13 @@ async def upload_scripts(sandbox: BaseSandbox) -> None:
     context_dir = f"/home/user/{WORKSPACE_DIR}/context"
     await sandbox.fs_create_folder(context_dir)
 
-    for src_name in ("chunking.py", "ingestion.py", "embedding.py", "sandbox.env"):
+    for src_name in (
+        "chunking.py",
+        "ingestion.py",
+        "embedding.py",
+        "search.py",
+        "sandbox.env",
+    ):
         src = SCRIPTS_DIR / src_name
         if not src.exists():
             raise FileNotFoundError(f"Indexing file missing: {src}")
@@ -315,6 +321,7 @@ async def run_ingestion(sandbox: BaseSandbox, repo: Repo) -> IngestResult:
     Provider-specific session / process plumbing lives inside the
     concrete adapter; the pipeline stays provider-agnostic.
     """
+
     command_str = (
         f"cd /home/user/{WORKSPACE_DIR}/context && "
         f'REPO_PATH="/home/user/{WORKSPACE_DIR}/{repo.repo_name}" '
@@ -324,21 +331,20 @@ async def run_ingestion(sandbox: BaseSandbox, repo: Repo) -> IngestResult:
     )
 
     def _on_stdout(chunk: str) -> None:
-        log.info(f"[stdout]:{chunk}")
+        log.info(f"[stdout:run_ingestion]:{chunk}")
 
     def _on_stderr(chunk: str) -> None:
-        log.error(f"[stderr]:{chunk}")
+        log.error(f"[stderr:run_ingestion]:{chunk}")
 
-    envs: dict[str, str] = {}
-    if settings.openai_api_key:
-        envs["OPENAI_API_KEY"] = settings.openai_api_key
+    # envs: dict[str, str] = {}
+    # if settings.openai_api_key:
+    #     envs["OPENAI_API_KEY"] = settings.openai_api_key
 
-    response: CommandResult = await sandbox.execute_streaming(
+    response = await sandbox.execute_streaming(
         command_str,
         on_stdout=_on_stdout,
         on_stderr=_on_stderr,
-        envs=envs or None,
-        timeout=None,
+        timeout=300,
     )
 
     full_stdout = (response.stdout or "") + (response.stderr or "")
@@ -368,7 +374,7 @@ async def indexing_pipeline(
     *,
     repos: list[IndexingRepo],
     user_id: str,
-    spec: SandboxSpec,
+    spec: E2BSandboxSpec,
 ) -> list[IndexingItemResult]:
     """Run the full indexing pipeline for each repo, sequentially.
 
@@ -411,7 +417,7 @@ async def indexing_pipeline(
                     # await sandbox.kill()
                 else:
                     log.info(
-                        "step finished",
+                        "step:[git clone]: finished",
                         extra=_log_ctx(
                             repo_id=db_repo.id,
                             sandbox_name=sandbox.sandbox_name,
@@ -420,7 +426,7 @@ async def indexing_pipeline(
                     )
                     await upload_scripts(sandbox)
                     log.info(
-                        "step finished",
+                        "step:[scripts upload]: finished",
                         extra=_log_ctx(
                             repo_id=db_repo.id,
                             sandbox_name=sandbox.sandbox_name,
@@ -429,7 +435,7 @@ async def indexing_pipeline(
                     )
                     ingest = await run_ingestion(sandbox, db_repo)
                     log.info(
-                        "step finished",
+                        "step:[ingestion]: finished",
                         extra={
                             **_log_ctx(
                                 repo_id=db_repo.id,
@@ -438,6 +444,9 @@ async def indexing_pipeline(
                             ),
                             "exit_code": ingest.exit_code,
                         },
+                    )
+                    log.info(
+                        f"step:[ingestion]:output: {ingest.stdout} , exit_code:{ingest.exit_code}"
                     )
                     if ingest.exit_code != 0:
                         log.error(

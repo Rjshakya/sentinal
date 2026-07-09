@@ -1,5 +1,6 @@
-import { GithubConnectionCard } from "@/routes/dashboard/_components/github-connection-card";
-import { RepoList } from "@/routes/dashboard/repositories/_components/repo-list";
+import { GithubConnectionCard } from "@/routes/dashboard/_components/-github-connection-card";
+import { CodeSearch } from "@/routes/dashboard/repositories/_components/-code-search";
+import { RepoList } from "@/routes/dashboard/repositories/_components/-repo-list";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { protectPage } from "@/lib/auth";
@@ -127,6 +128,7 @@ function ConnectedView() {
 
   return (
     <div className="space-y-4">
+      {userRepos && userRepos.length > 0 && <CodeSearch repos={userRepos} />}
       <RepoList repos={repos} selected={selected} onToggle={handleToggle} indexed={indexedIds} />
       <div className="flex items-center justify-between border-t pt-4">
         <p className="text-muted-foreground text-sm">

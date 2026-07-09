@@ -48,6 +48,30 @@ export type IndexingResponse = {
   accepted: number;
 };
 
+export type CodeSearchRequest = {
+  repo_id: string;
+  repo_name: string;
+  query: string;
+  limit?: number;
+};
+
+export type CodeSearchResult = {
+  id?: string | number;
+  file_name?: string;
+  start_line?: number;
+  end_line?: number;
+  content?: string;
+  node_types?: string | string[] | null;
+  language?: string | null;
+  _relevance_score?: number;
+};
+
+export type CodeSearchResponse = {
+  repo_name?: string;
+  query?: string;
+  results?: CodeSearchResult[];
+};
+
 export type UserRepo = {
   id: string;
   user_id: string;
@@ -96,6 +120,12 @@ export const apiClient = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repos }),
+    }),
+  codeSearch: (payload: CodeSearchRequest) =>
+    request<CodeSearchResponse>("/ai/code/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     }),
 };
 

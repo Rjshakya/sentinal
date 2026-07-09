@@ -5,10 +5,12 @@ script:
 
 1. Walks the cloned repo and chunks each source file via
    ``tree_sitter_language_pack.process()`` (in ``chunking.py``).
-2. Batches the chunks (100 at a time) and embeds them with the
-   OpenAI ``text-embedding-3-large`` model.
-3. Persists the chunks + vectors to a per-repo LanceDB table at
-   ``LANCEDB_URI`` (default: ``/home/user/lance_data``).
+2. Pushes the chunks into a per-repo LanceDB table; the ``vector``
+   column is auto-computed and stored by LanceDB via the OpenAI
+   embedding function registered in ``embedding.py`` (the
+   ``text-embedding-3-large`` model).
+3. Builds a full-text search index over ``content`` so the table
+   supports hybrid (vector + BM25) search.
 
 Configuration is read from environment variables injected by the
 orchestrator at command-execution time:
@@ -28,10 +30,10 @@ import sys
 import uuid
 
 import lancedb
-from chunking import FileChunk
-from embedding import create_repo_embeddings
-from lancedb.pydantic import LanceModel
-from openai.types.embedding import Embedding
+from chunking import chunks_batch
+from embedding import model
+from lancedb.index import FTS
+from lancedb.pydantic import LanceModel, Vector
 
 log = logging.getLogger(__name__)
 
@@ -49,48 +51,33 @@ class CodeChunkModel(LanceModel):
     end_line: int
     language: str
     node_types: str
-    vector: list[float]
-
-
-async def connect_lance_db(connection_str: str):
-    return await lancedb.connect_async(connection_str)
-
-
-def create_code_chunk_obj(*, embedding: Embedding, chunk: FileChunk):
-    obj = CodeChunkModel(
-        id=str(uuid.uuid4()),
-        file_name=chunk.file_name,
-        start_line=chunk.start_line,
-        end_line=chunk.end_line,
-        language=chunk.language,
-        node_types=";".join(chunk.node_types),
-        vector=embedding.embedding,
-    )
-    return obj
+    content: str = model.SourceField()
+    vector: Vector(model.ndims()) = model.VectorField()  # pyright: ignore
 
 
 async def ingest_repo(*, repo_path: str, repo_name: str, db_uri: str):
-
     try:
-        db = await connect_lance_db(db_uri)
+        db = await lancedb.connect_async(db_uri)
         table = await db.create_table(
             f"{repo_name}_table", exist_ok=True, schema=CodeChunkModel
         )
 
-        async for embeddings, batch in create_repo_embeddings(
-            repo_path=repo_path, batch_size=100, chunk_size=1000
-        ):
-            data: list[CodeChunkModel] = []
+        for batch in chunks_batch(repo_path=repo_path, batch_size=100, chunk_size=1000):
+            rows = [
+                {
+                    "id": str(uuid.uuid4()),
+                    "file_name": chunk.file_name,
+                    "start_line": chunk.start_line,
+                    "end_line": chunk.end_line,
+                    "language": chunk.language,
+                    "node_types": ";".join(chunk.node_types),
+                    "content": chunk.content,
+                }
+                for chunk in batch
+            ]
+            await table.add(rows)
 
-            for file_chunk, embedding in zip(batch, embeddings):
-                code_chunk_obj = create_code_chunk_obj(
-                    embedding=embedding, chunk=file_chunk
-                )
-                data.append(code_chunk_obj)
-
-            await table.add(data)
-
-        await table.create_index("vector", replace=True)
+        await table.create_index("content", replace=True, config=FTS())
 
     except Exception as e:
         log.error(f"failed to ingest repo:{repo_name}, error:{e}")
@@ -98,7 +85,6 @@ async def ingest_repo(*, repo_path: str, repo_name: str, db_uri: str):
 
 
 async def main() -> int:
-
     try:
         await ingest_repo(repo_path=REPO_PATH, repo_name=REPO_NAME, db_uri=LANCEDB_URI)
         return 0

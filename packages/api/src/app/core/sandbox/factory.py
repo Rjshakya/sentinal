@@ -7,11 +7,25 @@ directly.
 
 from __future__ import annotations
 
+from typing import Literal, overload
+
 from app.core.config import settings
 from app.core.sandbox.base import BaseSandbox
-from app.core.sandbox.daytona import DaytonaSandbox, get_daytona
-from app.core.sandbox.e2b import E2BSandbox
+from app.core.sandbox.daytona import DaytonaSandbox, DaytonaSandboxSpec, get_daytona
+from app.core.sandbox.e2b import E2BSandbox, E2BSandboxSpec
 from app.core.sandbox.types import SandboxSpec
+
+
+@overload
+def create_sandbox(
+    *, spec: E2BSandboxSpec, user_id: str, repo_id: str, sandbox_name: str
+) -> E2BSandbox: ...
+
+
+@overload
+def create_sandbox(
+    *, spec: DaytonaSandboxSpec, user_id: str, repo_id: str, sandbox_name: str
+) -> DaytonaSandbox: ...
 
 
 def create_sandbox(
@@ -51,7 +65,15 @@ def create_sandbox(
     )
 
 
-def build_default_spec() -> SandboxSpec:
+@overload
+def build_default_spec(provider: Literal["e2b"]) -> E2BSandboxSpec: ...
+
+
+@overload
+def build_default_spec(provider: Literal["daytona"]) -> DaytonaSandboxSpec: ...
+
+
+def build_default_spec(provider: Literal["e2b", "daytona"]) -> SandboxSpec:
     """Build a :class:`SandboxSpec` from the current :class:`Settings`.
 
     The active provider is :attr:`Settings.sandbox_provider` (default
@@ -62,8 +84,6 @@ def build_default_spec() -> SandboxSpec:
         RuntimeError: when the active provider's API key is missing.
         ValueError: when :attr:`Settings.sandbox_provider` is unknown.
     """
-
-    provider = settings.sandbox_provider
 
     if provider == "e2b":
         if not settings.e2b_api_key:
@@ -76,7 +96,7 @@ def build_default_spec() -> SandboxSpec:
             api_key=settings.e2b_api_key,
             # template=settings.e2b_template,
             cpu_count=1,
-            memory_mb=1026 * 6,
+            memory_mb=1026 * 2,
             # timeout_s=settings.e2b_timeout_s,
         )
 

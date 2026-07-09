@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,7 @@ class SandboxSpec:
     :meth:`BaseSandbox.create`.
     """
 
-    provider: str
+    provider: Literal["e2b", "daytona"]
     api_key: str
     template: str | None = None
     cpu_count: int = 1

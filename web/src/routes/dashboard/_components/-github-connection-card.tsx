@@ -11,11 +11,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiBaseUrl } from "@/lib/api";
 import { getGithubConnection, useConnections } from "@/lib/connections";
-import {
-  IconBrandGithub,
-  IconCircleCheck,
-  IconCircleDashed,
-} from "@tabler/icons-react";
+import { IconBrandGithub, IconCircleCheck, IconCircleDashed } from "@tabler/icons-react";
 
 export function GithubConnectionCard() {
   const { data: connections, isLoading } = useConnections();

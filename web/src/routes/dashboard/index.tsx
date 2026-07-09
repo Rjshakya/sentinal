@@ -1,4 +1,4 @@
-import { GithubConnectionCard } from "@/routes/dashboard/_components/github-connection-card";
+import { GithubConnectionCard } from "@/routes/dashboard/_components/-github-connection-card";
 import { protectPage } from "@/lib/auth";
 import { createFileRoute } from "@tanstack/react-router";
 

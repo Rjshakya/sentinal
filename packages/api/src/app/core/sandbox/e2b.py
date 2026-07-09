@@ -16,11 +16,13 @@ import asyncio
 import inspect
 import logging
 from datetime import UTC, datetime
+from typing import Literal
 
 from e2b import AsyncSandbox, AsyncTemplate
 from e2b.sandbox.filesystem.filesystem import EntryInfo as E2BEntryInfo
 from e2b.sandbox.filesystem.filesystem import FileType
 from e2b.sandbox.filesystem.filesystem import WriteInfo as E2BWriteInfo
+from e2b.sandbox.sandbox_api import SandboxLifecycle
 from e2b.sandbox_async.commands.command import Commands as AsyncCommands
 from e2b.sandbox_async.filesystem.filesystem import Filesystem as AsyncFilesystem
 from e2b.sandbox_async.git import Git as AsyncGit
@@ -40,6 +42,10 @@ from app.models.enums import SandboxState
 from app.models.sandbox import Sandbox as SandboxModel
 
 log = logging.getLogger(__name__)
+
+
+class E2BSandboxSpec(SandboxSpec):
+    provider: Literal["e2b"] = "e2b"
 
 
 class E2BSandbox(BaseSandbox):
@@ -172,9 +178,7 @@ class E2BSandbox(BaseSandbox):
             template=template_name,
             api_key=settings.e2b_api_key,
             timeout=20 * 60,
-            lifecycle={
-                "on_timeout": "pause",
-            },
+            lifecycle=SandboxLifecycle(on_timeout="pause", auto_resume=True),
         )
         log.info("e2b sandbox created: id=%s", self._sandbox.sandbox_id)
 
@@ -186,6 +190,7 @@ class E2BSandbox(BaseSandbox):
             provider_id=self.provider_name,
             state=SandboxState.STARTED,
         )
+
         if self._on_create_hook is not None:
             result = self._on_create_hook(model)
             if inspect.isawaitable(result):
@@ -279,7 +284,7 @@ class E2BSandbox(BaseSandbox):
                 command,
                 cwd=cwd,
                 envs=envs,
-                # timeout=timeout if timeout is not None else 60,
+                timeout=timeout if timeout is not None else 200,
                 on_stdout=_stdout if on_stdout is not None else None,
                 on_stderr=_stderr if on_stderr is not None else None,
             )
@@ -296,6 +301,25 @@ class E2BSandbox(BaseSandbox):
                 stderr="",
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+    @classmethod
+    async def connect(
+        cls,
+        *,
+        sandbox_id: str,
+        sandbox_name: str,
+        repo_id: str,
+        user_id: str,
+        spec: E2BSandboxSpec,
+        timeout: int,
+        api_key: str,
+    ) -> E2BSandbox:
+
+        sb = cls(spec=spec, user_id=user_id, repo_id=repo_id, sandbox_name=sandbox_name)
+        sb._sandbox = await AsyncSandbox.connect(
+            sandbox_id=sandbox_id, timeout=timeout, api_key=api_key
+        )
+        return sb
 
     # ------------------------------------------------------------------ #
     # filesystem                                                         #
