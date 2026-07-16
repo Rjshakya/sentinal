@@ -19,6 +19,10 @@ dependencies = [
     "openai>=2.44.0",
     "pyarrow>=18",
     "tree-sitter-language-pack>=1.12.5",
+    "langchain-openai>=1.3.5",
+    "langchain-anthropic>=1.4",
+    "langchain-google-genai>=4.2",
+    "langchain-e2b>=0.0.5",
 ]
 
 [build-system]

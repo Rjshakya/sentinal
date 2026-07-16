@@ -2,9 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
   apiClient,
-  type IndexingRepo,
-  type IndexingResponse,
   type Repo,
+  type SetupAck,
+  type SetupRepo,
   type UserRepo,
 } from "./api";
 
@@ -22,10 +22,10 @@ export function useUserRepos() {
   });
 }
 
-export function useStartIndexing() {
+export function useSetup() {
   const qc = useQueryClient();
-  return useMutation<IndexingResponse, ApiError, IndexingRepo[]>({
-    mutationFn: (repos) => apiClient.startIndexing(repos),
+  return useMutation<SetupAck, ApiError, SetupRepo[]>({
+    mutationFn: (repos) => apiClient.setup(repos),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["users", "repos"] });
     },

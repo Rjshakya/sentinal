@@ -14,13 +14,12 @@ following keys: ``id``, ``file_name``, ``start_line``, ``end_line``,
 Configuration is read from environment variables injected by the
 orchestrator at command-execution time:
 
-    LANCEDB_URI      (default: /home/user/lance_data)
     OPENAI_API_KEY   (injected via sandbox.execute(envs=...))
 
 Invocation::
 
-    python search.py --sandbox-id <id> --repo-name <repo> \\
-                    --query "git clone flow" [--limit 10]
+    python search.py --repo-name <repo> --query "git clone flow" \\
+                    [--limit 10] [--language python] [--file-prefix src/]
 
 Output (stdout): a single JSON object::
 
@@ -43,18 +42,21 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
 
 import lancedb
-from embedding import create_embeddings
+from embedding import create_embeddings  # pyright: ignore[reportMissingImports]
+from lancedb.rerankers import RRFReranker
+
+from utils import lance_path, scripts_path, table_name  # pyright: ignore[reportMissingImports]
 
 log = logging.getLogger(__name__)
 
-LANCEDB_URI: str = os.environ.get("LANCEDB_URI", "/home/user/lance_data")
 DEFAULT_LIMIT: int = 10
 
-sys.path.insert(0, "/sentinel-workspace/context")
+sys.path.insert(0, scripts_path())
+
+_reranker = RRFReranker()
 
 
 def _parse_args():
@@ -73,20 +75,43 @@ def _parse_args():
         default=DEFAULT_LIMIT,
         help=f"Max number of results (default: {DEFAULT_LIMIT}).",
     )
+    parser.add_argument(
+        "--language", default=None, help="Filter by language, e.g. 'python'."
+    )
+    parser.add_argument(
+        "--file-prefix", default=None, help="Filter by file path prefix."
+    )
     return parser.parse_args()
 
 
-async def hybrid_search(*, query: str, repo_name: str, limit: int) -> list[dict]:
-    db = await lancedb.connect_async(LANCEDB_URI)
-    table = await db.open_table(f"{repo_name}_table")
+async def hybrid_search(
+    *,
+    query: str,
+    repo_name: str,
+    limit: int,
+    language: str | None,
+    file_prefix: str | None,
+    db_uri: str = lance_path(),
+) -> list[dict]:
+    db = await lancedb.connect_async(db_uri)
+    table = await db.open_table(table_name(repo_name))
 
     resp = await create_embeddings([query])
     query_vector = resp.data[0].embedding
+    q = table.query().nearest_to(query_vector).nearest_to_text(query)
+
+    # prefilter: narrows candidates BEFORE ranking, so a `limit`
+    # of 10 doesn't get eaten by irrelevant-language matches
+    filters = []
+    if language:
+        filters.append(f"language = '{language}'")
+    if file_prefix:
+        filters.append(f"file_name LIKE '{file_prefix}%'")
+    if filters:
+        q = q.where(" AND ".join(filters))
 
     rows: list[dict] = await (
-        table.query()
-        .nearest_to(query_vector)
-        .nearest_to_text(query)
+        q.rerank(_reranker)
         .select(
             [
                 "id",
@@ -111,6 +136,8 @@ async def main() -> int:
             query=args.query,
             repo_name=args.repo_name,
             limit=args.limit,
+            language=args.language,
+            file_prefix=args.file_prefix,
         )
     except Exception as e:
         log.error(f"search failed for repo={args.repo_name}: {e}")

@@ -179,7 +179,7 @@ class DaytonaSandbox(BaseSandbox):
         await self._sandbox.wait_for_sandbox_start()
         log.info("daytona sandbox created: id=%s", self._sandbox.id)
 
-        model = await self.update_state(
+        model = SandboxModel(
             id=self.id,
             user_id=self.user_id,
             repo_id=self.repo_id,
@@ -205,7 +205,7 @@ class DaytonaSandbox(BaseSandbox):
                 self._sandbox.id,
             )
 
-        model = await self.update_state(
+        model = SandboxModel(
             id=self.id,
             user_id=self.user_id,
             repo_id=self.repo_id,
@@ -222,7 +222,7 @@ class DaytonaSandbox(BaseSandbox):
 
     async def kill(self) -> SandboxModel:
         if self._sandbox is None:
-            return await self.update_state(
+            model = SandboxModel(
                 id="",
                 user_id=self.user_id,
                 repo_id=self.repo_id,
@@ -230,6 +230,11 @@ class DaytonaSandbox(BaseSandbox):
                 provider_id=self.provider_name,
                 state=SandboxState.DELETED,
             )
+            if self._on_kill_hook is not None:
+                result = self._on_kill_hook(model)
+                if inspect.isawaitable(result):
+                    await result
+            return model
         try:
             await self._sandbox.delete()
             log.info("daytona sandbox deleted: id=%s", self._sandbox.id)
@@ -239,7 +244,7 @@ class DaytonaSandbox(BaseSandbox):
                 self._sandbox.id,
             )
 
-        model = await self.update_state(
+        model = SandboxModel(
             id=self.id,
             user_id=self.user_id,
             repo_id=self.repo_id,
@@ -247,7 +252,6 @@ class DaytonaSandbox(BaseSandbox):
             provider_id=self.provider_name,
             state=SandboxState.DELETED,
         )
-        model.state = SandboxState.DELETED
         model.stopped_at = datetime.now(UTC)
         if self._on_kill_hook is not None:
             result = self._on_kill_hook(model)

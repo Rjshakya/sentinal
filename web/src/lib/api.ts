@@ -9,13 +9,23 @@ export type Session = {
   external_id: string | null;
   created_at: string | null;
   updated_at: string | null;
+  github_login: string | null;
 };
 
-export type Connection = {
-  slug: string;
-  name: string;
+export type InstallationSummary = {
+  installation_id: string;
+  github_installation_id: number;
+  account_login: string;
+  account_type: "User" | "Organization";
+  repository_selection: "all" | "selected";
+  suspended: boolean;
+  repo_count: number;
+};
+
+export type InstallationState = {
   connected: boolean;
-  connected_at: string | null;
+  installation_count: number;
+  installations: InstallationSummary[];
 };
 
 export type Repo = {
@@ -30,22 +40,45 @@ export type Repo = {
   stargazers_count: number;
   language: string | null;
   updated_at: string;
-};
-
-export type IndexingRepo = {
-  id: string;
-  name: string;
-  full_name: string;
-  html_url: string;
-  private: boolean;
-  default_branch: string;
   clone_url: string;
-  owner: string;
-  github_installation_id?: number;
+  installation_id: string;
+  github_installation_id: number;
 };
 
-export type IndexingResponse = {
-  accepted: number;
+export type SetupRepo = {
+  id: number;
+  owner: string;
+  name: string;
+  installation_id: string;
+};
+
+export type SetupEcosystem =
+  | "node"
+  | "python"
+  | "rust"
+  | "go"
+  | "ruby"
+  | "mixed"
+  | "none";
+
+export type SetupResult = {
+  ok: boolean;
+  ecosystem: SetupEcosystem;
+  manager: string | null;
+  install_cmd: string | null;
+  duration_s: number;
+  notes: string;
+  bootstrapped_tools: string[];
+};
+
+export type RepoSetupResult = {
+  repo_id: string | null;
+  github_repo_id: number;
+  setup: SetupResult;
+};
+
+export type SetupAck = {
+  results: RepoSetupResult[];
 };
 
 export type CodeSearchRequest = {
@@ -112,11 +145,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const apiClient = {
   session: () => request<Session>("/auth/session"),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
-  connections: () => request<Connection[]>("/pipes/connections"),
+  installation: () => request<InstallationState>("/github/installation"),
+  forgetInstallation: (installationId: string) =>
+    request<void>(`/github/installation/${installationId}`, { method: "DELETE" }),
   repos: () => request<Repo[]>("/github/repos"),
   userRepos: () => request<UserRepo[]>("/users/repos"),
-  startIndexing: (repos: IndexingRepo[]) =>
-    request<IndexingResponse>("/ai/code/indexing", {
+  setup: (repos: SetupRepo[]) =>
+    request<SetupAck>("/ai/repo/setup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repos }),
@@ -127,6 +162,8 @@ export const apiClient = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  installUrl: () => request<{ url: string }>("/github/install-url"),
 };
 
 export const apiBaseUrl = BASE;
+export const githubAppManageUrl = "https://github.com/settings/installations";

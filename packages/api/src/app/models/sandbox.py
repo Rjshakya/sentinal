@@ -9,13 +9,6 @@ from app.models.enums import SandboxState
 from app.utils.util import uuidToStr
 
 
-class SandboxCreate(SQLModel):
-    id: str
-    user_id: str
-    repo_id: str
-    sandbox_name: str
-
-
 class Sandbox(SQLModel, table=True):
     id: str = Field(
         default_factory=uuidToStr,

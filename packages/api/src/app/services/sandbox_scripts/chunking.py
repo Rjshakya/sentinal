@@ -144,7 +144,6 @@ def chunk_repo(
 
 def chunks_batch(*, repo_path: str, batch_size: int = 100, chunk_size: int = 1000):
     flat = chain.from_iterable(chunk_repo(repo_path=repo_path, chunk_size=chunk_size))
-    # yield from batched(flat, batch_size)
     while True:
         batch = list(islice(flat, batch_size))
         if not batch:

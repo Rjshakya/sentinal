@@ -18,8 +18,10 @@ class Repo(SQLModel, table=True):
     org_id: Optional[str] = Field(
         default=None,
     )
+    github_repo_id: int = Field(nullable=False, unique=True)
     repo_name: str = Field(nullable=False)
     repo_owner: str = Field(nullable=False)
+    clone_url: str = Field(max_length=1024, nullable=False)
     url: Optional[str] = Field(default=None, nullable=True)
     private: bool = Field(default=False, nullable=False)
     default_branch: str | None = Field(default=None, nullable=True)

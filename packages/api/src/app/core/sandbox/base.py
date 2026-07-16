@@ -9,8 +9,8 @@ Identity, lifecycle, and persistence are kept separate:
 - Identity (``user_id``, ``repo_id``, ``sandbox_name``, ``spec``) is
   set at construction and treated as immutable.
 - The lifecycle methods (``create``, ``stop``, ``kill``) call the
-  provider, build a :class:`SandboxModel` via :meth:`update_state`, and
-  fire the corresponding hook.
+  provider, build a :class:`SandboxModel` for the registered hook to
+  persist, and fire the hook.
 - Persistence is the caller's concern — the registered hook
   (``on_create`` / ``on_pause`` / ``on_kill``) receives the model and
   decides what to do with it (insert / merge / log / notify).
@@ -21,7 +21,6 @@ from __future__ import annotations
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +33,6 @@ from app.core.sandbox.types import (
     SandboxSpec,
     WriteInfo,
 )
-from app.models.enums import SandboxState
 from app.models.sandbox import Sandbox as SandboxModel
 
 StreamCallback = Callable[[str], None] | Callable[[str], Awaitable[None]]
@@ -87,37 +85,6 @@ class BaseSandbox(ABC):
     def on_kill(self, hook: Hook) -> None:
         """Register a callback fired after the underlying sandbox is killed."""
         self._on_kill_hook = hook
-
-    # ------------------------------------------------------------------ #
-    # update_state — build a SandboxModel for the hook to persist         #
-    # ------------------------------------------------------------------ #
-
-    async def update_state(
-        self,
-        *,
-        id: str,
-        user_id: str,
-        repo_id: str,
-        sandbox_name: str,
-        provider_id: str,
-        state: SandboxState,
-    ) -> SandboxModel:
-        """Build a :class:`SandboxModel` carrying the current lifecycle state.
-
-        The returned model is **not** persisted; the registered hook (or any
-        caller) is responsible for inserting / merging it. Lifecycle
-        methods (``stop``, ``kill``) mutate the returned model's ``state``
-        and ``stopped_at`` before firing their hooks.
-        """
-        return SandboxModel(
-            id=id,
-            user_id=user_id,
-            repo_id=repo_id,
-            sandbox_name=sandbox_name,
-            provider_id=provider_id,
-            state=state,
-            started_at=datetime.now(UTC),
-        )
 
     # ------------------------------------------------------------------ #
     # lifecycle (abstract — each adapter implements the full flow)       #

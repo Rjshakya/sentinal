@@ -102,6 +102,78 @@ class Settings(BaseSettings):
         "Leave empty to disable embedding-dependent routes.",
     )
 
+    # --- LLM (review agent) ---
+    llm_provider: str = Field(
+        default="openai",
+        description="Active LLM provider tag for the review/setup agent "
+        "('openai', 'anthropic', or 'google'). Validated at call time "
+        "by build_chat_model; unknown values raise ValueError.",
+    )
+    llm_base_url: str = Field(
+        default="",
+        description="Base URL for the chat model used by the review agent "
+        "(e.g. https://api.openai.com/v1, or a custom OpenAI-compatible "
+        "endpoint). Leave empty to disable review routes.",
+    )
+    llm_api_key: str = Field(
+        default="",
+        description="API key for the review-agent chat model. Falls back to "
+        "openai_api_key when blank.",
+    )
+    llm_model: str = Field(
+        default="",
+        description="Model name passed to ChatOpenAI (e.g. gpt-5.5, "
+        "claude-sonnet-4-6 via a proxy, etc.).",
+    )
+
+    # --- GitHub App ---
+    github_app_id: str = Field(
+        default="",
+        description="GitHub App numeric id.",
+    )
+    github_app_client_id: str = Field(
+        default="",
+        description="GitHub App OAuth client id.",
+    )
+    github_app_client_secret: str = Field(
+        default="",
+        description="GitHub App OAuth client secret.",
+    )
+    github_app_slug: str = Field(
+        default="",
+        description="GitHub App slug (the human-readable url segment).",
+    )
+    github_app_private_key: str = Field(
+        default="",
+        description=(
+            "GitHub App private key (PEM). Newlines may be encoded as "
+            "the literal sequence '\\n' in the env var."
+        ),
+    )
+    github_app_private_key_path: str = Field(
+        default="",
+        description=(
+            "Filesystem path to the GitHub App private key. When set, "
+            "takes precedence over GITHUB_APP_PRIVATE_KEY."
+        ),
+    )
+
+    # --- GitHub webhook ---
+    github_webhook_secret: str = Field(
+        default="",
+        description="Shared secret used to verify GitHub webhook "
+        "deliveries via the X-Hub-Signature-256 header. Leave empty to "
+        "reject all webhook deliveries.",
+    )
+
+    # --- GitHub App install flow ---
+    github_install_state_secret: str = Field(
+        default="",
+        description="HMAC secret used to sign the GitHub App install "
+        "flow's state token. Falls back to workos_cookie_password when "
+        "blank.",
+    )
+
     @property
     def daytona_configured(self) -> bool:
         return bool(self.daytona_api_key)
@@ -129,6 +201,45 @@ class Settings(BaseSettings):
         return bool(self.openai_api_key)
 
     @property
+    def llm_configured(self) -> bool:
+        """True when the review-agent LLM is fully configured.
+
+        Requires a model name, a base URL, and an API key (either the
+        dedicated ``llm_api_key`` or a fallback to ``openai_api_key``).
+        """
+        return bool(
+            self.llm_model
+            and self.llm_base_url
+            and (self.llm_api_key or self.openai_api_key)
+        )
+
+    @property
+    def github_webhook_configured(self) -> bool:
+        """True when a webhook secret is set and deliveries can be verified."""
+        return bool(self.github_webhook_secret)
+
+    @property
+    def github_install_state_effective_secret(self) -> str:
+        """The HMAC secret used to sign and verify install-flow state tokens."""
+        return self.github_install_state_secret or self.workos_cookie_password
+
+    @property
+    def github_app_configured(self) -> bool:
+        """True when the four required GitHub App fields are set."""
+        return bool(
+            self.github_app_id
+            and self.github_app_client_id
+            and self.github_app_client_secret
+            # and self.github_app_private_key
+            and self.github_app_slug
+        )
+
+    @property
+    def github_app_install_url(self) -> str:
+        """The github.com URL the dashboard's Connect button points at."""
+        return f"https://github.com/apps/{self.github_app_slug}/installations/new"
+
+    @property
     def cookie_secure(self) -> bool:
         return self.frontend_url.startswith("https://")
 
@@ -136,8 +247,5 @@ class Settings(BaseSettings):
     def cognee_dataset_prefix(self) -> str:
         return "sentinel:repo:"
 
-
-print(f"DEBUG: Looking for .env at: {BASE_DIR / '.env'}")
-print(f"DEBUG: File exists: {(BASE_DIR / '.env').exists()}")
 
 settings = Settings()

@@ -17,13 +17,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     On success, attaches the full session and a few flat fields to ``request.state``.
     On failure, returns 401.
+
+    ``BYPASS_PREFIXES`` is the explicit denylist for paths inside a
+    protected family that must remain anonymous. The GitHub install
+    setup callback sits under ``/api/github`` but is called by GitHub
+    via a browser redirect, with no session cookie.
     """
 
     PROTECTED_PREFIXES: tuple[str, ...] = (
-        "/api/pipes",
         "/api/github",
         "/api/ai",
         "/api/users",
+    )
+
+    BYPASS_PREFIXES: tuple[str, ...] = (
+        "/api/github/setup",
     )
 
     def __init__(self, app: ASGIApp) -> None:
@@ -34,7 +42,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        if not any(request.url.path.startswith(p) for p in self.PROTECTED_PREFIXES):
+        path = request.url.path
+        if any(path.startswith(p) for p in self.BYPASS_PREFIXES):
+            return await call_next(request)
+
+        if not any(path.startswith(p) for p in self.PROTECTED_PREFIXES):
             return await call_next(request)
 
         try:
@@ -47,8 +59,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.user_name = session.user_name
             request.state.profile_picture = session.profile_picture
 
-        except HTTPException as e:
-            print("Exception in authMiddleware", e)
+        except HTTPException:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
 
         return await call_next(request)

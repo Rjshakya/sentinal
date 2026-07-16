@@ -7,13 +7,6 @@ class PRStatus(str, enum.Enum):
     MERGED = "MERGED"
 
 
-class AnalysisStatus(str, enum.Enum):
-    PENDING = "PENDING"
-    PROCESSING = "PROCESSING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-
-
 class CommentSeverity(str, enum.Enum):
     P1_CRITICAL = "P1_CRITICAL"
     P2_WARNING = "P2_WARNING"
@@ -43,3 +36,16 @@ class SandboxState(str, enum.Enum):
     STOPPED = "STOPPED"
     DELETED = "DELETED"
     ARCHIVED = "ARCHIVED"
+
+
+class SetupRunStatus(str, enum.Enum):
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+
+
+class SetupErrorCode(str, enum.Enum):
+    INSTALLATION_NOT_FOUND = "INSTALLATION_NOT_FOUND"
+    INSTALL_TOKEN_MINT_FAILED = "INSTALL_TOKEN_MINT_FAILED"
+    GIT_CLONE_FAILED = "GIT_CLONE_FAILED"
+    AGENT_CRASHED = "AGENT_CRASHED"
+    NO_STRUCTURED_RESPONSE = "NO_STRUCTURED_RESPONSE"

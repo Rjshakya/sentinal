@@ -13,6 +13,7 @@ wheels/
 .env.local
 .env.*.local
 **/sandbox.env
+**/*.pem
 
 # Node / frontend (apps/web, etc.)
 node_modules/
@@ -29,3 +30,4 @@ next-env.d.ts
 .DS_Store
 Thumbs.db
 *.swp
+

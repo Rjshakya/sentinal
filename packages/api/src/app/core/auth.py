@@ -18,24 +18,22 @@ class Session(BaseModel):
     external_id: str | None
     created_at: str | None
     updated_at: str | None
+    github_login: str | None = None
 
 
 async def get_current_session(request: Request) -> Session:
 
     cookie = request.cookies.get(settings.session_cookie_name)
     if not cookie:
-        print("auth: missing session cookie")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     session = load_session(cookie)
     if session is None:
-        print("auth: load_sealed_session returned None")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     result = session.authenticate()
 
     if not result.authenticated:
-        print("auth: result.authenticated is False:", getattr(result, "reason", None))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     user = getattr(result, "user", None) or {}
@@ -48,12 +46,20 @@ async def get_current_session(request: Request) -> Session:
     created_at = user.get("created_at")
     updated_at = user.get("updated_at")
 
+    raw_connections = user.get("connections") or []
+    github_login: str | None = None
+    if isinstance(raw_connections, list):
+        for conn in raw_connections:
+            if isinstance(conn, dict) and conn.get("provider") == "GitHubOAuth":
+                connection_id = conn.get("connection_id")
+                if isinstance(connection_id, str) and connection_id:
+                    github_login = connection_id
+                    break
+
     if not user_id or not email:
-        print("auth: missing user_id or email in session payload", user)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     if session_id is None:
-        print("auth: missing session_id in JWT claims")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
     return Session(
@@ -65,4 +71,5 @@ async def get_current_session(request: Request) -> Session:
         external_id=external_id,
         created_at=created_at,
         updated_at=updated_at,
+        github_login=github_login,
     )

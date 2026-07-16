@@ -35,8 +35,6 @@ def login(provider: Annotated[Provider, Query()]) -> RedirectResponse:
             detail=f"Unknown provider '{provider}'. Use one of: {sorted(PROVIDERS)}",
         )
 
-    print("workos_provider", workos_provider)
-
     try:
         url, _ = get_authorization_url(cast(Provider, workos_provider))
         return RedirectResponse(url=url, status_code=302)
@@ -53,8 +51,6 @@ async def callback(
     try:
         auth_response = await authenticate_code(code)
 
-        print("Successfully authenticated")
-
         sealed = seal_session(auth_response)
         if sealed is None:
             raise RuntimeError("Expected sealed_session on AuthenticateResponse")
@@ -69,8 +65,7 @@ async def callback(
         )
         return response
 
-    except Exception as e:
-        print("Error authenticating with code", e)
+    except Exception:
         raise HTTPException(
             detail="Failed to authenticate with code",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

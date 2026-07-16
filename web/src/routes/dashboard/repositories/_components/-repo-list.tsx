@@ -2,21 +2,19 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import type { Repo } from "@/lib/api";
-import { IconCircleCheck, IconLock, IconStar, IconStarFilled } from "@tabler/icons-react";
+import { IconLock, IconStar, IconStarFilled } from "@tabler/icons-react";
 
 type Props = {
   repos: Repo[];
   selected: Set<string>;
   onToggle: (fullName: string) => void;
-  indexed: Set<string>;
 };
 
-export function RepoList({ repos, selected, onToggle, indexed }: Props) {
+export function RepoList({ repos, selected, onToggle }: Props) {
   return (
     <div className="divide-y rounded-lg border">
       {repos.map((repo) => {
-        const isIndexed = indexed.has(String(repo.id));
-        const isSelected = isIndexed || selected.has(repo.full_name);
+        const isSelected = selected.has(repo.full_name);
         const checkboxId = `repo-${repo.id}`;
         return (
           <Label
@@ -27,19 +25,12 @@ export function RepoList({ repos, selected, onToggle, indexed }: Props) {
             <Checkbox
               id={checkboxId}
               checked={isSelected}
-              disabled={isIndexed}
               onCheckedChange={() => onToggle(repo.full_name)}
               className="mt-1"
             />
             <div className="min-w-0 flex-1 space-y-1">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="truncate font-medium">{repo.full_name}</span>
-                {isIndexed && (
-                  <Badge variant="secondary" className="gap-1">
-                    <IconCircleCheck className="size-3" />
-                    Indexed
-                  </Badge>
-                )}
                 {repo.private && (
                   <Badge variant="outline" className="gap-1">
                     <IconLock className="size-3" />

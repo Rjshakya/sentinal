@@ -3,6 +3,10 @@
 One ``AsyncWorkOSClient`` per process. Sealed session validation is
 synchronous (local Fernet decrypt + JWT verify) — no network IO.
 Only ``authenticate_with_code`` is async (network call to WorkOS).
+
+The Pipes surface (used previously for GitHub OAuth via WorkOS) has
+been removed; the GitHub integration is now driven by a native GitHub
+App, see :mod:`app.core.github_app`.
 """
 
 from __future__ import annotations
@@ -79,30 +83,3 @@ def load_session(cookie_value: str) -> AsyncSession | None:
         session_data=cookie_value,
         cookie_password=settings.workos_cookie_password,
     )
-
-
-async def list_user_data_providers(user_id: str):
-    providers = await _get_client().pipes.list_user_data_providers(user_id=user_id)
-    return providers.data
-
-
-async def authorize_data_integration(slug: str, user_id: str, return_to: str) -> str:
-    response = await _get_client().pipes.authorize_data_integration(
-        slug=slug,
-        user_id=user_id,
-        return_to=return_to,
-    )
-    return response.url
-
-
-async def get_github_access_token(user_id: str) -> str:
-    """Mint a fresh GitHub access token via WorkOS Pipes for the given user."""
-    response = await _get_client().pipes.get_access_token(
-        provider="github",
-        user_id=user_id,
-    )
-    if response.access_token is None:
-        raise RuntimeError(
-            f"WorkOS returned no GitHub access token (error={response.error})"
-        )
-    return response.access_token.access_token

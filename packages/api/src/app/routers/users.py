@@ -64,6 +64,5 @@ async def list_my_repos(
             )
             for r in rows
         ]
-    except Exception as e:
-        print(f"users list_my_repos: {e}")
+    except Exception:
         raise HTTPException(status_code=500, detail="Failed to list indexed repos")

@@ -1,12 +1,11 @@
 import { GithubConnectionCard } from "@/routes/dashboard/_components/-github-connection-card";
-import { CodeSearch } from "@/routes/dashboard/repositories/_components/-code-search";
 import { RepoList } from "@/routes/dashboard/repositories/_components/-repo-list";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { protectPage } from "@/lib/auth";
-import { getGithubConnection, useConnections } from "@/lib/connections";
-import type { IndexingRepo } from "@/lib/api";
-import { useRepos, useStartIndexing, useUserRepos } from "@/lib/repos";
+import type { SetupRepo } from "@/lib/api";
+import { useInstallation } from "@/lib/installation";
+import { useRepos, useSetup } from "@/lib/repos";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -18,57 +17,46 @@ export const Route = createFileRoute("/dashboard/repositories")({
 });
 
 function RepositoriesPage() {
-  const { data: connections } = useConnections();
-  const github = getGithubConnection(connections);
-  const isConnected = !!github?.connected;
+  const { data: installation, isLoading: installationLoading } = useInstallation();
+  const isConnected = !!installation?.connected;
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Repositories</h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Select the repositories to enable AI-powered code reviews on.
+          Select the repositories to configure.
         </p>
       </div>
 
-      {!isConnected ? <GithubConnectionCard /> : <ConnectedView />}
+      {installationLoading ? (
+        <Skeleton className="h-32 w-full" />
+      ) : !isConnected ? (
+        <GithubConnectionCard />
+      ) : (
+        <ConnectedView />
+      )}
     </div>
   );
 }
 
 function ConnectedView() {
   const { data: repos, isLoading, isError, refetch } = useRepos();
-  const { data: userRepos } = useUserRepos();
-  const startIndexing = useStartIndexing();
+  const setup = useSetup();
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const indexedIds = useMemo<Set<string>>(() => {
-    if (!userRepos) return new Set();
-    return new Set(userRepos.map((r) => r.id));
-  }, [userRepos]);
-
-  const selectedPayload = useMemo<IndexingRepo[]>(() => {
+  const selectedPayload = useMemo<SetupRepo[]>(() => {
     if (!repos) return [];
     return Array.from(selected)
       .map((fullName) => repos.find((r) => r.full_name === fullName))
       .filter((r): r is NonNullable<typeof r> => r !== undefined)
-      .filter((r) => !indexedIds.has(String(r.id)))
       .map((r) => ({
-        id: r.id.toString(),
-        name: r.name,
-        full_name: r.full_name,
-        html_url: r.html_url,
-        private: r.private,
-        default_branch: r.default_branch,
-        clone_url: r.html_url,
+        id: r.id,
         owner: r.owner,
+        name: r.name,
+        installation_id: r.installation_id,
       }));
-  }, [repos, selected, indexedIds]);
-
-  const indexableCount = useMemo(() => {
-    if (!repos) return 0;
-    return repos.filter((r) => !indexedIds.has(String(r.id))).length;
-  }, [repos, indexedIds]);
+  }, [repos, selected]);
 
   function handleToggle(fullName: string) {
     setSelected((prev) => {
@@ -82,12 +70,20 @@ function ConnectedView() {
     });
   }
 
-  function handleStart() {
+  function handleConfigure() {
     if (selectedPayload.length === 0) return;
-    startIndexing.mutate(selectedPayload, {
+    setup.mutate(selectedPayload, {
       onSuccess: (data) => {
-        toast.success(`Indexing started for ${data.accepted} repos`);
+        const ok = data.results.filter((r) => r.setup.ok).length;
+        const failed = data.results.length - ok;
         setSelected(new Set());
+        if (failed === 0) {
+          toast.success(
+            `Configured ${ok} ${ok === 1 ? "repo" : "repos"}`,
+          );
+        } else {
+          toast.warning(`Configured ${ok}, ${failed} failed`);
+        }
       },
       onError: (err) => {
         toast.error(err.message);
@@ -118,35 +114,30 @@ function ConnectedView() {
 
   if (!repos || repos.length === 0) {
     return (
-      <div className="rounded-lg border p-6 text-center">
-        <p className="text-muted-foreground text-sm">
-          No repositories found on this GitHub account.
-        </p>
+      <div className="space-y-4">
+        <GithubConnectionCard />
+        <div className="rounded-lg border p-6 text-center">
+          <p className="text-muted-foreground text-sm">
+            No repositories found. Grant Sentinel access to repos on GitHub to see
+            them here.
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      {userRepos && userRepos.length > 0 && <CodeSearch repos={userRepos} />}
-      <RepoList repos={repos} selected={selected} onToggle={handleToggle} indexed={indexedIds} />
+      <RepoList repos={repos} selected={selected} onToggle={handleToggle} />
       <div className="flex items-center justify-between border-t pt-4">
-        <p className="text-muted-foreground text-sm">
-          {selected.size} selected
-          {indexedIds.size > 0 ? ` · ${indexedIds.size} already indexed` : ""}
-        </p>
+        <p className="text-muted-foreground text-sm">{selected.size} selected</p>
         <Button
-          disabled={selectedPayload.length === 0 || startIndexing.isPending}
-          onClick={handleStart}
+          disabled={selectedPayload.length === 0 || setup.isPending}
+          onClick={handleConfigure}
         >
-          {startIndexing.isPending ? "Starting..." : "Start indexing"}
+          {setup.isPending ? "Configuring..." : "Configure"}
         </Button>
       </div>
-      {indexableCount === 0 && (
-        <p className="text-muted-foreground text-center text-sm">
-          All your repositories are already indexed.
-        </p>
-      )}
     </div>
   );
 }

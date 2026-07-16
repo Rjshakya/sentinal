@@ -145,6 +145,7 @@ class E2BSandbox(BaseSandbox):
                 "pip install tree-sitter-language-pack lancedb openai python-dotenv"
             )
         )
+
         template_build = await AsyncTemplate.build(
             template,
             template_name,
@@ -166,10 +167,10 @@ class E2BSandbox(BaseSandbox):
             status = build_status.status.value
 
             for log_entry in build_status.log_entries:
-                print(log_entry)
+                log.info("template build: %s", log_entry)
 
         # Wait for a short period before checking the status again
-        await asyncio.sleep(15)
+        await asyncio.sleep(25)
 
         if status == "error":
             raise Exception("Failed to build e2b template")
@@ -179,16 +180,23 @@ class E2BSandbox(BaseSandbox):
             api_key=settings.e2b_api_key,
             timeout=20 * 60,
             lifecycle=SandboxLifecycle(on_timeout="pause", auto_resume=True),
+            metadata={
+                "name": self.sandbox_name,
+                "repo_id": self.repo_id,
+                "user_id": self.user_id,
+            },
         )
+
         log.info("e2b sandbox created: id=%s", self._sandbox.sandbox_id)
 
-        model = await self.update_state(
+        model = SandboxModel(
             id=self.id,
             user_id=self.user_id,
             repo_id=self.repo_id,
             sandbox_name=self.sandbox_name,
             provider_id=self.provider_name,
             state=SandboxState.STARTED,
+            started_at=datetime.now(UTC),
         )
 
         if self._on_create_hook is not None:
@@ -199,23 +207,24 @@ class E2BSandbox(BaseSandbox):
 
     async def stop(self) -> SandboxModel:
         if self._sandbox is not None:
-            return await self.update_state(
+            await self._sandbox.pause()
+            model = SandboxModel(
                 id=self.id,
                 user_id=self.user_id,
                 repo_id=self.repo_id,
                 sandbox_name=self.sandbox_name,
                 provider_id=self.provider_name,
-                state=SandboxState.DELETED,
+                state=SandboxState.PAUSED,
             )
-        await self.sandbox.pause()
-        model = await self.update_state(
-            id=self.id,
-            user_id=self.user_id,
-            repo_id=self.repo_id,
-            sandbox_name=self.sandbox_name,
-            provider_id=self.provider_name,
-            state=SandboxState.PAUSED,
-        )
+        else:
+            model = SandboxModel(
+                id=self.id,
+                user_id=self.user_id,
+                repo_id=self.repo_id,
+                sandbox_name=self.sandbox_name,
+                provider_id=self.provider_name,
+                state=SandboxState.PAUSED,
+            )
         model.stopped_at = datetime.now(UTC)
         if self._on_pause_hook is not None:
             result = self._on_pause_hook(model)
@@ -225,7 +234,7 @@ class E2BSandbox(BaseSandbox):
 
     async def kill(self) -> SandboxModel:
         if self._sandbox is None:
-            return await self.update_state(
+            model = SandboxModel(
                 id="",
                 user_id=self.user_id,
                 repo_id=self.repo_id,
@@ -233,6 +242,11 @@ class E2BSandbox(BaseSandbox):
                 provider_id=self.provider_name,
                 state=SandboxState.DELETED,
             )
+            if self._on_kill_hook is not None:
+                result = self._on_kill_hook(model)
+                if inspect.isawaitable(result):
+                    await result
+            return model
         try:
             await self._sandbox.kill()
             log.info("e2b sandbox killed: id=%s", self._sandbox.sandbox_id)
@@ -242,7 +256,7 @@ class E2BSandbox(BaseSandbox):
                 self._sandbox.sandbox_id,
             )
 
-        model = await self.update_state(
+        model = SandboxModel(
             id=self.id,
             user_id=self.user_id,
             repo_id=self.repo_id,
