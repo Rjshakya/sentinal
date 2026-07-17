@@ -130,6 +130,38 @@ useful for local dev; migrations are still the source of truth).
 - `github.py` — `github_client_for(user_id)`: mints a GitHub access token
   via Pipes and returns a typed `githubkit.GitHub` client.
 
+`src/app/services/`:
+
+- `agent/` — the deep-agent graph and its subagents.
+  - `models.py` — Pydantic response schemas (`CodeCommentDraft`,
+    `ReviewResult`, `SetupResult`) emitted by the agents.
+  - `prompts.py` — system prompts for the orchestrator and its four
+    subagents: `summarizer` (PR summary, persisted as the review
+    summary text), `security` (P1_CRITICAL only), `correctness`
+    (P2_WARNING only), and `style` (P3_NITPICK only). Deliberately
+    long and rubric-driven so each specialist has tight vocabulary.
+  - `setup.py` — single-shot deep-agent that installs dependencies
+    in the E2B sandbox before the review pipeline runs. No
+    subagents; emits a `SetupResult`.
+  - `setup_pipeline.py` — Functional Core / Imperative Shell that
+    sequences installation-lookup, token-mint, `git clone`, and the
+    setup agent.
+  - `setup_errors.py` — typed error variants for the setup pipeline.
+- `review/` — the review pipeline (the production target of the
+  system).
+  - `pipeline.py` — orchestrator + agent factory. Composes the
+    single ``create_deep_agent`` graph and the four
+    ``SubAgent`` specialists via
+    ``assemble_review_subagents()``. ``run()`` sequences the I/O
+    (repo, sandbox, diff, PR upsert, agent invoke, persistence) and
+    returns a ``Result[ReviewRunResult, ReviewPipelineError]``.
+  - `webhook.py` — GitHub ``pull_request`` ``opened`` adapter for
+    the review pipeline. Owns the verified-payload → background-task
+    handoff.
+  - `types.py` — `ReviewRunResult` and the `DiffProvider` /
+    `ReviewAgentRunner` ports.
+  - `errors.py` — typed error variants for the review pipeline.
+
 `src/app/models/`:
 
 - `enums.py` — `PRStatus` (OPEN/CLOSED/MERGED), `AnalysisStatus`
@@ -271,6 +303,39 @@ the first 30 repos sorted by `updated_at` as typed `RepoOut` objects.
 returns `{accepted: N}`. The pipeline that follows (snapshot creation,
 code fetch, AI analysis, comment + summary writes, GitHub posting) is
 not yet wired in this codebase.
+
+**Review pipeline.** GitHub's `pull_request` `opened` (or
+`synchronize`) webhook is verified and handed to
+`app.services.review.webhook.handle_pull_request_opened`. That
+function resolves the local `Repo` row from the installation, then
+schedules a background `trigger_review` task. The task builds a
+`pipeline.Input` and calls `pipeline.run`, which:
+
+1. Looks up the `Repo` row and the active `Sandbox` row, then
+   connects to the E2B sandbox.
+2. Fetches the unified diff (`git diff base_sha...head_sha`).
+3. Upserts the `PullRequest` row.
+4. Builds the chat model and the review deep-agent graph. The graph
+   has one orchestrator (the root deep-agent) and four `SubAgent`
+   children registered in `assemble_review_subagents()`:
+   `summarizer`, `security`, `correctness`, `style`.
+5. Invokes the agent. The orchestrator's loop is: read the diff and
+   surrounding code → delegate to the `summarizer` first (its
+   markdown output becomes `ReviewResult.summary` verbatim) →
+   delegate to the three severity-bucketed specialists (in parallel
+   if appropriate) → collect + dedupe findings → pick the verdict
+   from the severities present (any P1 → `REQUEST_CHANGES`, else
+   any P2/P3 → `COMMENT`, else `APPROVE`).
+6. Persists one `ReviewSummary` row (the summarizer's text + the
+   verdict) and one `CodeComment` row per specialist finding.
+7. Stops the sandbox (always, in a `finally`).
+
+The summary that lands in `review_summaries.summary` is the
+`summarizer` subagent's bullet output, not a paragraph written by
+the orchestrator. Every bullet in the summary is grounded in a
+`file:line` reference; the summarizer's prompt includes a
+self-critique pass that drops any ungrounded bullet before
+returning.
 
 ### 3.5 Migrations
 
@@ -477,6 +542,10 @@ values are set; the `/auth` router returns a 503 if it isn't.
 - Database schema → `packages/api/alembic/versions/0001_init.py`
 - ORM models → `packages/api/src/app/models/`
 - API routers → `packages/api/src/app/routers/`
+- AI agent prompts (orchestrator + 4 subagents) → `packages/api/src/app/services/agent/prompts.py`
+- AI agent response schemas → `packages/api/src/app/services/agent/models.py`
+- Review pipeline (orchestrator + subagent factory + persistence) → `packages/api/src/app/services/review/pipeline.py`
+- Setup agent (single-shot deep-agent) → `packages/api/src/app/services/agent/setup.py`
 - WorkOS + GitHub plumbing → `packages/api/src/app/core/{workos,github,auth,middleware}.py`
 - App wiring (middleware order, router registration) → `packages/api/src/app/main.py`
 - Env loading → `packages/api/src/app/core/config.py`

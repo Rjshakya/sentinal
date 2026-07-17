@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Literal, TypeAlias
 
 from deepagents import create_deep_agent
 from e2b import AsyncSandbox
 from langchain_e2b import AsyncE2BSandbox
+from langgraph.graph.state import CompiledStateGraph
 from sqlmodel import or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -36,16 +38,12 @@ from app.models.enums import SandboxState
 from app.models.sandbox import Sandbox as SandboxTable
 from app.services.agent.models import SetupResult
 from app.services.agent.prompts import SETUP_AGENT_SYSTEM_PROMPT
-from app.services.agent.review import (
-    CompiledDeepAgent,
-    LLMProviderStr,
-    build_chat_model,
-)
 from app.services.agent.setup_errors import (
     SetupAgentCrashed,
     SetupAgentReturnedNoStructuredResponse,
 )
-from app.services.sandbox_scripts.utils import repo_path, workspace_path
+from app.services.review.pipeline import build_chat_model
+from app.utils.util import repo_path
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +56,14 @@ log = logging.getLogger(__name__)
 # isolated feature; we are not adding new env-driven settings to
 # :class:`Settings` for it. If we later need to tune these at deploy
 # time, this is the single file to edit.
+
+
+LLMProviderStr: TypeAlias = Literal["openai", "anthropic", "google"]
+"""Allowed values for :attr:`Input.provider`. Validated at chat-model
+construction time by :func:`build_chat_model`."""
+
+
+CompiledDeepAgent: TypeAlias = CompiledStateGraph
 
 
 SETUP_AGENT_MAX_STEPS: int = 30

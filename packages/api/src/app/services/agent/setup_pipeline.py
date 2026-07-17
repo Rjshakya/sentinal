@@ -42,7 +42,6 @@ from app.services.agent.setup import (
     LLMProviderStr,
     run_setup,
 )
-from app.services.sandbox_scripts.utils import workspace_path
 from app.services.agent.setup_errors import (
     GitCloneFailed,
     InstallationNotFound,
@@ -51,6 +50,7 @@ from app.services.agent.setup_errors import (
     SetupAgentReturnedNoStructuredResponse,
     SetupPipelineError,
 )
+from app.utils.util import workspace_path
 
 log = logging.getLogger(__name__)
 
