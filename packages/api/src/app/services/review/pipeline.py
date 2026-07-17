@@ -214,6 +214,7 @@ def assemble_review_subagents() -> list[SubAgent]:
                 "security-class bug."
             ),
             system_prompt=SECURITY_SYSTEM_PROMPT,
+            response_format=list[CodeCommentDraft],
         ),
         SubAgent(
             name="correctness",
@@ -223,6 +224,7 @@ def assemble_review_subagents() -> list[SubAgent]:
                 "race conditions, API misuse, and similar logic bugs."
             ),
             system_prompt=CORRECTNESS_SYSTEM_PROMPT,
+            response_format=list[CodeCommentDraft],
         ),
         SubAgent(
             name="style",
@@ -232,6 +234,7 @@ def assemble_review_subagents() -> list[SubAgent]:
                 "stale comments, and other lintable cleanups."
             ),
             system_prompt=STYLE_SYSTEM_PROMPT,
+            response_format=list[CodeCommentDraft],
         ),
     ]
 
@@ -779,6 +782,7 @@ async def run(input: Input) -> Result[ReviewRunResult, ReviewPipelineError]:
 
         if isinstance(repo_result, Err):
             return Err(repo_result.error)
+
         repo: RepoModel = repo_result.value
 
         # 2. sandbox
@@ -791,6 +795,7 @@ async def run(input: Input) -> Result[ReviewRunResult, ReviewPipelineError]:
 
         if isinstance(sandbox_result, Err):
             return Err(sandbox_result.error)
+
         sandbox = sandbox_result.value
 
         # 3. diff
@@ -865,6 +870,7 @@ async def run(input: Input) -> Result[ReviewRunResult, ReviewPipelineError]:
             )
             return Err(ReviewAgentCrashed(cause=f"{type(exc).__name__}: {exc}"))
 
+        log.info(f"raw review result : {raw}  ")
         parsed = parse_review_response(raw)
         if isinstance(parsed, Err):
             return Err(parsed.error)

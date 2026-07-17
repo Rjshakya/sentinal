@@ -388,8 +388,6 @@ async def github_webhook(
         action = payload.get("action")
         # summary = _summarize_pull_request(payload)
 
-        log.info(f"[pr_payload]:{payload}\n")
-
         if action == "opened" or action == "synchronize":
             ack = await review_webhook.handle_pull_request_opened(
                 payload, delivery, background_tasks=background_tasks

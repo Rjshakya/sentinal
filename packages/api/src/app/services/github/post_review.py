@@ -16,17 +16,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from githubkit import GitHub
-from githubkit_schemas.v2026_03_10.models import (
-    PullsCreateReviewResponse201,
-    PullsCreateReviewRequestBody,
-    PullsCreateReviewRequestBodyCommentsItems,
+from githubkit_schemas.v2026_03_10.models import PullRequestReview, ReviewComment
+from githubkit_schemas.v2026_03_10.types import (
+    ReposOwnerRepoPullsPullNumberReviewsPostBodyPropCommentsItemsType,
+    ReposOwnerRepoPullsPullNumberReviewsPostBodyType,
 )
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.result import Err, Ok, Result
 from app.models.code_comment import CodeComment
 from app.models.review_summary import ReviewSummary
-from app.services.agent.models import CodeCommentDraft, ReviewResult
+from app.services.agent.models import CodeCommentDraft, ReviewResult, ReviewVerdictStr
 
 if TYPE_CHECKING:
     pass
@@ -97,7 +97,7 @@ GitHubPosterError = (
 # --------------------------------------------------------------------------- #
 
 
-def convert_to_github_event(verdict: str) -> str:
+def convert_to_github_event(verdict: ReviewVerdictStr) -> ReviewVerdictStr:
     """Convert ReviewResult verdict to GitHub API event string.
 
     Maps:
@@ -110,7 +110,7 @@ def convert_to_github_event(verdict: str) -> str:
 
 def convert_to_github_comments(
     comments: list[CodeCommentDraft],
-) -> list[PullsCreateReviewRequestBodyCommentsItems]:
+) -> list[ReposOwnerRepoPullsPullNumberReviewsPostBodyPropCommentsItemsType]:
     """Convert CodeCommentDraft list to GitHub API comment items.
 
     Maps:
@@ -119,28 +119,32 @@ def convert_to_github_comments(
     - from_line → line (GitHub uses single line, we use from_line)
     - side → side (RIGHT/LEFT already match)
     """
-    github_comments: list[PullsCreateReviewRequestBodyCommentsItems] = []
+    github_comments: list[
+        ReposOwnerRepoPullsPullNumberReviewsPostBodyPropCommentsItemsType
+    ] = []
     for draft in comments:
         github_comments.append(
-            PullsCreateReviewRequestBodyCommentsItems(
-                path=draft.file_name,
-                line=draft.from_line,
-                side=draft.side,
-                body=draft.comment,
-            )
+            {
+                "path": draft.file_name,
+                "line": draft.from_line,
+                "side": draft.side,
+                "body": draft.comment,
+            }
         )
     return github_comments
 
 
 def build_github_review_body(
     result: ReviewResult,
-) -> PullsCreateReviewRequestBody:
+    commit_id: str,
+) -> ReposOwnerRepoPullsPullNumberReviewsPostBodyType:
     """Build GitHub review request body from ReviewResult."""
-    return PullsCreateReviewRequestBody(
-        event=convert_to_github_event(result.verdict),
-        body=result.summary,
-        comments=convert_to_github_comments(result.comments),
-    )
+    return {
+        "commit_id": commit_id,
+        "event": convert_to_github_event(result.verdict),
+        "body": result.summary,
+        "comments": convert_to_github_comments(result.comments),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -156,7 +160,7 @@ async def post_review_to_github(
     pr_number: int,
     commit_id: str,
     result: ReviewResult,
-) -> Result[PullsCreateReviewResponse201, GitHubPosterError]:
+) -> Result[PullRequestReview, GitHubPosterError]:
     """Post a review to GitHub using the REST API.
 
     Args:
@@ -171,15 +175,14 @@ async def post_review_to_github(
         Ok with GitHub API response on success
         Err with specific error variant on failure
     """
-    review_body = build_github_review_body(result)
+    review_body = build_github_review_body(result, commit_id)
 
     try:
         response = await github_client.rest.pulls.async_create_review(
             owner=owner,
             repo=repo,
             pull_number=pr_number,
-            commit_id=commit_id,
-            body=review_body,
+            data=review_body,
         )
 
         parsed = response.parsed_data
@@ -210,7 +213,9 @@ async def post_review_to_github(
         if "401" in error_msg or "403" in error_msg or "auth" in error_msg:
             return Err(
                 GitHubAuthFailed(
-                    installation_id=github_client.auth.installation_id if hasattr(github_client.auth, 'installation_id') else 0,
+                    installation_id=github_client.auth.installation_id
+                    if hasattr(github_client.auth, "installation_id")
+                    else 0,
                     cause=error_cause,
                 )
             )
@@ -225,7 +230,9 @@ async def post_review_to_github(
         elif "rate limit" in error_msg or "403" in error_msg:
             return Err(
                 GitHubRateLimited(
-                    installation_id=github_client.auth.installation_id if hasattr(github_client.auth, 'installation_id') else 0,
+                    installation_id=github_client.auth.installation_id
+                    if hasattr(github_client.auth, "installation_id")
+                    else 0,
                     cause=error_cause,
                 )
             )
@@ -266,19 +273,17 @@ async def update_github_comment_ids(
     session: AsyncSession,
     *,
     code_comments: list[CodeComment],
-    github_response: PullsCreateReviewResponse201,
+    github_comments: list[ReviewComment],
 ) -> list[CodeComment]:
     """Update CodeComment rows with returned GitHub comment IDs.
 
-    GitHub returns comment IDs in the same order as they were sent.
+    GitHub returns review comments in the same order as they were sent.
     We map them back to our CodeComment rows by index.
     """
-    github_comments = github_response.comments or []
-    
     for i, code_comment in enumerate(code_comments):
         if i < len(github_comments):
             github_comment = github_comments[i]
-            if github_comment and hasattr(github_comment, 'id'):
+            if github_comment and hasattr(github_comment, "id"):
                 code_comment.github_comment_id = str(github_comment.id)
                 session.add(code_comment)
                 log.debug(
@@ -286,7 +291,7 @@ async def update_github_comment_ids(
                     code_comment.id,
                     github_comment.id,
                 )
-    
+
     log.info(
         "Updated %d code comments with GitHub comment IDs",
         len([c for c in code_comments if c.github_comment_id]),
@@ -310,7 +315,7 @@ async def post_review_and_update_db(
     result: ReviewResult,
     review_summary: ReviewSummary,
     code_comments: list[CodeComment],
-) -> Result[PullsCreateReviewResponse201, GitHubPosterError]:
+) -> Result[PullRequestReview, GitHubPosterError]:
     """Orchestrate GitHub review posting and database updates.
 
     Sequence:
@@ -347,11 +352,29 @@ async def post_review_and_update_db(
 
     # 3. Update code comments
     if code_comments:
-        await update_github_comment_ids(
-            session,
-            code_comments=code_comments,
-            github_response=github_response,
-        )
+        try:
+            comments_response = (
+                await github_client.rest.pulls.async_list_comments_for_review(
+                    owner=owner,
+                    repo=repo,
+                    pull_number=pr_number,
+                    review_id=github_response.id,
+                )
+            )
+            await update_github_comment_ids(
+                session,
+                code_comments=code_comments,
+                github_comments=comments_response.parsed_data or [],
+            )
+        except Exception as exc:
+            return Err(
+                GitHubReviewPostFailed(
+                    owner=owner,
+                    repo=repo,
+                    pr_number=pr_number,
+                    cause=f"Failed to fetch review comments: {type(exc).__name__}: {exc}",
+                )
+            )
 
     # 4. Commit database changes
     await session.commit()

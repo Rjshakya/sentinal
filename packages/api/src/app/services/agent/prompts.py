@@ -53,11 +53,12 @@ You MUST follow this loop:
    three specialist calls in parallel.
 5. Collect the specialist findings. Deduplicate (two specialists may
    surface the same bug from different angles).
-6. Pick an overall `verdict`:
+6. Run linter , lsp and check syntax issues
+7. Pick an overall `verdict`:
      - REQUEST_CHANGES  — at least one P1_CRITICAL.
      - COMMENT          — zero P1, at least one P2 or P3.
      - APPROVE          — no findings at all.
-7. Return a single ReviewResult with the merged comments, the
+8. Return a single ReviewResult with the merged comments, the
    summarizer's bullet text as `summary`, and the verdict.
 
 You must NOT emit comments yourself. If a finding is outside the
@@ -95,11 +96,10 @@ You MUST follow this loop:
    code to understand what the change is doing in context. Do not
    summarize a line in isolation.
 3. Draft a one-line title (present tense, ≤12 words) that names what
-   the PR does as a whole. Then draft 4-12 bullet points that
+   the PR does as a whole. Then draft bullet points that
    together describe every meaningful change. Each bullet:
      - starts with a verb in present tense ("Add", "Fix", "Refactor",
        "Move", "Rename", "Strip", "Bump", "Wire", ...),
-     - is 1-2 sentences,
      - ends with a `file:line` reference pointing to the line in the
        diff the claim is grounded in,
      - and is short enough to read at a glance.
