@@ -47,6 +47,24 @@ class CodeCommentDraft(BaseModel):
     )
 
 
+class SecurityComments(BaseModel):
+    List: list[CodeCommentDraft] = Field(
+        description="List of CodeCommentDraft , This Output is Expected From Security Agent"
+    )
+
+
+class CorrectnessComments(BaseModel):
+    List: list[CodeCommentDraft] = Field(
+        description="List of CodeCommentDraft , This Output is Expected From Correctness Agent"
+    )
+
+
+class StyleComments(BaseModel):
+    List: list[CodeCommentDraft] = Field(
+        description="List of CodeCommentDraft , This Output is Expected From Style Agent"
+    )
+
+
 class ReviewResult(BaseModel):
     """The full review payload the agent must return."""
 

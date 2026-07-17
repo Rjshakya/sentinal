@@ -56,7 +56,13 @@ from app.models.repo import Repo as RepoModel
 from app.models.review_summary import ReviewSummary
 from app.models.sandbox import Sandbox as SandboxModel
 from app.repositories import Repository
-from app.services.agent.models import CodeCommentDraft, ReviewResult
+from app.services.agent.models import (
+    CodeCommentDraft,
+    CorrectnessComments,
+    ReviewResult,
+    SecurityComments,
+    StyleComments,
+)
 from app.services.agent.prompts import (
     CORRECTNESS_SYSTEM_PROMPT,
     PR_SUMMARY_SYSTEM_PROMPT,
@@ -214,7 +220,7 @@ def assemble_review_subagents() -> list[SubAgent]:
                 "security-class bug."
             ),
             system_prompt=SECURITY_SYSTEM_PROMPT,
-            response_format=list[CodeCommentDraft],
+            response_format=SecurityComments,
         ),
         SubAgent(
             name="correctness",
@@ -224,7 +230,7 @@ def assemble_review_subagents() -> list[SubAgent]:
                 "race conditions, API misuse, and similar logic bugs."
             ),
             system_prompt=CORRECTNESS_SYSTEM_PROMPT,
-            response_format=list[CodeCommentDraft],
+            response_format=CorrectnessComments,
         ),
         SubAgent(
             name="style",
@@ -234,7 +240,7 @@ def assemble_review_subagents() -> list[SubAgent]:
                 "stale comments, and other lintable cleanups."
             ),
             system_prompt=STYLE_SYSTEM_PROMPT,
-            response_format=list[CodeCommentDraft],
+            response_format=StyleComments,
         ),
     ]
 
