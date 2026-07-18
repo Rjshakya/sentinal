@@ -44,6 +44,7 @@ from app.core.sandbox.e2b import E2BSandboxSpec
 from app.models.enums import PRStatus
 from app.models.installation import Installation
 from app.models.repo import Repo
+from app.services.github.post_review import GitHubPosterError
 from app.services.review import pipeline
 from app.services.review.pipeline import LLMProviderStr, flatten_review_error_to_message
 
@@ -360,6 +361,11 @@ async def trigger_review(
         return
 
     if isinstance(result, Err):
+        # GitHub poster errors are already logged as structured JSON by
+        # app.services.github.post_review. Avoid duplicate lines here.
+        if isinstance(result.error, GitHubPosterError):
+            return
+
         log.warning(
             "review.webhook: trigger_review failed: gh_repo_id=%s "
             "pr_number=%s cause=%s",

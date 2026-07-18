@@ -129,6 +129,8 @@ useful for local dev; migrations are still the source of truth).
     `/pipes` and `/github` routers.
 - `github.py` — `github_client_for(user_id)`: mints a GitHub access token
   via Pipes and returns a typed `githubkit.GitHub` client.
+- `logging.py` — `JsonFormatter` and `structured_log(...)`. The root
+  logger is configured to emit JSON in `packages/api/main.py`.
 
 `src/app/services/`:
 
@@ -346,6 +348,32 @@ SQLModel for type-safe queries, and `alembic/env.py` imports all
 models to keep `target_metadata` in sync. New schema changes go
 through Alembic; the lifespan's `create_all` is a convenience for
 greenfield dev, not a substitute.
+
+### 3.6 Structured logging
+
+The API emits all logs as JSON. `packages/api/main.py` calls
+`configure_structured_logging()` after `logging.basicConfig(...)` to
+replace the root formatter with `app.core.logging.JsonFormatter`.
+
+Failures in the GitHub review-post path are logged via
+`app.core.logging.structured_log(level, msg, object)`:
+
+- `github_review_post_failed` — emitted by
+  `app.services.github.post_review.post_review_to_github` when the
+  review POST fails. Includes `owner`, `repo`, `pr_number`,
+  `commit_id`, `installation_id`, `error_type`, `status_code`,
+  `error_message`, `response_body`, and `request_body`.
+- `github_review_comments_fetch_failed` — emitted when fetching the
+  comments for a posted review fails. Includes the review ID and the
+  GitHub response body.
+- `github_review_post_exception` — emitted by
+  `app.services.review.pipeline.run` when an unexpected exception
+  escapes during the GitHub posting step. Includes the PR identifiers,
+  verdict, and comment count.
+
+`app.services.review.webhook` skips duplicate warning lines for
+`GitHubPosterError` variants because the structured log is already
+emitted at the source.
 
 ## 4. Frontend — `web`
 

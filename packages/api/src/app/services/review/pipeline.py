@@ -41,6 +41,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.github_app import installation_client
+from app.core.logging import structured_log
 from app.core.result import Err, Ok, Result
 from app.core.sandbox import BaseSandbox
 from app.core.sandbox.e2b import E2BSandbox, E2BSandboxSpec
@@ -873,12 +874,21 @@ async def run(input: Input) -> Result[ReviewRunResult, ReviewPipelineError]:
                     input.pr_number,
                 )
             except Exception as exc:
-                log.exception(
-                    "GitHub posting failed: owner=%s repo=%s pr_number=%s exc=%s",
-                    repo.repo_owner,
-                    repo.repo_name,
-                    input.pr_number,
-                    exc,
+                structured_log(
+                    "ERROR",
+                    "github_review_post_exception",
+                    {
+                        "owner": repo.repo_owner,
+                        "repo": repo.repo_name,
+                        "pr_number": input.pr_number,
+                        "commit_id": commit_id,
+                        "installation_id": input.github_installation_id,
+                        "error_type": "crash",
+                        "error_message": f"{type(exc).__name__}: {exc}",
+                        "verdict": review.verdict,
+                        "comment_count": len(code_comment_rows),
+                    },
+                    exc_info=True,
                 )
                 # Don't fail the entire pipeline if GitHub posting fails
                 # The review is persisted locally, can be retried later

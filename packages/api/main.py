@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.db import create_db_and_tables
+from app.core.logging import configure_structured_logging
 from app.core.middleware import AuthMiddleware
 from app.routers import ai, auth, github, health, users, webhooks
 
@@ -15,6 +16,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
+
+configure_structured_logging()
 
 
 @asynccontextmanager

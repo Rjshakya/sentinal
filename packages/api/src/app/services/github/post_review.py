@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from githubkit import GitHub
+from githubkit.exception import RequestFailed
 from githubkit_schemas.v2026_03_10.models import PullRequestReview, ReviewComment
 from githubkit_schemas.v2026_03_10.types import (
     ReposOwnerRepoPullsPullNumberReviewsPostBodyPropCommentsItemsType,
@@ -23,6 +24,7 @@ from githubkit_schemas.v2026_03_10.types import (
 )
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.logging import structured_log
 from app.core.result import Err, Ok, Result
 from app.models.code_comment import CodeComment
 from app.models.review_summary import ReviewSummary
@@ -209,42 +211,65 @@ async def post_review_to_github(
         error_cause = f"{type(exc).__name__}: {exc}"
         error_msg = str(exc).lower()
 
+        status_code: int | None = None
+        response_body: str | None = None
+        if isinstance(exc, RequestFailed):
+            status_code = exc.response.status_code
+            response_body = exc.response.text
+
+        installation_id: int | None = (
+            github_client.auth.installation_id
+            if hasattr(github_client.auth, "installation_id")
+            else None
+        )
+
         # Classify error types
         if "401" in error_msg or "403" in error_msg or "auth" in error_msg:
-            return Err(
-                GitHubAuthFailed(
-                    installation_id=github_client.auth.installation_id
-                    if hasattr(github_client.auth, "installation_id")
-                    else 0,
-                    cause=error_cause,
-                )
+            error_type = "auth"
+            err_result: GitHubPosterError = GitHubAuthFailed(
+                installation_id=installation_id or 0,
+                cause=error_cause,
             )
         elif "404" in error_msg:
-            return Err(
-                GitHubPRNotFound(
-                    owner=owner,
-                    repo=repo,
-                    pr_number=pr_number,
-                )
+            error_type = "not_found"
+            err_result = GitHubPRNotFound(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
             )
         elif "rate limit" in error_msg or "403" in error_msg:
-            return Err(
-                GitHubRateLimited(
-                    installation_id=github_client.auth.installation_id
-                    if hasattr(github_client.auth, "installation_id")
-                    else 0,
-                    cause=error_cause,
-                )
+            error_type = "rate_limited"
+            err_result = GitHubRateLimited(
+                installation_id=installation_id or 0,
+                cause=error_cause,
             )
         else:
-            return Err(
-                GitHubReviewPostFailed(
-                    owner=owner,
-                    repo=repo,
-                    pr_number=pr_number,
-                    cause=error_cause,
-                )
+            error_type = "post_failed"
+            err_result = GitHubReviewPostFailed(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                cause=error_cause,
             )
+
+        structured_log(
+            "ERROR",
+            "github_review_post_failed",
+            {
+                "owner": owner,
+                "repo": repo,
+                "pr_number": pr_number,
+                "commit_id": commit_id,
+                "installation_id": installation_id,
+                "error_type": error_type,
+                "status_code": status_code,
+                "error_message": error_cause,
+                "response_body": response_body,
+                "request_body": review_body,
+            },
+        )
+
+        return Err(err_result)
 
 
 # --------------------------------------------------------------------------- #
@@ -367,12 +392,42 @@ async def post_review_and_update_db(
                 github_comments=comments_response.parsed_data or [],
             )
         except Exception as exc:
+            error_cause = f"Failed to fetch review comments: {type(exc).__name__}: {exc}"
+
+            status_code: int | None = None
+            response_body: str | None = None
+            if isinstance(exc, RequestFailed):
+                status_code = exc.response.status_code
+                response_body = exc.response.text
+
+            installation_id: int | None = (
+                github_client.auth.installation_id
+                if hasattr(github_client.auth, "installation_id")
+                else None
+            )
+
+            structured_log(
+                "ERROR",
+                "github_review_comments_fetch_failed",
+                {
+                    "owner": owner,
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "review_id": github_response.id,
+                    "installation_id": installation_id,
+                    "error_type": "comment_fetch",
+                    "status_code": status_code,
+                    "error_message": error_cause,
+                    "response_body": response_body,
+                },
+            )
+
             return Err(
                 GitHubReviewPostFailed(
                     owner=owner,
                     repo=repo,
                     pr_number=pr_number,
-                    cause=f"Failed to fetch review comments: {type(exc).__name__}: {exc}",
+                    cause=error_cause,
                 )
             )
 
