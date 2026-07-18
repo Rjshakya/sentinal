@@ -9,7 +9,7 @@ Layout:
   ``try / except`` catches anything that escapes the typed pipeline
   and folds it into ``Err(ReviewAgentCrashed)``.
 - **Ring 3 (shell / I/O)** — :func:`get_repo_record`, :func:`get_sandbox`,
-  :func:`get_diff`, :func:`_upsert_pull_request`, :func:`_persist_review_summary`,
+  :func:`fetch_diff`, :func:`_upsert_pull_request`, :func:`_persist_review_summary`,
   :func:`_persist_code_comments`. Each is the single boundary into an
   external system (DB, E2B, LLM SDK) and is the only place that catches
   the underlying SDK's exceptions.
@@ -31,6 +31,7 @@ from typing import Literal, TypeAlias
 from deepagents import SubAgent, create_deep_agent
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.tools import BaseTool
 from langchain_e2b import AsyncE2BSandbox
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
@@ -78,6 +79,7 @@ from app.services.github.post_review import (
     GitHubReviewPostFailed,
     post_review_and_update_db,
 )
+from app.services.review.diff import fetch_diff
 from app.services.review.errors import (
     DiffUnavailable,
     NoActiveSandbox,
@@ -87,6 +89,7 @@ from app.services.review.errors import (
     ReviewPipelineError,
     SandboxConnectFailed,
 )
+from app.services.review.tools import make_get_diff_tool
 from app.services.review.types import ReviewRunResult
 from app.utils.util import repo_path, uuidToStr
 
@@ -145,7 +148,8 @@ class Input:
 
 
 DiffProviderFn: TypeAlias = Callable[..., Awaitable[Result[str, DiffUnavailable]]]
-"""Type alias for the diff-source port. Concrete implementations are
+"""Type alias for the diff-source port. The success string is the
+sandbox path where the diff was saved. Concrete implementations are
 plain functions or closures; no class is required."""
 
 
@@ -180,7 +184,9 @@ def assemble_orchestrator_system_prompt() -> str:
     return REVIEW_ORCHESTRATOR_SYSTEM_PROMPT
 
 
-def assemble_review_subagents() -> list[SubAgent]:
+def assemble_review_subagents(
+    *, sandbox: BaseSandbox, pr_number: int, head_sha: str
+) -> list[SubAgent]:
     """Return the four specialist subagents the orchestrator delegates to.
 
     Each subagent gets a unique ``name`` (used as the dispatch key in
@@ -198,6 +204,13 @@ def assemble_review_subagents() -> list[SubAgent]:
     as the PR's review summary). The other three are the existing
     severity-bucketed reviewers and only emit findings, not prose.
     """
+
+    get_diff_tool = make_get_diff_tool(
+        sandbox=sandbox,
+        pr_number=pr_number,
+        head_sha=head_sha,
+    )
+
     return [
         SubAgent(
             name="summarizer",
@@ -210,6 +223,7 @@ def assemble_review_subagents() -> list[SubAgent]:
                 "emit findings, bugs, or verdicts."
             ),
             system_prompt=PR_SUMMARY_SYSTEM_PROMPT,
+            tools=[get_diff_tool],
         ),
         SubAgent(
             name="security",
@@ -221,6 +235,7 @@ def assemble_review_subagents() -> list[SubAgent]:
             ),
             system_prompt=SECURITY_SYSTEM_PROMPT,
             response_format=SecurityComments,
+            tools=[get_diff_tool],
         ),
         SubAgent(
             name="correctness",
@@ -231,6 +246,7 @@ def assemble_review_subagents() -> list[SubAgent]:
             ),
             system_prompt=CORRECTNESS_SYSTEM_PROMPT,
             response_format=CorrectnessComments,
+            tools=[get_diff_tool],
         ),
         SubAgent(
             name="style",
@@ -241,6 +257,7 @@ def assemble_review_subagents() -> list[SubAgent]:
             ),
             system_prompt=STYLE_SYSTEM_PROMPT,
             response_format=StyleComments,
+            tools=[get_diff_tool],
         ),
     ]
 
@@ -251,22 +268,18 @@ def assemble_user_prompt(
     repo_id: str,
     user_id: str,
     pr_number: int,
-    diff: str,
 ) -> str:
     """Build the user message sent to the review deep-agent.
 
-    Pure formatting — no I/O, no LLM. Mirrors the structure of
-    :func:`app.services.agent.setup.assemble_setup_user_prompt` so
-    the setup and review agents have a consistent prompt shape.
+    Pure formatting — no I/O, no LLM. The diff is no longer inlined;
+    the agent calls the ``get_diff`` tool to read it from the sandbox.
     """
     return (
         f"Repo: {repo_name} (id={repo_id})\n"
         f"User: {user_id}\n"
         f"PR number: {pr_number}\n"
         f"\n"
-        f"--- DIFF ---\n"
-        f"{diff}\n"
-        f"--- END DIFF ---\n"
+        f"Call the `get_diff()` tool to read the PR diff before reviewing.\n"
     )
 
 
@@ -346,28 +359,6 @@ def flatten_review_error_to_message(error: ReviewPipelineError) -> str:
             return f"github pr not found: {owner}/{repo}#{pr_number}"
         case GitHubCommentPostFailed(file_name, line, cause):
             return f"github comment post failed for {file_name}:{line}: {cause}"
-
-
-def truncate_command_output(raw: str, *, max_chars: int = 500) -> str:
-    """Trim a command's stderr/stdout tail for inclusion in an error."""
-    cleaned = (raw or "").strip()
-    return cleaned[:max_chars]
-
-
-def classify_diff_exit_code(
-    *, exit_code: int, output_tail: str
-) -> Result[None, DiffUnavailable]:
-    """Map a ``git diff`` exit code to ``Result[None, DiffUnavailable]``."""
-    if exit_code == 0:
-        return Ok(None)
-    return Err(
-        DiffUnavailable(
-            repo_id="",
-            base_sha="",
-            head_sha="",
-            cause=f"git diff exited {exit_code}: {output_tail}",
-        )
-    )
 
 
 def build_chat_model(
@@ -521,58 +512,6 @@ async def get_sandbox(
     return Ok(connected)
 
 
-async def get_diff(
-    *,
-    sandbox: BaseSandbox,
-    repo_id: str,
-    repo_path_str: str,
-    pr_number: int,
-    base_sha: str,
-    head_sha: str,
-) -> Result[str, DiffUnavailable]:
-    """Fetch the unified diff for a PR inside the already-cloned sandbox.
-
-    Best-effort ``git fetch origin`` (a failure is logged at ``warning``
-    and we proceed) followed by ``git diff <base>...<head>``. Returns
-    ``Err(DiffUnavailable)`` with the truncated stderr when ``git
-    diff`` exits non-zero.
-    """
-    fetch = await sandbox.execute(
-        "git fetch origin",
-        cwd=repo_path_str,
-        timeout=120,
-    )
-    if fetch.exit_code != 0:
-        log.warning(
-            "git fetch origin failed (continuing): pr_number=%s exit_code=%s stderr=%s",
-            pr_number,
-            fetch.exit_code,
-            fetch.stderr,
-        )
-
-    diff_result = await sandbox.execute(
-        f"git diff {base_sha}...{head_sha}",
-        cwd=repo_path_str,
-        timeout=120,
-    )
-    classification = classify_diff_exit_code(
-        exit_code=diff_result.exit_code,
-        output_tail=truncate_command_output(
-            diff_result.stderr or diff_result.stdout or ""
-        ),
-    )
-    if isinstance(classification, Err):
-        return Err(
-            DiffUnavailable(
-                repo_id=repo_id,
-                base_sha=base_sha,
-                head_sha=head_sha,
-                cause=classification.error.cause,
-            )
-        )
-    return Ok(diff_result.stdout or "")
-
-
 # --------------------------------------------------------------------------- #
 # Ring 2 — agent factory                                                      #
 # --------------------------------------------------------------------------- #
@@ -584,6 +523,7 @@ def get_review_agent(
     subagents: Sequence[SubAgent],
     backend: AsyncE2BSandbox,
     model: BaseChatModel,
+    tools: Sequence[BaseTool | Callable[..., object]] = (),
 ) -> DeepAgentGraph:
     """Compose the review deep-agent graph.
 
@@ -603,6 +543,7 @@ def get_review_agent(
         subagents=list(subagents),
         backend=backend,
         response_format=ReviewResult,
+        tools=list(tools),
     )
 
 
@@ -805,7 +746,7 @@ async def run(input: Input) -> Result[ReviewRunResult, ReviewPipelineError]:
         sandbox = sandbox_result.value
 
         # 3. diff
-        diff_result = await get_diff(
+        diff_result = await fetch_diff(
             sandbox=sandbox,
             repo_id=repo.id,
             repo_path_str=get_repo_path(repo.repo_name),
@@ -816,7 +757,6 @@ async def run(input: Input) -> Result[ReviewRunResult, ReviewPipelineError]:
 
         if isinstance(diff_result, Err):
             return Err(diff_result.error)
-        diff: str = diff_result.value
 
         # 4. upsert pull request
         pr = await _upsert_pull_request(
@@ -842,12 +782,21 @@ async def run(input: Input) -> Result[ReviewRunResult, ReviewPipelineError]:
             api_key=input.llm_api_key,
             model=input.llm_model,
         )
+
         backend: AsyncE2BSandbox = AsyncE2BSandbox(sandbox=sandbox.sandbox)
+
+        get_diff_tool = make_get_diff_tool(sandbox, input.pr_number, input.head_sha)
+
         agent: DeepAgentGraph = get_review_agent(
             system_prompt=assemble_orchestrator_system_prompt(),
-            subagents=assemble_review_subagents(),
+            subagents=assemble_review_subagents(
+                sandbox=sandbox,
+                pr_number=input.pr_number,
+                head_sha=input.head_sha,
+            ),
             backend=backend,
             model=chat_model,
+            tools=[get_diff_tool],
         )
 
         # 6. invoke
@@ -856,7 +805,6 @@ async def run(input: Input) -> Result[ReviewRunResult, ReviewPipelineError]:
             repo_id=repo.id,
             user_id=input.user_id,
             pr_number=input.pr_number,
-            diff=diff,
         )
         log.info(
             "invoking review agent: repo=%s user=%s pr_number=%s",
@@ -974,9 +922,7 @@ __all__: list[str] = [
     "assemble_review_subagents",
     "assemble_user_prompt",
     "build_chat_model",
-    "classify_diff_exit_code",
     "flatten_review_error_to_message",
-    "get_diff",
     "get_repo_path",
     "get_repo_record",
     "get_review_agent",
@@ -984,5 +930,4 @@ __all__: list[str] = [
     "map_drafts_to_comment_rows",
     "parse_review_response",
     "run",
-    "truncate_command_output",
 ]

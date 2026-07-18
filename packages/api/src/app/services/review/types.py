@@ -36,12 +36,13 @@ class ReviewRunResult:
 class DiffProvider(Protocol):
     """Source of the unified diff the review agent reads."""
 
-    async def get_diff(
+    async def fetch_diff(
         self,
         sandbox: BaseSandbox,
         *,
         repo_id: str,
-        repo_name: str,
+        repo_path_str: str,
+        pr_number: int,
         base_sha: str,
         head_sha: str,
     ) -> Result[str, DiffUnavailable]: ...
@@ -53,7 +54,6 @@ class ReviewAgentRunner(Protocol):
     async def run(
         self,
         *,
-        diff: str,
         repo_id: str,
         repo_name: str,
         user_id: str,
