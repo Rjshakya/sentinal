@@ -149,19 +149,23 @@ useful for local dev; migrations are still the source of truth).
     sequences installation-lookup, token-mint, `git clone`, and the
     setup agent.
   - `setup_errors.py` — typed error variants for the setup pipeline.
-- `review/` — the review pipeline (the production target of the
-  system).
-  - `pipeline.py` — orchestrator + agent factory. Composes the
-    single ``create_deep_agent`` graph and the four
-    ``SubAgent`` specialists via
-    ``assemble_review_subagents()``. ``run()`` sequences the I/O
-    (repo, sandbox, diff, PR upsert, agent invoke, persistence) and
-    returns a ``Result[ReviewRunResult, ReviewPipelineError]``.
-  - `webhook.py` — GitHub ``pull_request`` ``opened`` adapter for
-    the review pipeline. Owns the verified-payload → background-task
-    handoff.
-  - `types.py` — `ReviewRunResult` and the `DiffProvider` /
-    `ReviewAgentRunner` ports.
+- `review/` — the durable review pipeline (the production target of
+  the system).
+  - `workflow.py` — DBOS durable workflows. `review_workflow`
+    sequences idempotent, checkpointed steps (repo lookup, sandbox
+    connect, diff fetch, PR upsert, agent invocation, persistence)
+    and returns a ``Result[ReviewRunResult, ReviewPipelineError]``.
+    `post_review_to_github_workflow` is a separate durable workflow
+    for posting the review to GitHub, so it can be retried
+    independently.
+  - `webhook.py` — GitHub ``pull_request`` ``opened`` / ``synchronize``
+    adapter. Owns the verified-payload → durable-workflow handoff and
+    computes the deterministic workflow id
+    (`review:{repo_id}:{pr}:{head_sha[:7]}`).
+  - `steps/` — discrete I/O steps used by the workflows:
+    `resolve_repo`, `resolve_sandbox`, `fetch_diff`, `upsert_pr`,
+    `invoke_agent`, `persist_summary`, `persist_comments`.
+  - `types.py` — `DeepAgentGraph` alias.
   - `errors.py` — typed error variants for the review pipeline.
 
 `src/app/models/`:
@@ -308,29 +312,42 @@ not yet wired in this codebase.
 
 **Review pipeline.** GitHub's `pull_request` `opened` (or
 `synchronize`) webhook is verified and handed to
-`app.services.review.webhook.handle_pull_request_opened`. That
-function resolves the local `Repo` row from the installation, then
-schedules a background `trigger_review` task. The task builds a
-`pipeline.Input` and calls `pipeline.run`, which:
+`app.services.review.webhook.handle_pull_request_opened`. The handler
+validates the payload, resolves the owning `user_id` and local
+`Repo.id`, then starts a durable DBOS workflow with id
+`review:{repo_id}:{pr_number}:{head_sha[:7]}`. The workflow id is
+used as an idempotency key, so duplicate webhook deliveries for the
+same head SHA do not run the agent twice. `review_workflow` runs the
+steps in order:
 
-1. Looks up the `Repo` row and the active `Sandbox` row, then
-   connects to the E2B sandbox.
-2. Fetches the unified diff (`git diff base_sha...head_sha`).
-3. Upserts the `PullRequest` row.
-4. Builds the chat model and the review deep-agent graph. The graph
+1. Looks up the `Repo` row (`@dbos_datasource.transaction`).
+2. Looks up the active `Sandbox` row and connects to the E2B sandbox
+   (`@DBOS.step`).
+3. Fetches the unified diff (`git diff base_sha...head_sha`).
+4. Upserts the `PullRequest` row (`@dbos_datasource.transaction`).
+5. Builds the chat model and the review deep-agent graph. The graph
    has one orchestrator (the root deep-agent) and four `SubAgent`
    children registered in `assemble_review_subagents()`:
    `summarizer`, `security`, `correctness`, `style`.
-5. Invokes the agent. The orchestrator's loop is: read the diff and
-   surrounding code → delegate to the `summarizer` first (its
-   markdown output becomes `ReviewResult.summary` verbatim) →
-   delegate to the three severity-bucketed specialists (in parallel
-   if appropriate) → collect + dedupe findings → pick the verdict
-   from the severities present (any P1 → `REQUEST_CHANGES`, else
-   any P2/P3 → `COMMENT`, else `APPROVE`).
-6. Persists one `ReviewSummary` row (the summarizer's text + the
-   verdict) and one `CodeComment` row per specialist finding.
-7. Stops the sandbox (always, in a `finally`).
+6. Invokes the agent (`@DBOS.step`). The orchestrator's loop is:
+   read the diff and surrounding code → delegate to the
+   `summarizer` first (its markdown output becomes
+   `ReviewResult.summary` verbatim) → delegate to the three
+   severity-bucketed specialists (in parallel if appropriate) →
+   collect + dedupe findings → pick the verdict from the severities
+   present (any P1 → `REQUEST_CHANGES`, else any P2/P3 → `COMMENT`,
+   else `APPROVE`).
+7. Persists one `ReviewSummary` row and one `CodeComment` row per
+   specialist finding (`@dbos_datasource.transaction`).
+8. Stops the sandbox (always, in a `finally`).
+
+If `post_to_github` is enabled, the workflow starts a separate
+`post_review_to_github_workflow` with id
+`post:{repo_id}:{pr_number}:{head_sha[:7]}`. This durable workflow
+retries transient GitHub errors (5xx / 429) and can be restarted
+independently via the DBOS admin server without re-running the LLM.
+The main review workflow completes regardless of whether the GitHub
+post succeeds.
 
 The summary that lands in `review_summaries.summary` is the
 `summarizer` subagent's bullet output, not a paragraph written by
@@ -366,10 +383,11 @@ Failures in the GitHub review-post path are logged via
 - `github_review_comments_fetch_failed` — emitted when fetching the
   comments for a posted review fails. Includes the review ID and the
   GitHub response body.
-- `github_review_post_exception` — emitted by
-  `app.services.review.pipeline.run` when an unexpected exception
-  escapes during the GitHub posting step. Includes the PR identifiers,
-  verdict, and comment count.
+- `github_review_post_exception` — no longer emitted; the GitHub
+  post step now lives in its own durable workflow
+  (`post_review_to_github_workflow`), and retryable errors are
+  retried by DBOS while non-retryable errors are recorded in the
+  workflow result.
 
 `app.services.review.webhook` skips duplicate warning lines for
 `GitHubPosterError` variants because the structured log is already

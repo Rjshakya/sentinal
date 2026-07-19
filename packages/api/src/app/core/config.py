@@ -1,3 +1,4 @@
+import socket
 from pathlib import Path
 
 from pydantic import Field
@@ -64,7 +65,7 @@ class Settings(BaseSettings):
 
     # --- E2B sandbox ---
     e2b_api_key: str = Field(
-        # default="",
+        default="",
         description="E2B API key.",
     )
     e2b_template: str = Field(
@@ -156,6 +157,13 @@ class Settings(BaseSettings):
             "Filesystem path to the GitHub App private key. When set, "
             "takes precedence over GITHUB_APP_PRIVATE_KEY."
         ),
+    )
+
+    # --- DBOS durable execution ---
+    dbos_executor_id: str = Field(
+        default=socket.gethostname(),
+        description="Unique executor ID for this DBOS process. Must be "
+        "unique per running API instance when self-hosting multiple workers.",
     )
 
     # --- GitHub webhook ---

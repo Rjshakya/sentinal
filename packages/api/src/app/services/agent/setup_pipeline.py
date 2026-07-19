@@ -32,16 +32,14 @@ import logging
 from typing import Protocol
 
 from app.core.github_app import mint_installation_token
+from app.core.llm import LLMProviderStr
 from app.core.result import Err, Ok, Result
 from app.core.sandbox import BaseSandbox, CommandResult
 from app.models.installation import Installation
 from app.repositories import Repository
 from app.schemas.setup import SetupRepo
 from app.services.agent.models import SetupResult
-from app.services.agent.setup import (
-    LLMProviderStr,
-    run_setup,
-)
+from app.services.agent.setup import run_setup
 from app.services.agent.setup_errors import (
     GitCloneFailed,
     InstallationNotFound,

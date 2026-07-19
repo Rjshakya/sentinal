@@ -23,6 +23,7 @@ dependencies = [
     "langchain-anthropic>=1.4",
     "langchain-google-genai>=4.2",
     "langchain-e2b>=0.0.5",
+    "dbos>=2.27.0",
 ]
 
 [build-system]
@@ -33,6 +34,4 @@ build-backend = "hatchling.build"
 packages = ["src/app"]
 
 [dependency-groups]
-dev = [
-    "cognee>=1.2.2",
-]
+dev = []

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Generic, Type, TypeVar, cast
 
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import SQLModel, delete, select, update
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 T = TypeVar("T", bound=SQLModel)
 C = TypeVar("C")
@@ -23,15 +24,15 @@ class Repository(Generic[T]):
         stmt = select(self._model)
         if limit is not None:
             stmt = stmt.limit(limit)
-        result = await self._session.exec(stmt)
-        return list(result.all())
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
 
     async def find_by_field(
         self, col: InstrumentedAttribute[C] | C, value: C
     ) -> T | None:
         stmt = select(self._model).where(cast(ColumnElement[bool], col == value))
-        result = await self._session.exec(stmt)
-        return result.first()
+        result = await self._session.execute(stmt)
+        return result.scalars().first()
 
     async def find_all_by_field(
         self,
@@ -43,8 +44,8 @@ class Repository(Generic[T]):
         stmt = select(self._model).where(cast(ColumnElement[bool], col == value))
         if limit is not None:
             stmt = stmt.limit(limit)
-        result = await self._session.exec(stmt)
-        return list(result.all())
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
 
     async def find_by_fields(self, **fields: Any) -> T | None:
         """Look up a single row matching every ``field=value`` keyword arg.
@@ -56,8 +57,8 @@ class Repository(Generic[T]):
         stmt = select(self._model)
         for attr, value in fields.items():
             stmt = stmt.where(getattr(self._model, attr) == value)
-        result = await self._session.exec(stmt)
-        return result.first()
+        result = await self._session.execute(stmt)
+        return result.scalars().first()
 
     async def add(self, obj: T) -> T:
         self._session.add(obj)
@@ -74,12 +75,12 @@ class Repository(Generic[T]):
             .where(cast(ColumnElement[bool], col == value))
             .values(**updates)
         )
-        await self._session.exec(stmt)
+        await self._session.execute(stmt)
         return await self.find_by_field(col, value)
 
     async def delete(self, col: InstrumentedAttribute[C] | C, value: C) -> bool:
         stmt = delete(self._model).where(cast(ColumnElement[bool], col == value))
-        result = await self._session.exec(stmt)
+        result = cast(CursorResult[Any], await self._session.execute(stmt))
         return (result.rowcount or 0) > 0
 
 

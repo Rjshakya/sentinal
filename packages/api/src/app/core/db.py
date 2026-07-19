@@ -1,3 +1,6 @@
+import asyncio
+
+from dbos import AsyncSQLAlchemyDatasource
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -11,6 +14,11 @@ async_session_maker = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
 )
+
+# DBOS datasource for durable, exactly-once transactions inside DBOS workflows.
+# Created at module import time so the @dbos_datasource.transaction() decorator
+# is available when workflow modules are imported.
+dbos_datasource = asyncio.run(AsyncSQLAlchemyDatasource.create(settings.database_url))
 
 
 async def get_session():

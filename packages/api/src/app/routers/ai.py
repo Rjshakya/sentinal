@@ -28,6 +28,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.db import async_session_maker
+from app.core.llm import LLMProviderStr
 from app.core.result import Err, Ok, Result
 from app.core.sandbox import BaseSandbox, build_default_spec, create_sandbox
 from app.core.sandbox.e2b import E2BSandboxSpec
@@ -42,7 +43,6 @@ from app.models.sandbox import Sandbox as SandboxModel
 from app.repositories import make_repo
 from app.schemas.setup import RepoSetupResult, SetupAck, SetupRepo, SetupRequest
 from app.services.agent.models import SetupResult
-from app.services.agent.setup import LLMProviderStr
 from app.services.agent.setup_errors import (
     SetupAgentCrashed,
     SetupPipelineError,

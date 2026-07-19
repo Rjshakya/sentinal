@@ -49,6 +49,7 @@ class GitHubReviewPostFailed:
     repo: str
     pr_number: int
     cause: str
+    status_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,7 @@ class GitHubAuthFailed:
 
     installation_id: int
     cause: str
+    status_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +67,7 @@ class GitHubRateLimited:
 
     installation_id: int
     cause: str
+    status_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +77,7 @@ class GitHubPRNotFound:
     owner: str
     repo: str
     pr_number: int
+    status_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +87,7 @@ class GitHubCommentPostFailed:
     file_name: str
     line: int
     cause: str
+    status_code: int | None = None
 
 
 GitHubPosterError = (
@@ -120,11 +125,16 @@ def convert_to_github_comments(
     - comment → body
     - from_line → line (GitHub uses single line, we use from_line)
     - side → side (RIGHT/LEFT already match)
+
+    Drops drafts with invalid line numbers (0 or negative) because GitHub
+    review comments require 1-based line numbers.
     """
     github_comments: list[
         ReposOwnerRepoPullsPullNumberReviewsPostBodyPropCommentsItemsType
     ] = []
     for draft in comments:
+        if draft.from_line < 1 or draft.to_line < 1:
+            continue
         github_comments.append(
             {
                 "path": draft.file_name,
@@ -195,6 +205,7 @@ async def post_review_to_github(
                     repo=repo,
                     pr_number=pr_number,
                     cause="GitHub returned empty response",
+                    status_code=None,
                 )
             )
 
@@ -229,6 +240,7 @@ async def post_review_to_github(
             err_result: GitHubPosterError = GitHubAuthFailed(
                 installation_id=installation_id or 0,
                 cause=error_cause,
+                status_code=status_code,
             )
         elif "404" in error_msg:
             error_type = "not_found"
@@ -236,12 +248,14 @@ async def post_review_to_github(
                 owner=owner,
                 repo=repo,
                 pr_number=pr_number,
+                status_code=status_code,
             )
         elif "rate limit" in error_msg or "403" in error_msg:
             error_type = "rate_limited"
             err_result = GitHubRateLimited(
                 installation_id=installation_id or 0,
                 cause=error_cause,
+                status_code=status_code,
             )
         else:
             error_type = "post_failed"
@@ -250,6 +264,7 @@ async def post_review_to_github(
                 repo=repo,
                 pr_number=pr_number,
                 cause=error_cause,
+                status_code=status_code,
             )
 
         structured_log(

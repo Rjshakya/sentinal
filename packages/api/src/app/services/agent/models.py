@@ -34,8 +34,8 @@ class CodeCommentDraft(BaseModel):
         description="The review comment body. Plain text; markdown is fine.",
     )
     severity: CommentSeverityStr
-    from_line: int = Field(ge=1, description="First line of the comment range.")
-    to_line: int = Field(ge=1, description="Last line of the comment range.")
+    from_line: int = Field(ge=0, description="First line of the comment range.")
+    to_line: int = Field(ge=0, description="Last line of the comment range.")
     side: CommentSideStr = Field(
         default="RIGHT",
         description="'RIGHT' for the new side of the diff, 'LEFT' for the old.",

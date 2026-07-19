@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Literal, TypeAlias
+from typing import TypeAlias
 
 from deepagents import create_deep_agent
 from e2b import AsyncSandbox
@@ -33,16 +33,17 @@ from langgraph.graph.state import CompiledStateGraph
 from sqlmodel import or_, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.llm import LLMProviderStr, build_chat_model
 from app.core.result import Err, Ok, Result
 from app.models.enums import SandboxState
 from app.models.sandbox import Sandbox as SandboxTable
+from app.services.agent.helpers import extract_message_kinds
 from app.services.agent.models import SetupResult
 from app.services.agent.prompts import SETUP_AGENT_SYSTEM_PROMPT
 from app.services.agent.setup_errors import (
     SetupAgentCrashed,
     SetupAgentReturnedNoStructuredResponse,
 )
-from app.services.review.pipeline import build_chat_model
 from app.utils.util import repo_path
 
 log = logging.getLogger(__name__)
@@ -56,11 +57,6 @@ log = logging.getLogger(__name__)
 # isolated feature; we are not adding new env-driven settings to
 # :class:`Settings` for it. If we later need to tune these at deploy
 # time, this is the single file to edit.
-
-
-LLMProviderStr: TypeAlias = Literal["openai", "anthropic", "google"]
-"""Allowed values for :attr:`Input.provider`. Validated at chat-model
-construction time by :func:`build_chat_model`."""
 
 
 CompiledDeepAgent: TypeAlias = CompiledStateGraph
@@ -103,25 +99,6 @@ def assemble_setup_user_prompt(*, repo_id: str, repo_name: str, user_id: str) ->
     )
 
 
-def _extract_message_kinds(messages: object) -> tuple[str, ...]:
-    """Return ``(type,)`` for each message in a deepagents messages list.
-
-    Pure — no I/O. Used to populate the ``message_kinds`` field of
-    :class:`SetupAgentReturnedNoStructuredResponse` so the caller can
-    see *what* the agent produced before failing. Tolerant of any
-    non-list input (returns an empty tuple) and of messages without a
-    string ``type`` attribute.
-    """
-    if not isinstance(messages, list):
-        return ()
-    kinds: list[str] = []
-    for message in messages:
-        kind = getattr(message, "type", None)
-        if isinstance(kind, str):
-            kinds.append(kind)
-    return tuple(kinds)
-
-
 def validate_setup_response(
     result: object,
 ) -> Result[SetupResult, SetupAgentReturnedNoStructuredResponse]:
@@ -150,14 +127,14 @@ def validate_setup_response(
     if not isinstance(result, dict):
         return Err(
             SetupAgentReturnedNoStructuredResponse(
-                message_kinds=_extract_message_kinds(result)
+                message_kinds=extract_message_kinds(result)
             )
         )
     structured = result.get("structured_response")
     if structured is None:
         return Err(
             SetupAgentReturnedNoStructuredResponse(
-                message_kinds=_extract_message_kinds(result.get("messages"))
+                message_kinds=extract_message_kinds(result.get("messages"))
             )
         )
     return Ok(SetupResult.model_validate(structured))

@@ -17,8 +17,7 @@ Verifies the ``X-Hub-Signature-256`` HMAC against
   matching :class:`Repo` rows.
 - ``pull_request`` (action ``opened``) -> delegate to
   :func:`app.services.review.webhook.handle_pull_request_opened`,
-  which upserts the :class:`PullRequest` row and dispatches a
-  background review run via FastAPI's ``BackgroundTasks``. Other
+  which dispatches a durable DBOS workflow for the review. Other
   ``pull_request`` actions are log + 202.
 - anything else -> 202 with a log line.
 
@@ -35,7 +34,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import Response
 from sqlmodel import delete, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -315,7 +314,6 @@ async def _handle_installation_repositories_removed(
 @router.post("/github")
 async def github_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
 ) -> Response:
     body = await request.body()
 
@@ -389,9 +387,7 @@ async def github_webhook(
         # summary = _summarize_pull_request(payload)
 
         if action == "opened" or action == "synchronize":
-            ack = await review_webhook.handle_pull_request_opened(
-                payload, delivery, background_tasks=background_tasks
-            )
+            ack = await review_webhook.handle_pull_request_opened(payload, delivery)
             log.info("github_webhook: pull_request handled: %s", ack.model_dump_json())
         return Response(status_code=202)
 

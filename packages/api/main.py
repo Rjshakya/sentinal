@@ -1,7 +1,15 @@
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+import sys
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
+# psycopg async mode does not work with Windows' default ProactorEventLoop.
+# Force the SelectorEventLoop before any DBOS/SQLAlchemy async imports run.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+from dbos import DBOS, DBOSConfig
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -11,7 +19,6 @@ from app.core.logging import configure_structured_logging
 from app.core.middleware import AuthMiddleware
 from app.routers import ai, auth, github, health, users, webhooks
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -20,10 +27,33 @@ logging.basicConfig(
 configure_structured_logging()
 
 
+def _dbos_config() -> DBOSConfig:
+    """Build DBOS config from application settings.
+
+    DBOS shares the same Postgres database as the application. The URL
+    is stripped of the asyncpg driver suffix because DBOS creates its
+    own SQLAlchemy engine.
+    """
+    db_url = settings.database_url.replace("+asyncpg", "")
+    return {
+        "name": "sentinel",
+        "system_database_url": db_url,
+        # "application_database_url": db_url,
+        # "executor_id": settings.dbos_executor_id,
+        # "run_admin_server": True,
+        # "admin_port": 3001,
+    }
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await create_db_and_tables()
-    yield
+    DBOS(config=_dbos_config())
+    DBOS.launch()
+    try:
+        yield
+    finally:
+        DBOS.destroy()
 
 
 def create_app() -> FastAPI:
@@ -40,6 +70,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
     app.add_middleware(AuthMiddleware)
 
     app.include_router(health.router, prefix=settings.api_prefix)
