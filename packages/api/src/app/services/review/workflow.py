@@ -382,10 +382,10 @@ async def invoke_review_agent_step(
                 {"messages": [{"role": "user", "content": user_prompt}]}
             )
         except Exception as exc:
-            log.exception("review agent crashed: repo=%s pr_number=%s", repo_name, pr_number)
-            return Err(
-                ReviewAgentCrashed(cause=f"{type(exc).__name__}: {exc}")
+            log.exception(
+                "review agent crashed: repo=%s pr_number=%s", repo_name, pr_number
             )
+            return Err(ReviewAgentCrashed(cause=f"{type(exc).__name__}: {exc}"))
         return parse_review_response(raw)
     finally:
         try:
@@ -425,9 +425,7 @@ async def persist_code_comments_tx(
 
     session = dbos_datasource.sql_session()
     drafts = [CodeCommentDraft.model_validate(c) for c in comments]
-    rows = map_drafts_to_comment_rows(
-        pr_id=pr_id, commit_id=commit_id, comments=drafts
-    )
+    rows = map_drafts_to_comment_rows(pr_id=pr_id, commit_id=commit_id, comments=drafts)
     if not rows:
         return []
     session.add_all(rows)
@@ -594,9 +592,7 @@ async def review_workflow(
         return Err(repo_result.error)
     repo = repo_result.value
 
-    sandbox_result = await resolve_sandbox_step(
-        user_id=input.user_id, repo_id=repo.id
-    )
+    sandbox_result = await resolve_sandbox_step(user_id=input.user_id, repo_id=repo.id)
     if isinstance(sandbox_result, Err):
         return Err(sandbox_result.error)
     sandbox = sandbox_result.value
@@ -668,11 +664,11 @@ async def review_workflow(
                 pr_number=input.pr_number,
                 review=review,
             )
-            post_workflow_id = (
-                f"post:{repo.id}:{input.pr_number}:{input.head_sha[:7]}"
-            )
+            post_workflow_id = f"post:{repo.id}:{input.pr_number}:{input.head_sha[:7]}"
             with SetWorkflowID(post_workflow_id):
-                await DBOS.start_workflow_async(post_review_to_github_workflow, post_input)
+                await DBOS.start_workflow_async(
+                    post_review_to_github_workflow, post_input
+                )
 
         return Ok(
             ReviewRunResult(

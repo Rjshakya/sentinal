@@ -38,8 +38,8 @@ def _dbos_config() -> DBOSConfig:
     return {
         "name": "sentinel",
         "system_database_url": db_url,
-        # "application_database_url": db_url,
-        # "executor_id": settings.dbos_executor_id,
+        "application_database_url": db_url,
+        "executor_id": settings.dbos_executor_id,
         # "run_admin_server": True,
         # "admin_port": 3001,
     }
@@ -48,6 +48,7 @@ def _dbos_config() -> DBOSConfig:
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await create_db_and_tables()
+    # await init_datasource()
     DBOS(config=_dbos_config())
     DBOS.launch()
     try:

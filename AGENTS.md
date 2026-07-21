@@ -94,7 +94,10 @@ Postgres 18 is the only persistence tier, brought up by `docker-compose.yml`.
 `credentials=True` (sealed cookies must round-trip), then `AuthMiddleware`,
 then registers routers under `settings.api_prefix`. The `lifespan` hook
 runs `create_db_and_tables()` (which uses `SQLModel.metadata.create_all` —
-useful for local dev; migrations are still the source of truth).
+useful for local dev; migrations are still the source of truth). On
+Windows, `main.py` sets `asyncio.WindowsSelectorEventLoopPolicy()` before
+importing DBOS/SQLAlchemy because DBOS's `AsyncSQLAlchemyDatasource` uses
+psycopg async, which fails with the default `ProactorEventLoop`.
 
 `src/app/core/`:
 
