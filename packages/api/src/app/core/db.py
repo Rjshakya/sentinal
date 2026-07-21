@@ -1,6 +1,7 @@
 import asyncio
 
 from dbos import AsyncSQLAlchemyDatasource
+from sqlalchemy import NullPool
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -22,7 +23,9 @@ async_session_maker = async_sessionmaker(
 _DBOS_DATABASE_URL = settings.database_url.replace("+asyncpg", "")
 
 dbos_datasource: AsyncSQLAlchemyDatasource = asyncio.run(
-    AsyncSQLAlchemyDatasource.create(_DBOS_DATABASE_URL)
+    AsyncSQLAlchemyDatasource.create(
+        _DBOS_DATABASE_URL, engine_kwargs={"poolclass": NullPool}
+    )
 )
 
 
