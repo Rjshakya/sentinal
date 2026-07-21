@@ -26,6 +26,7 @@ from typing import Any, Literal, cast
 from dbos import DBOS, SetWorkflowID
 from githubkit_schemas.v2026_03_10.models import PullRequestReview
 from pydantic import BaseModel, ConfigDict
+from sqlmodel import select
 
 from app.core.config import settings
 from app.core.db import dbos_datasource
@@ -36,7 +37,6 @@ from app.core.sandbox import build_default_spec
 from app.core.sandbox.e2b import E2BSandbox, E2BSandboxSpec
 from app.models.enums import PRStatus
 from app.models.repo import Repo as RepoModel
-from app.repositories import Repository
 from app.services.agent.models import ReviewResult
 from app.services.github.post_review import (
     GitHubPosterError,
@@ -166,9 +166,10 @@ def _e2b_spec() -> E2BSandboxSpec:
 async def resolve_repo_tx(gh_repo_id: int) -> Result[RepoSnapshot, RepoNotFound]:
     """Durable transaction: find the local repo row by GitHub repo id."""
     session = dbos_datasource.sql_session()
-    repo = await Repository(RepoModel, session).find_by_field(
-        RepoModel.github_repo_id, gh_repo_id
+    result = await session.execute(
+        select(RepoModel).where(RepoModel.github_repo_id == gh_repo_id)
     )
+    repo = result.scalar_one_or_none()
     if repo is None:
         return Err(RepoNotFound(repo_id=str(gh_repo_id)))
     return Ok(
@@ -189,12 +190,13 @@ async def resolve_sandbox_step(
     We only return the sandbox id/name; the E2B handle itself is not
     serializable, so each step reconnects by id.
     """
-    session = dbos_datasource.sql_session()
     from app.models.sandbox import Sandbox as SandboxModel
 
-    sb_record = await Repository(SandboxModel, session).find_by_field(
-        SandboxModel.repo_id, repo_id
+    session = dbos_datasource.sql_session()
+    result = await session.execute(
+        select(SandboxModel).where(SandboxModel.repo_id == repo_id)
     )
+    sb_record = result.scalar_one_or_none()
     if sb_record is None:
         return Err(NoActiveSandbox(user_id=user_id, repo_id=repo_id))
 
