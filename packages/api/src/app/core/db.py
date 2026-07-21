@@ -18,17 +18,12 @@ async_session_maker = async_sessionmaker(
 # DBOS datasource for durable, exactly-once transactions inside DBOS workflows.
 # Created at module import time so the @dbos_datasource.transaction() decorator
 # is available when workflow modules are imported.
-
+# DBOS uses psycopg, so we strip the +asyncpg driver suffix from the URL.
+_DBOS_DATABASE_URL = settings.database_url.replace("+asyncpg", "")
 
 dbos_datasource: AsyncSQLAlchemyDatasource = asyncio.run(
-    AsyncSQLAlchemyDatasource.create(settings.database_url)
+    AsyncSQLAlchemyDatasource.create(_DBOS_DATABASE_URL)
 )
-
-
-async def init_datasource() -> AsyncSQLAlchemyDatasource:
-    global dbos_datasource
-    dbos_datasource = await AsyncSQLAlchemyDatasource.create(settings.database_url)
-    return dbos_datasource
 
 
 async def get_session():

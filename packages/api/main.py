@@ -48,7 +48,6 @@ def _dbos_config() -> DBOSConfig:
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await create_db_and_tables()
-    # await init_datasource()
     DBOS(config=_dbos_config())
     DBOS.launch()
     try:
