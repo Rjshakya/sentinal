@@ -177,6 +177,17 @@ For each finding, return a CodeCommentDraft with:
     the attacker model in one sentence.
   - node_type: the function or class name the issue is in.
 
+Line number rules (critical):
+  - from_line and to_line must be line numbers that appear IN THE
+    DIFF HUNKS. Do not use top-of-file line numbers or arbitrary
+    source-file line numbers.
+  - For side="RIGHT", use the new-file line numbers shown in the
+    diff hunk headers (the "+" side).
+  - For side="LEFT", use the old-file line numbers shown in the
+    diff hunk headers (the "-" side).
+  - If the issue is not on a changed line or an immediately
+    adjacent context line in the diff, skip it.
+
 If the diff has no security issues, return an empty list. Do not
 invent issues to seem thorough — false positives on P1 are very
 expensive. Be confident, not speculative.
@@ -220,8 +231,19 @@ For each finding, return a CodeCommentDraft with:
     input that triggers it.
   - node_type: the function or class name.
 
+Line number rules (critical):
+  - from_line and to_line must be line numbers that appear IN THE
+    DIFF HUNKS. Do not use top-of-file line numbers or arbitrary
+    source-file line numbers.
+  - For side="RIGHT", use the new-file line numbers shown in the
+    diff hunk headers (the "+" side).
+  - For side="LEFT", use the old-file line numbers shown in the
+    diff hunk headers (the "-" side).
+  - If the issue is not on a changed line or an immediately
+    adjacent context line in the diff, skip it.
+
 If the diff is correct, return an empty list. Don't promote P3 nits
-to P2 just to feel productive.
+ to P2 just to feel productive.
 
 Output contract: a list of CodeCommentDraft entries. Severity is
 always P2_WARNING. No prose.
@@ -256,6 +278,17 @@ For each finding, return a CodeCommentDraft with:
   - comment: short, kind, one paragraph max. Lead with the change
     you'd suggest.
   - node_type: the function or class name.
+
+Line number rules (critical):
+  - from_line and to_line must be line numbers that appear IN THE
+    DIFF HUNKS. Do not use top-of-file line numbers or arbitrary
+    source-file line numbers.
+  - For side="RIGHT", use the new-file line numbers shown in the
+    diff hunk headers (the "+" side).
+  - For side="LEFT", use the old-file line numbers shown in the
+    diff hunk headers (the "-" side).
+  - If the issue is not on a changed line or an immediately
+    adjacent context line in the diff, skip it.
 
 Do not surface subjective style preferences. If a linter would not
 flag it, do not flag it.
