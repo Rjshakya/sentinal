@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlmodel import select
 
 from app.core.config import settings
-from app.core.db import dbos_datasource
+from app.core.db import async_session_maker, dbos_datasource
 from app.core.github_app import installation_client
 from app.core.llm import LLMProviderStr
 from app.core.result import Err, Ok, Result
@@ -192,11 +192,11 @@ async def resolve_sandbox_step(
     """
     from app.models.sandbox import Sandbox as SandboxModel
 
-    session = dbos_datasource.sql_session()
-    result = await session.execute(
-        select(SandboxModel).where(SandboxModel.repo_id == repo_id)
-    )
-    sb_record = result.scalar_one_or_none()
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(SandboxModel).where(SandboxModel.repo_id == repo_id)
+        )
+        sb_record = result.scalar_one_or_none()
     if sb_record is None:
         return Err(NoActiveSandbox(user_id=user_id, repo_id=repo_id))
 
