@@ -193,10 +193,10 @@ async def resolve_sandbox_step(
     from app.models.sandbox import Sandbox as SandboxModel
 
     async with async_session_maker() as session:
-        result = await session.execute(
+        result = await session.exec(
             select(SandboxModel).where(SandboxModel.repo_id == repo_id)
         )
-        sb_record = result.scalar_one_or_none()
+        sb_record = result.one_or_none()
     if sb_record is None:
         return Err(NoActiveSandbox(user_id=user_id, repo_id=repo_id))
 
