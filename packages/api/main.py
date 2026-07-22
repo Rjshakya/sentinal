@@ -6,9 +6,9 @@ from contextlib import asynccontextmanager
 
 # psycopg async mode does not work with Windows' default ProactorEventLoop.
 # Force the SelectorEventLoop before any DBOS/SQLAlchemy async imports run.
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
+# if sys.platform == "win32":
+#     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+#
 from dbos import DBOS, DBOSConfig
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -84,3 +84,23 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+    import uvicorn.loops.asyncio as uvicorn_asyncio_loop
+
+    if sys.platform == "win32":
+
+        def _selector_loop_factory(
+            use_subprocess: bool = False,
+        ) -> type[asyncio.AbstractEventLoop]:
+            return asyncio.SelectorEventLoop
+
+        uvicorn_asyncio_loop.asyncio_loop_factory = _selector_loop_factory
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+    )

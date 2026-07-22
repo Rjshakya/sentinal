@@ -1,4 +1,5 @@
 import asyncio
+import selectors
 
 from dbos import AsyncSQLAlchemyDatasource
 from sqlalchemy import NullPool
@@ -22,10 +23,16 @@ async_session_maker = async_sessionmaker(
 # DBOS uses psycopg, so we strip the +asyncpg driver suffix from the URL.
 _DBOS_DATABASE_URL = settings.database_url.replace("+asyncpg", "")
 
+
+def _selector_loop_factory() -> asyncio.AbstractEventLoop:
+    return asyncio.SelectorEventLoop(selectors.SelectSelector())
+
+
 dbos_datasource: AsyncSQLAlchemyDatasource = asyncio.run(
     AsyncSQLAlchemyDatasource.create(
         _DBOS_DATABASE_URL, engine_kwargs={"poolclass": NullPool}
-    )
+    ),
+    loop_factory=_selector_loop_factory,
 )
 
 
