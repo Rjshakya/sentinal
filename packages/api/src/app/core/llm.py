@@ -12,6 +12,7 @@ from typing import Literal, TypeAlias
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.rate_limiters import InMemoryRateLimiter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
@@ -42,7 +43,13 @@ def build_chat_model(
     """
     secret: SecretStr = SecretStr(api_key)
     if provider == "openai":
-        return ChatOpenAI(model=model, api_key=secret, base_url=base_url)
+        return ChatOpenAI(
+            model=model,
+            api_key=secret,
+            base_url=base_url,
+            max_retries=5,
+            rate_limiter=InMemoryRateLimiter(requests_per_second=0.5),
+        )
     if provider == "anthropic":
         # `timeout` and `stop` are pydantic Field aliases for
         # `default_request_timeout` and `stop_sequences`; both default to
