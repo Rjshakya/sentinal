@@ -318,7 +318,7 @@ async def upsert_pull_request_tx(
     return pr.id
 
 
-@DBOS.step(retries_allowed=True, max_attempts=2)
+@DBOS.step(retries_allowed=True, max_attempts=3)
 async def invoke_review_agent_step(
     *,
     sandbox_id: str,
