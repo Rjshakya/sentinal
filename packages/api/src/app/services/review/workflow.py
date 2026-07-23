@@ -12,10 +12,18 @@ Design notes:
 - Non-deterministic / external operations live in ``@DBOS.step()`` functions.
   Database writes use ``@dbos_datasource.transaction()`` for exactly-once
   semantics.
-- The E2B sandbox object is never passed between steps. Only the sandbox id
-  travels through the workflow; each step reconnects by id.
-- GitHub posting is a separate durable workflow so it can be retried / restarted
-  independently without re-running the LLM agent.
+- Steps **raise** typed exceptions on failure (see
+  :mod:`app.services.review.errors`). Transient failures — LLM rate
+  limits / timeouts, E2B connect blips — raise
+  :class:`TransientStepError` subclasses, which DBOS retries via
+  ``should_retry=lambda exc: isinstance(exc, TransientStepError)``.
+  Business outcomes — repo not indexed, agent returned no structured
+  response — raise plain :class:`StepError` subclasses and are not
+  retried.
+- The E2B sandbox object is never passed between steps. Only the sandbox
+  id travels through the workflow; each step reconnects by id.
+- GitHub posting is a separate durable workflow so it can be retried /
+  restarted independently without re-running the LLM agent.
 """
 
 from __future__ import annotations
@@ -32,7 +40,7 @@ from app.core.config import settings
 from app.core.db import async_session_maker, dbos_datasource
 from app.core.github_app import installation_client
 from app.core.llm import LLMProviderStr
-from app.core.result import Err, Ok, Result
+from app.core.result import Ok
 from app.core.sandbox import build_default_spec
 from app.core.sandbox.e2b import E2BSandbox, E2BSandboxSpec
 from app.models.enums import PRStatus
@@ -47,19 +55,25 @@ from app.services.github.post_review import (
 from app.services.review.agent import assemble_user_prompt, build_review_agent
 from app.services.review.diff import fetch_diff
 from app.services.review.errors import (
-    DiffUnavailable,
-    NoActiveSandbox,
-    RepoNotFound,
-    ReviewAgentCrashed,
-    ReviewAgentReturnedNoStructuredResponse,
-    ReviewPipelineError,
-    SandboxConnectFailed,
+    NoActiveSandboxError,
+    RepoNotFoundError,
+    ReviewAgentCrashedError,
+    ReviewAgentRateLimitedError,
+    SandboxConnectError,
+    TransientStepError,
+    extract_retry_after_seconds,
+    is_llm_transient_error,
 )
 from app.services.review.helpers import get_repo_path, parse_review_response
 from app.services.review.steps.persist_summary import persist_review_summary
 from app.services.review.steps.upsert_pr import upsert_pull_request
 
 log = logging.getLogger(__name__)
+
+_SHOULD_RETRY_TRANSIENT: object = lambda exc: isinstance(exc, TransientStepError)
+"""Shared ``should_retry`` predicate for steps: retry on any
+:class:`TransientStepError`, fail on plain :class:`StepError`."""
+
 
 # --------------------------------------------------------------------------- #
 # Serializable workflow inputs / outputs                                      #
@@ -163,32 +177,40 @@ def _e2b_spec() -> E2BSandboxSpec:
 
 
 @dbos_datasource.transaction()
-async def resolve_repo_tx(gh_repo_id: int) -> Result[RepoSnapshot, RepoNotFound]:
-    """Durable transaction: find the local repo row by GitHub repo id."""
+async def resolve_repo_tx(gh_repo_id: int) -> RepoSnapshot:
+    """Durable transaction: find the local repo row by GitHub repo id.
+
+    Raises:
+        RepoNotFoundError: no row matches ``gh_repo_id``. This is a
+            business outcome and is not retried.
+    """
     session = dbos_datasource.sql_session()
     result = await session.execute(
         select(RepoModel).where(RepoModel.github_repo_id == gh_repo_id)
     )
     repo = result.scalar_one_or_none()
     if repo is None:
-        return Err(RepoNotFound(repo_id=str(gh_repo_id)))
-    return Ok(
-        RepoSnapshot(
-            id=repo.id,
-            repo_name=repo.repo_name,
-            repo_owner=repo.repo_owner,
-        )
+        raise RepoNotFoundError(repo_id=str(gh_repo_id))
+    return RepoSnapshot(
+        id=repo.id,
+        repo_name=repo.repo_name,
+        repo_owner=repo.repo_owner,
     )
 
 
-@DBOS.step(retries_allowed=True, max_attempts=3)
-async def resolve_sandbox_step(
-    *, user_id: str, repo_id: str
-) -> Result[ResolvedSandbox, NoActiveSandbox | SandboxConnectFailed]:
+@DBOS.step(
+    retries_allowed=True,
+    max_attempts=3,
+    should_retry=_SHOULD_RETRY_TRANSIENT,
+)
+async def resolve_sandbox_step(*, user_id: str, repo_id: str) -> ResolvedSandbox:
     """Durable step: find the active sandbox row and connect to E2B.
 
-    We only return the sandbox id/name; the E2B handle itself is not
-    serializable, so each step reconnects by id.
+    Raises:
+        NoActiveSandboxError: no row matches ``repo_id``. Business
+            outcome — not retried.
+        SandboxConnectError: the row exists but ``E2BSandbox.connect``
+            raised. :class:`TransientStepError` — DBOS retries.
     """
     from app.models.sandbox import Sandbox as SandboxModel
 
@@ -198,7 +220,7 @@ async def resolve_sandbox_step(
         )
         sb_record = result.one_or_none()
     if sb_record is None:
-        return Err(NoActiveSandbox(user_id=user_id, repo_id=repo_id))
+        raise NoActiveSandboxError(user_id=user_id, repo_id=repo_id)
 
     spec = _e2b_spec()
     try:
@@ -212,29 +234,32 @@ async def resolve_sandbox_step(
             api_key=spec.api_key,
         )
     except Exception as exc:
-        log.exception(
-            "failed to connect sandbox: user_id=%s repo_id=%s sandbox_id=%s",
+        log.warning(
+            "sandbox connect failed (will retry): user_id=%s repo_id=%s "
+            "sandbox_id=%s cause=%s: %s",
             user_id,
             repo_id,
             sb_record.id,
+            type(exc).__name__,
+            exc,
         )
-        return Err(
-            SandboxConnectFailed(
-                user_id=user_id,
-                repo_id=repo_id,
-                sandbox_id=sb_record.id,
-                cause=f"{type(exc).__name__}: {exc}",
-            )
-        )
-    return Ok(
-        ResolvedSandbox(
-            sandbox_id=connected.id,
-            sandbox_name=sb_record.sandbox_name,
-        )
+        raise SandboxConnectError(
+            user_id=user_id,
+            repo_id=repo_id,
+            sandbox_id=sb_record.id,
+            cause=f"{type(exc).__name__}: {exc}",
+        ) from exc
+    return ResolvedSandbox(
+        sandbox_id=connected.id,
+        sandbox_name=sb_record.sandbox_name,
     )
 
 
-@DBOS.step()
+@DBOS.step(
+    retries_allowed=True,
+    max_attempts=3,
+    should_retry=_SHOULD_RETRY_TRANSIENT,
+)
 async def fetch_diff_step(
     *,
     sandbox_id: str,
@@ -245,8 +270,15 @@ async def fetch_diff_step(
     pr_number: int,
     base_sha: str,
     head_sha: str,
-) -> Result[str, DiffUnavailable]:
-    """Durable step: reconnect to the sandbox and fetch the unified diff."""
+) -> str:
+    """Durable step: reconnect to the sandbox and fetch the unified diff.
+
+    Raises:
+        SandboxConnectError: reconnect to E2B failed.
+            :class:`TransientStepError` — DBOS retries.
+        DiffUnavailableError: ``git diff`` (or ``mkdir``) returned a
+            non-zero exit code. Business outcome — not retried.
+    """
     spec = _e2b_spec()
     try:
         sandbox = await E2BSandbox.connect(
@@ -259,14 +291,12 @@ async def fetch_diff_step(
             api_key=spec.api_key,
         )
     except Exception as exc:
-        return Err(
-            DiffUnavailable(
-                repo_id=repo_id,
-                base_sha=base_sha,
-                head_sha=head_sha,
-                cause=f"failed to reconnect sandbox: {type(exc).__name__}: {exc}",
-            )
-        )
+        raise SandboxConnectError(
+            user_id=user_id,
+            repo_id=repo_id,
+            sandbox_id=sandbox_id,
+            cause=f"failed to reconnect sandbox for diff: {type(exc).__name__}: {exc}",
+        ) from exc
 
     try:
         return await fetch_diff(
@@ -318,7 +348,12 @@ async def upsert_pull_request_tx(
     return pr.id
 
 
-@DBOS.step(retries_allowed=True, max_attempts=3)
+@DBOS.step(
+    retries_allowed=True,
+    max_attempts=5,
+    should_retry=_SHOULD_RETRY_TRANSIENT,
+    backoff_rate=2,
+)
 async def invoke_review_agent_step(
     *,
     sandbox_id: str,
@@ -332,12 +367,24 @@ async def invoke_review_agent_step(
     llm_baseurl: str | None,
     llm_api_key: str,
     llm_model: str,
-) -> Result[ReviewResult, ReviewAgentCrashed | ReviewAgentReturnedNoStructuredResponse]:
+) -> ReviewResult:
     """Durable step: reconnect to the sandbox, build the agent, and invoke it.
 
     This is the most expensive step in the pipeline. Wrapping it with DBOS
-    means a crash mid-invocation resumes from the completed invocation without
-    re-running the LLM.
+    means a crash mid-invocation resumes from the completed invocation
+    without re-running the LLM.
+
+    Raises:
+        SandboxConnectError: reconnect to E2B failed.
+            :class:`TransientStepError` — DBOS retries.
+        ReviewAgentRateLimitedError: the LLM returned 429 / 5xx /
+            timeout. :class:`TransientStepError` — DBOS retries up to
+            ``max_attempts`` times.
+        ReviewAgentCrashedError: any other exception from
+            ``agent.ainvoke`` — business outcome, not retried.
+        ReviewAgentReturnedNoStructuredResponseError: the agent ran but
+            produced no ``structured_response`` payload — business
+            outcome, not retried.
     """
     spec = _e2b_spec()
     try:
@@ -351,11 +398,12 @@ async def invoke_review_agent_step(
             api_key=spec.api_key,
         )
     except Exception as exc:
-        return Err(
-            ReviewAgentCrashed(
-                cause=f"failed to reconnect sandbox for agent: {type(exc).__name__}: {exc}"
-            )
-        )
+        raise SandboxConnectError(
+            user_id=user_id,
+            repo_id=repo_id,
+            sandbox_id=sandbox_id,
+            cause=f"failed to reconnect sandbox for agent: {type(exc).__name__}: {exc}",
+        ) from exc
 
     try:
         agent = build_review_agent(
@@ -384,10 +432,25 @@ async def invoke_review_agent_step(
                 {"messages": [{"role": "user", "content": user_prompt}]}
             )
         except Exception as exc:
+            if is_llm_transient_error(exc):
+                wait = extract_retry_after_seconds(exc)
+                log.warning(
+                    "review agent transient: repo=%s pr_number=%s wait_s=%s cause=%s",
+                    repo_name,
+                    pr_number,
+                    wait,
+                    exc,
+                )
+                raise ReviewAgentRateLimitedError(
+                    cause=f"{type(exc).__name__}: {exc}",
+                    retry_after_seconds=wait,
+                ) from exc
             log.exception(
-                "review agent crashed: repo=%s pr_number=%s", repo_name, pr_number
+                "review agent crashed: repo=%s pr_number=%s",
+                repo_name,
+                pr_number,
             )
-            return Err(ReviewAgentCrashed(cause=f"{type(exc).__name__}: {exc}"))
+            raise ReviewAgentCrashedError(cause=f"{type(exc).__name__}: {exc}") from exc
         return parse_review_response(raw)
     finally:
         try:
@@ -441,7 +504,13 @@ async def persist_code_comments_tx(
 async def stop_sandbox_step(
     *, sandbox_id: str, sandbox_name: str, repo_id: str, user_id: str
 ) -> None:
-    """Durable step: stop the E2B sandbox. Failures are logged, not raised."""
+    """Durable step: stop the E2B sandbox. Failures are logged, not raised.
+
+    This step is best-effort: stopping is idempotent on the E2B side and
+    a failure here would only delay (not prevent) cleanup. The outer
+    workflow's ``finally`` block calls it; we never want a cleanup
+    failure to mask the real outcome of the review.
+    """
     spec = _e2b_spec()
     try:
         sandbox = await E2BSandbox.connect(
@@ -580,27 +649,26 @@ async def post_review_to_github_workflow(
 
 
 @DBOS.workflow()
-async def review_workflow(
-    input: ReviewWorkflowInput,
-) -> Result[ReviewRunResult, ReviewPipelineError]:
+async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
     """Durable workflow: review one PR end-to-end.
 
-    The workflow is deterministic and only orchestrates DBOS steps. It returns
-    a Result so business errors (repo not found, no sandbox, etc.) do not mark
-    the workflow as ERROR in DBOS.
-    """
-    repo_result = await resolve_repo_tx(input.gh_repo_id)
-    if isinstance(repo_result, Err):
-        return Err(repo_result.error)
-    repo = repo_result.value
+    Body is a straight-line sequence of step calls. Each step raises a
+    typed exception on failure; transient ones are retried by DBOS via
+    :data:`_SHOULD_RETRY_TRANSIENT`. The workflow itself does not
+    translate exceptions into result types — the DBOS workflow record
+    is marked as ERROR on unhandled exceptions, and the typed exception
+    propagates to any caller awaiting the result.
 
-    sandbox_result = await resolve_sandbox_step(user_id=input.user_id, repo_id=repo.id)
-    if isinstance(sandbox_result, Err):
-        return Err(sandbox_result.error)
-    sandbox = sandbox_result.value
+    The :func:`stop_sandbox_step` cleanup runs in a ``finally`` block
+    that covers every step that follows a successful
+    :func:`resolve_sandbox_step`. If ``resolve_sandbox_step`` itself
+    raises, there is no connected sandbox to stop.
+    """
+    repo = await resolve_repo_tx(input.gh_repo_id)
+    sandbox = await resolve_sandbox_step(user_id=input.user_id, repo_id=repo.id)
 
     try:
-        diff_result = await fetch_diff_step(
+        await fetch_diff_step(
             sandbox_id=sandbox.sandbox_id,
             sandbox_name=sandbox.sandbox_name,
             repo_id=repo.id,
@@ -610,8 +678,6 @@ async def review_workflow(
             base_sha=input.base_sha,
             head_sha=input.head_sha,
         )
-        if isinstance(diff_result, Err):
-            return Err(diff_result.error)
 
         pr_id = await upsert_pull_request_tx(
             repo_id=repo.id,
@@ -627,7 +693,7 @@ async def review_workflow(
             status=input.status,
         )
 
-        review_result = await invoke_review_agent_step(
+        review = await invoke_review_agent_step(
             sandbox_id=sandbox.sandbox_id,
             sandbox_name=sandbox.sandbox_name,
             repo_id=repo.id,
@@ -640,9 +706,6 @@ async def review_workflow(
             llm_api_key=input.llm_api_key,
             llm_model=input.llm_model,
         )
-        if isinstance(review_result, Err):
-            return Err(review_result.error)
-        review = review_result.value
 
         await persist_review_summary_tx(
             pr_id=pr_id,
@@ -672,12 +735,10 @@ async def review_workflow(
                     post_review_to_github_workflow, post_input
                 )
 
-        return Ok(
-            ReviewRunResult(
-                pr_id=pr_id,
-                commit_id=input.head_sha,
-                review=review,
-            )
+        return ReviewRunResult(
+            pr_id=pr_id,
+            commit_id=input.head_sha,
+            review=review,
         )
     finally:
         await stop_sandbox_step(

@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import logging
 
-from app.core.result import Err, Ok, Result
 from app.core.sandbox import BaseSandbox
-from app.services.review.errors import DiffUnavailable
+from app.services.review.errors import DiffUnavailableError
 
 log = logging.getLogger(__name__)
 
@@ -22,22 +21,6 @@ def truncate_diff_output(raw: str, *, max_chars: int = 500) -> str:
     return cleaned[:max_chars]
 
 
-def classify_diff_exit_code(
-    *, exit_code: int, output_tail: str
-) -> Result[None, DiffUnavailable]:
-    """Map a ``git diff`` exit code to ``Result[None, DiffUnavailable]``."""
-    if exit_code == 0:
-        return Ok(None)
-    return Err(
-        DiffUnavailable(
-            repo_id="",
-            base_sha="",
-            head_sha="",
-            cause=f"git diff exited {exit_code}: {output_tail}",
-        )
-    )
-
-
 async def fetch_diff(
     *,
     sandbox: BaseSandbox,
@@ -46,12 +29,17 @@ async def fetch_diff(
     pr_number: int,
     base_sha: str,
     head_sha: str,
-) -> Result[str, DiffUnavailable]:
+) -> str:
     """Fetch the unified diff and write it to the sandbox.
 
     The diff is persisted at ``/home/user/tmp/{pr_number}/{head_sha}/file.diff``
     so the review agent can read it via the ``get_diff`` tool. The function
     returns the sandbox path of the saved diff on success.
+
+    Raises:
+        DiffUnavailableError: when ``mkdir``, ``git diff`` or any
+            sub-command returns a non-zero exit code. The cause carries
+            the truncated stderr / stdout tail.
     """
     diff_dir = f"/home/user/tmp/{pr_number}/{head_sha}"
     diff_file = f"{diff_dir}/file.diff"
@@ -62,13 +50,11 @@ async def fetch_diff(
         timeout=30,
     )
     if mkdir_result.exit_code != 0:
-        return Err(
-            DiffUnavailable(
-                repo_id=repo_id,
-                base_sha=base_sha,
-                head_sha=head_sha,
-                cause=f"mkdir -p failed: {truncate_diff_output(mkdir_result.stderr)}",
-            )
+        raise DiffUnavailableError(
+            repo_id=repo_id,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            cause=f"mkdir -p failed: {truncate_diff_output(mkdir_result.stderr)}",
         )
 
     fetch = await sandbox.execute(
@@ -90,20 +76,13 @@ async def fetch_diff(
         cwd=repo_path_str,
         timeout=120,
     )
-    classification = classify_diff_exit_code(
-        exit_code=diff_result.exit_code,
-        output_tail=truncate_diff_output(
-            diff_result.stderr or diff_result.stdout or ""
-        ),
-    )
-    if isinstance(classification, Err):
-        return Err(
-            DiffUnavailable(
-                repo_id=repo_id,
-                base_sha=base_sha,
-                head_sha=head_sha,
-                cause=classification.error.cause,
-            )
+    if diff_result.exit_code != 0:
+        tail = truncate_diff_output(diff_result.stderr or diff_result.stdout or "")
+        raise DiffUnavailableError(
+            repo_id=repo_id,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            cause=f"git diff exited {diff_result.exit_code}: {tail}",
         )
 
     log.info(
@@ -111,11 +90,10 @@ async def fetch_diff(
         pr_number,
         diff_file,
     )
-    return Ok(diff_file)
+    return diff_file
 
 
-__all__: list[str] = [
-    "classify_diff_exit_code",
+__all__ = [
     "fetch_diff",
     "truncate_diff_output",
 ]
