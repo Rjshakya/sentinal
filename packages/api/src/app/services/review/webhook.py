@@ -136,7 +136,7 @@ def _resolve_llm_config() -> tuple[LLMProviderStr, str | None, str, str]:
     provider = "openai"
     base_url = "https://opencode.ai/zen/go/v1"
     api_key = settings.llm_api_key
-    model = "deepseek-v4-pro"
+    model = "opencode-go/deepseek-v4-pro"
     return provider, base_url, api_key, model  # type: ignore[return-value]
 
 
