@@ -129,9 +129,13 @@ def _resolve_llm_config() -> tuple[LLMProviderStr, str | None, str, str]:
     treat the returned key as non-empty.
     """
     provider = settings.llm_provider  # type: ignore[return-value]
-    base_url = settings.llm_base_url or None
-    api_key = settings.llm_api_key or settings.openai_api_key
-    model = settings.llm_model
+    # base_url = settings.llm_base_url or None
+    # api_key = settings.llm_api_key or settings.openai_api_key
+    # model = settings.llm_model
+
+    base_url = "https://opencode.ai/zen/go/v1"
+    api_key = settings.llm_api_key
+    model = "kimi-k2.7-code"
     return provider, base_url, api_key, model  # type: ignore[return-value]
 
 
