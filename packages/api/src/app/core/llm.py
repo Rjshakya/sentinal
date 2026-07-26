@@ -47,7 +47,7 @@ def build_chat_model(
             model=model,
             api_key=secret,
             base_url=base_url,
-            max_retries=5,
+            max_retries=3,
             rate_limiter=InMemoryRateLimiter(requests_per_second=0.5),
         )
     if provider == "anthropic":
@@ -62,6 +62,7 @@ def build_chat_model(
             base_url=base_url,
             timeout=None,
             stop=None,
+            max_retries=3,
         )
     if provider == "google":
         return ChatGoogleGenerativeAI(model=model, api_key=secret)
