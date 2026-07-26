@@ -128,15 +128,15 @@ def _resolve_llm_config() -> tuple[LLMProviderStr, str | None, str, str]:
     The fallback ``openai_api_key`` is applied here so callers can
     treat the returned key as non-empty.
     """
-    provider = settings.llm_provider  # type: ignore[return-value]
+    # provider = settings.llm_provider
     # base_url = settings.llm_base_url or None
     # api_key = settings.llm_api_key or settings.openai_api_key
     # model = settings.llm_model
 
     provider = "openai"
-    base_url = "https://opencode.ai/zen/go/v1"
+    base_url = "https://opencode.ai/zen/go/v1/chat/completions"
     api_key = settings.llm_api_key
-    model = "opencode-go/deepseek-v4-pro"
+    model = "deepseek-v4-pro"
     return provider, base_url, api_key, model  # type: ignore[return-value]
 
 
