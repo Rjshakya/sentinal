@@ -134,9 +134,12 @@ def _resolve_llm_config() -> tuple[LLMProviderStr, str | None, str, str]:
     # model = settings.llm_model
 
     provider = "openai"
-    base_url = "https://opencode.ai/zen/go/v1/"
-    api_key = settings.llm_api_key
-    model = "deepseek-v4-pro"
+    base_url = (
+        f"https://api.cloudflare.com/client/v4/accounts/{settings.cf_account_id}/ai/v1"
+    )
+    api_key = settings.cf_ai_gateway_auth_token
+    model = "@cf/moonshotai/kimi-k2.7-code"
+    # model = "openai/gpt-5.6-luna"
     return provider, base_url, api_key, model  # type: ignore[return-value]
 
 

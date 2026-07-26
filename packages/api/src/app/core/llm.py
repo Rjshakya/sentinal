@@ -8,7 +8,7 @@ than inside either service.
 
 from __future__ import annotations
 
-from typing import Literal, TypeAlias
+from typing import Literal, Mapping, TypeAlias
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -30,6 +30,7 @@ def build_chat_model(
     base_url: str | None,
     api_key: str,
     model: str,
+    headers: Mapping[str, str] | None = None,
 ) -> BaseChatModel:
     """Construct a langchain chat model from the four LLM params.
 
@@ -49,6 +50,7 @@ def build_chat_model(
             base_url=base_url,
             max_retries=3,
             rate_limiter=InMemoryRateLimiter(requests_per_second=0.5),
+            default_headers=headers,
         )
     if provider == "anthropic":
         # `timeout` and `stop` are pydantic Field aliases for
@@ -64,6 +66,7 @@ def build_chat_model(
             stop=None,
             max_retries=3,
         )
+
     if provider == "google":
         return ChatGoogleGenerativeAI(model=model, api_key=secret)
 

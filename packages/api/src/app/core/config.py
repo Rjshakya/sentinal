@@ -126,6 +126,10 @@ class Settings(BaseSettings):
         description="Model name passed to ChatOpenAI (e.g. gpt-5.5, "
         "claude-sonnet-4-6 via a proxy, etc.).",
     )
+    cf_ai_gateway_auth_token: str = Field(
+        default="", description="CF ai gateway auth token"
+    )
+    cf_account_id: str = Field(default="", description="CF account id")
 
     # --- GitHub App ---
     github_app_id: str = Field(
