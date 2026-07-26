@@ -53,7 +53,7 @@ from app.services.github.post_review import (
     post_review_to_github,
 )
 from app.services.review.agent import assemble_user_prompt, build_review_agent
-from app.services.review.diff import fetch_diff
+from app.services.review.diff import fetch_diff, parse_and_write_diff_json
 from app.services.review.errors import (
     NoActiveSandboxError,
     RepoNotFoundError,
@@ -65,6 +65,7 @@ from app.services.review.errors import (
     is_llm_transient_error,
 )
 from app.services.review.helpers import get_repo_path, parse_review_response
+from app.services.review.hunk_map import HunkMap, ParsedDiff, filter_drafts
 from app.services.review.steps.persist_summary import persist_review_summary
 from app.services.review.steps.upsert_pr import upsert_pull_request
 
@@ -314,6 +315,67 @@ async def fetch_diff_step(
             log.exception("failed to stop sandbox after diff fetch")
 
 
+@DBOS.step()
+async def parse_diff_step(
+    *,
+    sandbox_id: str,
+    sandbox_name: str,
+    repo_id: str,
+    user_id: str,
+    pr_number: int,
+    base_sha: str,
+    head_sha: str,
+) -> ParsedDiff:
+    """Durable step: read ``file.diff``, parse, write ``diff.json``.
+
+    Connects to the E2B sandbox, calls
+    :func:`app.services.review.diff.parse_and_write_diff_json`, and
+    returns the parsed :data:`ParsedDiff` so the workflow can pass it
+    into the agent step and the server-side filter without re-reading
+    the sandbox.
+
+    The sandbox is stopped in ``finally`` so a parse failure does not
+    leave the connection open.
+
+    Raises:
+        SandboxConnectError: failed to reconnect to the sandbox.
+        DiffUnavailableError: ``file.diff`` is missing, empty, or
+            unparseable.
+    """
+    spec = _e2b_spec()
+    try:
+        sandbox = await E2BSandbox.connect(
+            sandbox_id=sandbox_id,
+            sandbox_name=sandbox_name,
+            repo_id=repo_id,
+            user_id=user_id,
+            spec=spec,
+            timeout=60 * 60,
+            api_key=spec.api_key,
+        )
+    except Exception as exc:
+        raise SandboxConnectError(
+            user_id=user_id,
+            repo_id=repo_id,
+            sandbox_id=sandbox_id,
+            cause=f"failed to reconnect sandbox for diff parse: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    try:
+        return await parse_and_write_diff_json(
+            sandbox,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            repo_id=repo_id,
+            base_sha=base_sha,
+        )
+    finally:
+        try:
+            await sandbox.stop()
+        except Exception:
+            log.exception("failed to stop sandbox after diff parse")
+
+
 @dbos_datasource.transaction()
 async def upsert_pull_request_tx(
     *,
@@ -367,12 +429,19 @@ async def invoke_review_agent_step(
     llm_baseurl: str | None,
     llm_api_key: str,
     llm_model: str,
+    hunk_map: HunkMap,
 ) -> ReviewResult:
     """Durable step: reconnect to the sandbox, build the agent, and invoke it.
 
     This is the most expensive step in the pipeline. Wrapping it with DBOS
     means a crash mid-invocation resumes from the completed invocation
     without re-running the LLM.
+
+    ``hunk_map`` is the parsed diff structure from
+    :func:`app.services.review.hunk_map.parse_hunk_map`. It is bound
+    into the ``verify_comment_line`` tool so the agent can self-validate
+    ``(file, line, side)`` anchors before emitting
+    :class:`CodeCommentDraft` entries.
 
     Raises:
         SandboxConnectError: reconnect to E2B failed.
@@ -414,6 +483,7 @@ async def invoke_review_agent_step(
             llm_baseurl=llm_baseurl,
             llm_api_key=llm_api_key,
             llm_model=llm_model,
+            hunk_map=hunk_map,
         )
         user_prompt = assemble_user_prompt(
             repo_name=repo_name,
@@ -679,6 +749,23 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             head_sha=input.head_sha,
         )
 
+        parsed_diff = await parse_diff_step(
+            sandbox_id=sandbox.sandbox_id,
+            sandbox_name=sandbox.sandbox_name,
+            repo_id=repo.id,
+            user_id=input.user_id,
+            pr_number=input.pr_number,
+            base_sha=input.base_sha,
+            head_sha=input.head_sha,
+        )
+        hunk_map: HunkMap = {
+            file_name: {
+                "RIGHT": set(entry["RIGHT"]),
+                "LEFT": set(entry["LEFT"]),
+            }
+            for file_name, entry in parsed_diff["files"].items()
+        }
+
         pr_id = await upsert_pull_request_tx(
             repo_id=repo.id,
             github_pr_id=input.pr_id,
@@ -705,17 +792,20 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             llm_baseurl=input.llm_baseurl,
             llm_api_key=input.llm_api_key,
             llm_model=input.llm_model,
+            hunk_map=hunk_map,
         )
+
+        filtered_review = filter_drafts(review, hunk_map)
 
         await persist_review_summary_tx(
             pr_id=pr_id,
             commit_id=input.head_sha,
-            result=review,
+            result=filtered_review,
         )
         await persist_code_comments_tx(
             pr_id=pr_id,
             commit_id=input.head_sha,
-            comments=[c.model_dump(mode="json") for c in review.comments],
+            comments=[c.model_dump(mode="json") for c in filtered_review.comments],
         )
 
         if input.post_to_github and input.github_installation_id is not None:
@@ -727,7 +817,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
                 repo_owner=repo.repo_owner,
                 repo_name=repo.repo_name,
                 pr_number=input.pr_number,
-                review=review,
+                review=filtered_review,
             )
             post_workflow_id = f"post:{repo.id}:{input.pr_number}:{input.head_sha[:7]}"
             with SetWorkflowID(post_workflow_id):
@@ -738,7 +828,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
         return ReviewRunResult(
             pr_id=pr_id,
             commit_id=input.head_sha,
-            review=review,
+            review=filtered_review,
         )
     finally:
         await stop_sandbox_step(

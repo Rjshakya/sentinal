@@ -32,7 +32,11 @@ from app.services.agent.prompts import (
     SECURITY_SYSTEM_PROMPT,
     STYLE_SYSTEM_PROMPT,
 )
-from app.services.review.tools import make_get_diff_tool
+from app.services.review.hunk_map import HunkMap
+from app.services.review.tools import (
+    make_get_diff_tool,
+    make_verify_comment_line_tool,
+)
 from app.services.review.types import DeepAgentGraph
 
 log = logging.getLogger(__name__)
@@ -49,7 +53,11 @@ def assemble_orchestrator_system_prompt() -> str:
 
 
 def assemble_review_subagents(
-    *, sandbox: BaseSandbox, pr_number: int, head_sha: str
+    *,
+    sandbox: BaseSandbox,
+    pr_number: int,
+    head_sha: str,
+    hunk_map: HunkMap,
 ) -> list[SubAgent]:
     """Return the four specialist subagents the orchestrator delegates to.
 
@@ -60,6 +68,11 @@ def assemble_review_subagents(
     the deepagents runtime inherits the parent's backend tools (the
     E2B sandbox's ``read`` / ``write`` / ``execute`` / etc.), so each
     specialist can verify a suspicion against the repo when needed.
+
+    All four subagents receive ``get_diff_tool`` (read the unified diff)
+    and ``verify_comment_line_tool`` (validate a ``(file, line, side)``
+    anchor against the parsed :data:`HunkMap`). The summarizer does
+    not emit comments but receives the tools for consistency.
 
     The first subagent, ``summarizer``, is the PR-summary writer. The
     orchestrator calls it first, takes its markdown output verbatim,
@@ -73,6 +86,8 @@ def assemble_review_subagents(
         pr_number=pr_number,
         head_sha=head_sha,
     )
+    verify_comment_line_tool = make_verify_comment_line_tool(hunk_map=hunk_map)
+    subagent_tools = [get_diff_tool, verify_comment_line_tool]
 
     return [
         SubAgent(
@@ -86,7 +101,7 @@ def assemble_review_subagents(
                 "emit findings, bugs, or verdicts."
             ),
             system_prompt=PR_SUMMARY_SYSTEM_PROMPT,
-            tools=[get_diff_tool],
+            tools=list(subagent_tools),
         ),
         SubAgent(
             name="security",
@@ -98,7 +113,7 @@ def assemble_review_subagents(
             ),
             system_prompt=SECURITY_SYSTEM_PROMPT,
             response_format=SecurityComments,
-            tools=[get_diff_tool],
+            tools=list(subagent_tools),
         ),
         SubAgent(
             name="correctness",
@@ -109,7 +124,7 @@ def assemble_review_subagents(
             ),
             system_prompt=CORRECTNESS_SYSTEM_PROMPT,
             response_format=CorrectnessComments,
-            tools=[get_diff_tool],
+            tools=list(subagent_tools),
         ),
         SubAgent(
             name="style",
@@ -120,7 +135,7 @@ def assemble_review_subagents(
             ),
             system_prompt=STYLE_SYSTEM_PROMPT,
             response_format=StyleComments,
-            tools=[get_diff_tool],
+            tools=list(subagent_tools),
         ),
     ]
 
@@ -185,11 +200,18 @@ def build_review_agent(
     llm_baseurl: str | None,
     llm_api_key: str,
     llm_model: str,
+    hunk_map: HunkMap,
 ) -> DeepAgentGraph:
     """High-level convenience factory used by the orchestrator.
 
     Builds the chat model, wraps the sandbox backend, and composes the
     review deep-agent with its four specialist subagents.
+
+    ``hunk_map`` is the parsed diff structure from
+    :func:`app.services.review.hunk_map.parse_hunk_map`. It is bound
+    into the ``verify_comment_line`` tool so the subagents can
+    self-validate ``(file, line, side)`` anchors before emitting
+    :class:`CodeCommentDraft` entries.
     """
     model = build_chat_model(
         provider=provider,
@@ -199,6 +221,7 @@ def build_review_agent(
     )
     backend = AsyncE2BSandbox(sandbox=sandbox.sandbox)
     get_diff_tool = make_get_diff_tool(sandbox, pr_number, head_sha)
+    verify_comment_line_tool = make_verify_comment_line_tool(hunk_map=hunk_map)
 
     return get_review_agent(
         system_prompt=assemble_orchestrator_system_prompt(),
@@ -206,10 +229,11 @@ def build_review_agent(
             sandbox=sandbox,
             pr_number=pr_number,
             head_sha=head_sha,
+            hunk_map=hunk_map,
         ),
         backend=backend,
         model=model,
-        tools=[get_diff_tool],
+        tools=[get_diff_tool, verify_comment_line_tool],
     )
 
 
