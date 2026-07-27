@@ -14,7 +14,6 @@ from deepagents import SubAgent, create_deep_agent
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langchain_e2b import AsyncE2BSandbox
-from langgraph.graph.state import CompiledStateGraph
 
 from app.core.llm import LLMProviderStr, build_chat_model
 from app.core.sandbox import BaseSandbox
@@ -218,6 +217,7 @@ def build_review_agent(
         base_url=llm_baseurl,
         api_key=llm_api_key,
         model=llm_model,
+        headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
     )
     backend = AsyncE2BSandbox(sandbox=sandbox.sandbox)
     get_diff_tool = make_get_diff_tool(sandbox, pr_number, head_sha)
