@@ -413,7 +413,7 @@ async def upsert_pull_request_tx(
 @DBOS.step(
     retries_allowed=True,
     max_attempts=5,
-    should_retry=_SHOULD_RETRY_TRANSIENT,
+    # should_retry=_SHOULD_RETRY_TRANSIENT,
     backoff_rate=2,
 )
 async def invoke_review_agent_step(
