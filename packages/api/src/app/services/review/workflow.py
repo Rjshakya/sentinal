@@ -504,6 +504,7 @@ async def invoke_review_agent_step(
         except Exception as exc:
             if is_llm_transient_error(exc):
                 wait = extract_retry_after_seconds(exc)
+
                 log.warning(
                     "review agent transient: repo=%s pr_number=%s wait_s=%s cause=%s",
                     repo_name,
@@ -511,10 +512,12 @@ async def invoke_review_agent_step(
                     wait,
                     exc,
                 )
+
                 raise ReviewAgentRateLimitedError(
                     cause=f"{type(exc).__name__}: {exc}",
                     retry_after_seconds=wait,
                 ) from exc
+
             log.exception(
                 "review agent crashed: repo=%s pr_number=%s",
                 repo_name,
