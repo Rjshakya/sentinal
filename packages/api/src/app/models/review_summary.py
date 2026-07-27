@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Column, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, ForeignKey, SQLModel
 
 from app.models.enums import ReviewVerdict
 
@@ -17,7 +17,10 @@ class ReviewSummary(SQLModel, table=True):
         default_factory=uuid4,
         primary_key=True,
     )
-    pr_id: str = Field(foreign_key="pullrequest.id", nullable=False)
+    pr_id: str = Field(
+        sa_column_args=(ForeignKey("pullrequest.id", ondelete="CASCADE"),),
+        nullable=False,
+    )
     commit_id: str = Field(nullable=False)
     github_review_id: str | None = Field(default=None, nullable=True)
     summary: str = Field(nullable=False)

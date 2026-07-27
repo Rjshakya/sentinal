@@ -94,8 +94,10 @@ def build_default_spec(provider: Literal["e2b", "daytona"]) -> SandboxSpec:
         return SandboxSpec(
             provider="e2b",
             api_key=settings.e2b_api_key,
-            cpu_count=1,
-            memory_mb=1026 * 2,
+            template=settings.e2b_template or "code-interpreter-v1",
+            cpu_count=settings.e2b_cpu_count,
+            memory_mb=settings.e2b_memory_mb,
+            timeout_s=settings.e2b_timeout_s,
         )
 
     if provider == "daytona":

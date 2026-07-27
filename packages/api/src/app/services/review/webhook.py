@@ -138,8 +138,9 @@ def _resolve_llm_config() -> tuple[LLMProviderStr, str | None, str, str]:
         f"https://api.cloudflare.com/client/v4/accounts/{settings.cf_account_id}/ai/v1"
     )
     api_key = settings.cf_ai_gateway_auth_token
-    model = "@cf/moonshotai/kimi-k2.7-code"
+    # model = "@cf/moonshotai/kimi-k2.7-code"
     # model = "openai/gpt-5.6-luna"
+    model = "openai/gpt-5.4-mini"
     return provider, base_url, api_key, model  # type: ignore[return-value]
 
 
@@ -305,7 +306,7 @@ async def handle_pull_request_opened(
     repo_id = await resolve_repo_id(view.gh_repo_id)
     if repo_id is None:
         log.info(
-            "review.webhook: skip (repo not indexed): delivery=%s "
+            "review.webhook: skip (repo not configured): delivery=%s "
             "gh_repo_id=%s number=%s",
             delivery,
             view.gh_repo_id,

@@ -69,19 +69,24 @@ class Settings(BaseSettings):
         description="E2B API key.",
     )
     e2b_template: str = Field(
-        default="sentinel-indexing",
-        description="E2B template name.",
+        default="code-interpreter-v1",
+        description=(
+            "E2B template name. The default is the E2B-hosted "
+            "'code-interpreter-v1' template, which requires no "
+            "build. Set to a custom template slug to use a "
+            "pre-baked image."
+        ),
     )
     e2b_cpu_count: int = Field(
-        default=1,
+        default=2,
         description="vCPU count for newly created E2B sandboxes.",
     )
     e2b_memory_mb: int = Field(
-        default=1024,
+        default=2048,
         description="Memory (MB) for newly created E2B sandboxes.",
     )
     e2b_timeout_s: int = Field(
-        default=600,
+        default=1200,
         description="Timeout (seconds) for newly created E2B sandboxes.",
     )
 

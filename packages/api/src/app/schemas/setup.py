@@ -1,21 +1,42 @@
-"""HTTP schemas for ``POST /ai/repo/setup``.
+"""HTTP schemas for the setup pipeline.
 
-The endpoint accepts a list of repos (mirroring
-:class:`app.schemas.indexing.IndexingRequest`'s shape) and returns
-a per-repo :class:`app.services.agent.models.SetupResult`. The
-endpoint is fully synchronous — the handler runs the setup agent to
-completion before responding.
+The endpoint is **asynchronous** — ``POST /ai/repo/setup`` dispatches
+a DBOS workflow per repo and returns the workflow ids immediately
+(``202 Accepted``). The client polls the new ``GET /ai/repo/setup/{id}``
+endpoint for the terminal status and the persisted :class:`SetupResult`.
 
-The actual work lives in
-:mod:`app.services.agent.setup_pipeline`; this module is the
-HTTP-shape contract only.
+The schemas here are the HTTP-shape contract only; the workflow
+itself lives in :mod:`app.services.agent.setup.workflow`.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal, Optional
+
 from pydantic import BaseModel, Field
 
-from app.services.agent.models import SetupResult
+WorkflowStatus = Literal[
+    "PENDING",
+    "SUCCESS",
+    "ERROR",
+    "MAX_RECOVERY_ATTEMPTS_EXCEEDED",
+    "CANCELLED",
+    "ENQUEUED",
+    "DELAYED",
+]
+"""Subset of DBOS :class:`dbos.WorkflowStatusString` exposed to clients.
+
+The dashboard only ever sees ``PENDING`` (workflow is still running)
+and the two terminal states (``SUCCESS`` and ``ERROR``). The other
+values are reserved for the API status endpoint and the DBOS
+admin server.
+"""
+
+
+# --------------------------------------------------------------------------- #
+# Request                                                                      #
+# --------------------------------------------------------------------------- #
 
 
 class SetupRepo(BaseModel):
@@ -54,35 +75,97 @@ class SetupRequest(BaseModel):
     )
 
 
-class RepoSetupResult(BaseModel):
-    """Per-repo entry in :class:`SetupAck.results`."""
+# --------------------------------------------------------------------------- #
+# POST response — 202 Accepted                                                  #
+# --------------------------------------------------------------------------- #
 
-    repo_id: str | None = Field(
-        description="Local Repo.id (UUID). None when the upsert failed.",
-    )
+
+class SetupWorkflowHandle(BaseModel):
+    """One entry in :class:`StartSetupResponse.workflows`.
+
+    Returned by the POST handler. The dashboard stores these and
+    polls :class:`SetupStatusResponse` for each ``workflow_id`` until
+    it sees a terminal state.
+    """
+
     github_repo_id: int = Field(
         description="GitHub repo id, echoed back from the request.",
     )
-    setup: SetupResult = Field(
-        description="Structured output of the setup agent.",
+    workflow_id: str = Field(
+        description=(
+            "DBOS workflow id of the form "
+            "'setup:{user_id}:{github_repo_id}'. The dashboard "
+            "uses this as the poll key."
+        ),
+    )
+    status: WorkflowStatus = Field(
+        description="Initial workflow status. Always 'PENDING' for "
+        "freshly-started workflows; 'SUCCESS' / 'ERROR' / "
+        "'PENDING' when an existing workflow is reused.",
     )
 
 
-class SetupAck(BaseModel):
-    """Response of ``POST /ai/repo/setup``.
+class StartSetupResponse(BaseModel):
+    """Body of the ``POST /ai/repo/setup`` response.
 
-    One :class:`RepoSetupResult` per repo in the request, in the same
-    order. The handler does not short-circuit on failure — every repo
-    is attempted, and partial success is reflected by a mix of
-    ``ok=true`` and ``ok=false`` entries.
+    Status code is ``202 Accepted``; one :class:`SetupWorkflowHandle`
+    per repo in the request, in the same order.
     """
 
-    results: list[RepoSetupResult]
+    workflows: list[SetupWorkflowHandle]
 
 
-__all__: list[str] = [
-    "RepoSetupResult",
-    "SetupAck",
+# --------------------------------------------------------------------------- #
+# GET response — status poll                                                   #
+# --------------------------------------------------------------------------- #
+
+
+class SetupStatusResponse(BaseModel):
+    """Body of ``GET /ai/repo/setup/{workflow_id}``.
+
+    Returned by the status endpoint. ``setup`` is ``None`` while the
+    workflow is still running (no row has been persisted yet);
+    ``error`` is ``None`` on success. Both fields are populated for
+    terminal ``SUCCESS`` and ``ERROR`` states.
+    """
+
+    workflow_id: str = Field(
+        description="DBOS workflow id.",
+    )
+    status: WorkflowStatus = Field(
+        description="Current workflow status.",
+    )
+    github_repo_id: Optional[int] = Field(
+        default=None,
+        description="GitHub repo id; extracted from the workflow id "
+        "('setup:{user_id}:{github_repo_id}').",
+    )
+
+    error_name: Optional[str] = Field(
+        default=None,
+        description="Class name of the typed SetupError that the "
+        "workflow caught, when status is ERROR.",
+    )
+    error_message: Optional[str] = Field(
+        default=None,
+        description="Human-readable error message; the same string "
+        "embedded in setup.notes when status is ERROR.",
+    )
+    started_at: Optional[datetime] = Field(
+        default=None,
+        description="Wall-clock start time reported by DBOS.",
+    )
+    completed_at: Optional[datetime] = Field(
+        default=None,
+        description="Wall-clock completion time; null while pending.",
+    )
+
+
+__all__ = [
     "SetupRepo",
     "SetupRequest",
+    "SetupStatusResponse",
+    "SetupWorkflowHandle",
+    "StartSetupResponse",
+    "WorkflowStatus",
 ]

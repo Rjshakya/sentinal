@@ -6,7 +6,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import TIMESTAMP
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, ForeignKey, SQLModel
 
 from app.models.enums import CommentSeverity, CommentSide, CommentState
 from app.utils.util import uuidToStr
@@ -17,7 +17,10 @@ if TYPE_CHECKING:
 
 class CodeComment(SQLModel, table=True):
     id: str = Field(default_factory=uuidToStr, primary_key=True)
-    pr_id: str = Field(foreign_key="pullrequest.id", nullable=False)
+    pr_id: str = Field(
+        sa_column_args=(ForeignKey("pullrequest.id", ondelete="CASCADE"),),
+        nullable=False,
+    )
     commit_id: str = Field(nullable=False)
     github_comment_id: str | None = Field(default=None, nullable=True)
     file_name: str = Field(nullable=False)

@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.core.db import create_db_and_tables
 from app.core.logging import configure_structured_logging
 from app.core.middleware import AuthMiddleware
+from app.core.sandbox.e2b import build_e2b_template
 from app.routers import ai, auth, github, health, users, webhooks
 
 logging.basicConfig(
@@ -50,6 +51,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await create_db_and_tables()
     DBOS(config=_dbos_config())
     DBOS.launch()
+    build_e2b_template()
     try:
         yield
     finally:
