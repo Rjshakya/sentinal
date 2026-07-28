@@ -747,19 +747,6 @@ async def invoke_review_agent_step(
         ) from exc
 
     try:
-        subagents = build_review_subagents(
-            sandbox=sandbox,
-            pr_number=pr_number,
-            head_sha=head_sha,
-            hunk_map=hunk_map,
-            provider=provider,
-            llm_baseurl=llm_baseurl,
-            llm_api_key=llm_api_key,
-            llm_model=llm_model,
-            repo_id=repo_id,
-            repo_name=repo_name,
-            workflow_id=DBOS.workflow_id,
-        )
         orchestrator_model = build_chat_model(
             provider=provider,
             base_url=llm_baseurl,
@@ -776,6 +763,15 @@ async def invoke_review_agent_step(
                 model=llm_model,
             ),
         )
+
+        subagents = build_review_subagents(
+            sandbox=sandbox,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            hunk_map=hunk_map,
+            model=orchestrator_model,
+        )
+
         orchestrator = build_orchestrator_agent(
             model=orchestrator_model,
             backend=cast(Any, _orchestrator_backend(sandbox)),

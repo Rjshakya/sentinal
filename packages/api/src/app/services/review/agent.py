@@ -454,13 +454,7 @@ def build_review_subagents(
     pr_number: int,
     head_sha: str,
     hunk_map: HunkMap,
-    provider: LLMProviderStr,
-    llm_baseurl: str | None,
-    llm_api_key: str,
-    llm_model: str,
-    repo_id: str,
-    repo_name: str,
-    workflow_id: str | None = None,
+    model: BaseChatModel,
 ) -> list[SubAgent]:
     """Build the four review subagents for the orchestrator.
 
@@ -479,19 +473,6 @@ def build_review_subagents(
     which subagent to invoke; it is intentionally short and lane-
     specific.
     """
-    common_subagent_kwargs = {
-        "sandbox": sandbox,
-        "pr_number": pr_number,
-        "head_sha": head_sha,
-        "hunk_map": hunk_map,
-        "provider": provider,
-        "llm_baseurl": llm_baseurl,
-        "llm_api_key": llm_api_key,
-        "llm_model": llm_model,
-        "repo_id": repo_id,
-        "repo_name": repo_name,
-        "workflow_id": workflow_id,
-    }
 
     summary_subagent: SubAgent = SubAgent(
         name="summary",
@@ -501,13 +482,9 @@ def build_review_subagents(
             "subagent for the ReviewResult.summary field."
         ),
         system_prompt=PR_SUMMARY_SYSTEM_PROMPT,
-        model=_build_chat_model_for(
-            agent_name="summary", **common_subagent_kwargs
-        ),
+        model=model,
         tools=[
-            make_get_diff_tool(
-                sandbox=sandbox, pr_number=pr_number, head_sha=head_sha
-            ),
+            make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
             make_verify_comment_line_tool(hunk_map=hunk_map),
         ],
     )
@@ -521,14 +498,10 @@ def build_review_subagents(
             "every entry already has severity='P1_CRITICAL'."
         ),
         system_prompt=SECURITY_SYSTEM_PROMPT,
-        model=_build_chat_model_for(
-            agent_name="security", **common_subagent_kwargs
-        ),
+        model=model,
         response_format=SecurityComments,
         tools=[
-            make_get_diff_tool(
-                sandbox=sandbox, pr_number=pr_number, head_sha=head_sha
-            ),
+            make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
             make_verify_comment_line_tool(hunk_map=hunk_map),
         ],
     )
@@ -543,14 +516,10 @@ def build_review_subagents(
             "severity='P2_WARNING'."
         ),
         system_prompt=CORRECTNESS_SYSTEM_PROMPT,
-        model=_build_chat_model_for(
-            agent_name="correctness", **common_subagent_kwargs
-        ),
+        model=model,
         response_format=CorrectnessComments,
         tools=[
-            make_get_diff_tool(
-                sandbox=sandbox, pr_number=pr_number, head_sha=head_sha
-            ),
+            make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
             make_verify_comment_line_tool(hunk_map=hunk_map),
         ],
     )
@@ -564,14 +533,10 @@ def build_review_subagents(
             "severity='P3_NITPICK'."
         ),
         system_prompt=STYLE_SYSTEM_PROMPT,
-        model=_build_chat_model_for(
-            agent_name="style", **common_subagent_kwargs
-        ),
+        model=model,
         response_format=StyleComments,
         tools=[
-            make_get_diff_tool(
-                sandbox=sandbox, pr_number=pr_number, head_sha=head_sha
-            ),
+            make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
             make_verify_comment_line_tool(hunk_map=hunk_map),
         ],
     )
