@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import Column, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, ForeignKey, SQLModel
 
 from app.models.enums import PRStatus
 
@@ -13,7 +13,10 @@ if TYPE_CHECKING:
 
 class PullRequest(SQLModel, table=True):
     id: str = Field(primary_key=True, nullable=False)
-    repo_id: str = Field(foreign_key="repo.id", nullable=False)
+    repo_id: str = Field(
+        sa_column_args=(ForeignKey("repo.id", ondelete="CASCADE"),),
+        nullable=False,
+    )
     number: int = Field(nullable=False)
     author: str = Field(nullable=False)
     title: str = Field(nullable=False)

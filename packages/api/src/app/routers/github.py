@@ -33,7 +33,7 @@ from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlmodel import delete, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -82,6 +82,21 @@ class RepoOut(BaseModel):
     description: str | None
     default_branch: str
     html_url: str
+    stargazers_count: int
+    language: str | None
+    updated_at: datetime | None
+    clone_url: str
+    installation_id: str
+    github_installation_id: int
+    is_configured: bool = Field(
+        default=False,
+        description=(
+            "True when a row with this github_repo_id exists in the "
+            "local 'repo' table for the calling user. The dashboard "
+            "uses this to mark already-configured repos in the list "
+            "and exclude them from the configure payload."
+        ),
+    )
     stargazers_count: int
     language: str | None
     updated_at: datetime | None
@@ -211,6 +226,22 @@ async def list_installation_repos_route(request: Request) -> list[RepoOut]:
                 f"installation_ids attempted: {', '.join(errors)}"
             ),
         )
+
+    # Cross-reference the merged GitHub-side repo list with the
+    # local ``repo`` table to flag which ones the user has already
+    # started configuring. One indexed ``SELECT … WHERE github_repo_id
+    # # IN (…)`` keyed on ``Repo.github_repo_id`` (UNIQUE) and
+    # ``Repo.user_id`` (indexed). The result is the set of GitHub
+    # repo ids the dashboard should render as "already configured".
+    if seen:
+        async with async_session_maker() as session:
+            stmt = select(Repo.github_repo_id).where(
+                Repo.user_id == user_id,
+                Repo.github_repo_id.in_(list(seen.keys())),  # type: ignore[attr-defined]
+            )
+            configured_gh_ids = {row for row in (await session.exec(stmt)).all()}
+        for r in seen.values():
+            r.is_configured = r.id in configured_gh_ids
 
     return list(seen.values())
 

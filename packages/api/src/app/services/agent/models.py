@@ -34,8 +34,8 @@ class CodeCommentDraft(BaseModel):
         description="The review comment body. Plain text; markdown is fine.",
     )
     severity: CommentSeverityStr
-    from_line: int = Field(ge=1, description="First line of the comment range.")
-    to_line: int = Field(ge=1, description="Last line of the comment range.")
+    from_line: int = Field(ge=0, description="First line of the comment range.")
+    to_line: int = Field(ge=0, description="Last line of the comment range.")
     side: CommentSideStr = Field(
         default="RIGHT",
         description="'RIGHT' for the new side of the diff, 'LEFT' for the old.",
@@ -44,6 +44,24 @@ class CodeCommentDraft(BaseModel):
         default=None,
         description="Optional free-form label for the function/class/symbol "
         "the comment is anchored to (e.g. 'def:create_deep_agent').",
+    )
+
+
+class SecurityComments(BaseModel):
+    List: list[CodeCommentDraft] = Field(
+        description="List of CodeCommentDraft , This Output is Expected From Security Agent"
+    )
+
+
+class CorrectnessComments(BaseModel):
+    List: list[CodeCommentDraft] = Field(
+        description="List of CodeCommentDraft , This Output is Expected From Correctness Agent"
+    )
+
+
+class StyleComments(BaseModel):
+    List: list[CodeCommentDraft] = Field(
+        description="List of CodeCommentDraft , This Output is Expected From Style Agent"
     )
 
 

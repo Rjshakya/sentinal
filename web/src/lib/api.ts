@@ -43,6 +43,7 @@ export type Repo = {
   clone_url: string;
   installation_id: string;
   github_installation_id: number;
+  is_configured: boolean;
 };
 
 export type SetupRepo = {
@@ -52,14 +53,7 @@ export type SetupRepo = {
   installation_id: string;
 };
 
-export type SetupEcosystem =
-  | "node"
-  | "python"
-  | "rust"
-  | "go"
-  | "ruby"
-  | "mixed"
-  | "none";
+export type SetupEcosystem = "node" | "python" | "rust" | "go" | "ruby" | "mixed" | "none";
 
 export type SetupResult = {
   ok: boolean;

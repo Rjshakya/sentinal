@@ -1,3 +1,4 @@
+import socket
 from pathlib import Path
 
 from pydantic import Field
@@ -64,23 +65,28 @@ class Settings(BaseSettings):
 
     # --- E2B sandbox ---
     e2b_api_key: str = Field(
-        # default="",
+        default="",
         description="E2B API key.",
     )
     e2b_template: str = Field(
-        default="sentinel-indexing",
-        description="E2B template name.",
+        default="code-interpreter-v1",
+        description=(
+            "E2B template name. The default is the E2B-hosted "
+            "'code-interpreter-v1' template, which requires no "
+            "build. Set to a custom template slug to use a "
+            "pre-baked image."
+        ),
     )
     e2b_cpu_count: int = Field(
-        default=1,
+        default=2,
         description="vCPU count for newly created E2B sandboxes.",
     )
     e2b_memory_mb: int = Field(
-        default=1024,
+        default=2048,
         description="Memory (MB) for newly created E2B sandboxes.",
     )
     e2b_timeout_s: int = Field(
-        default=600,
+        default=1200,
         description="Timeout (seconds) for newly created E2B sandboxes.",
     )
 
@@ -125,6 +131,18 @@ class Settings(BaseSettings):
         description="Model name passed to ChatOpenAI (e.g. gpt-5.5, "
         "claude-sonnet-4-6 via a proxy, etc.).",
     )
+    cf_ai_gateway_auth_token: str = Field(
+        default="", description="CF ai gateway auth token"
+    )
+    cf_account_id: str = Field(default="", description="CF account id")
+    llm_log_io: bool = Field(
+        default=False,
+        description=(
+            "Emit per-LLM-call input/output JSON log lines for the review "
+            "agents (verbose; dev only). When false, no LLM I/O callback "
+            "handler is attached and there is zero per-call overhead."
+        ),
+    )
 
     # --- GitHub App ---
     github_app_id: str = Field(
@@ -156,6 +174,13 @@ class Settings(BaseSettings):
             "Filesystem path to the GitHub App private key. When set, "
             "takes precedence over GITHUB_APP_PRIVATE_KEY."
         ),
+    )
+
+    # --- DBOS durable execution ---
+    dbos_executor_id: str = Field(
+        default=socket.gethostname(),
+        description="Unique executor ID for this DBOS process. Must be "
+        "unique per running API instance when self-hosting multiple workers.",
     )
 
     # --- GitHub webhook ---
@@ -212,6 +237,15 @@ class Settings(BaseSettings):
             and self.llm_base_url
             and (self.llm_api_key or self.openai_api_key)
         )
+
+    @property
+    def llm_log_io_enabled(self) -> bool:
+        """True when per-LLM-call I/O logging is enabled.
+
+        The chat model factory reads this to decide whether to attach
+        the :class:`app.core.llm_callbacks.LLMIOCallbackHandler`.
+        """
+        return self.llm_log_io
 
     @property
     def github_webhook_configured(self) -> bool:

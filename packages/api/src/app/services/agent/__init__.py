@@ -6,6 +6,6 @@ orchestrator:
 
 - :mod:`app.services.agent.models`   — Pydantic response schemas.
 - :mod:`app.services.agent.prompts` — system prompts (orchestrator
-  + 3 subagents).
+  + 4 subagents: summarizer, security, correctness, style).
 - :mod:`app.services.agent.review`  — factory + entry points.
 """

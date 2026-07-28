@@ -94,7 +94,10 @@ Postgres 18 is the only persistence tier, brought up by `docker-compose.yml`.
 `credentials=True` (sealed cookies must round-trip), then `AuthMiddleware`,
 then registers routers under `settings.api_prefix`. The `lifespan` hook
 runs `create_db_and_tables()` (which uses `SQLModel.metadata.create_all` —
-useful for local dev; migrations are still the source of truth).
+useful for local dev; migrations are still the source of truth). On
+Windows, `main.py` sets `asyncio.WindowsSelectorEventLoopPolicy()` before
+importing DBOS/SQLAlchemy because DBOS's `AsyncSQLAlchemyDatasource` uses
+psycopg async, which fails with the default `ProactorEventLoop`.
 
 `src/app/core/`:
 
@@ -129,6 +132,44 @@ useful for local dev; migrations are still the source of truth).
     `/pipes` and `/github` routers.
 - `github.py` — `github_client_for(user_id)`: mints a GitHub access token
   via Pipes and returns a typed `githubkit.GitHub` client.
+- `logging.py` — `JsonFormatter` and `structured_log(...)`. The root
+  logger is configured to emit JSON in `packages/api/main.py`.
+
+`src/app/services/`:
+
+- `agent/` — the deep-agent graph and its subagents.
+  - `models.py` — Pydantic response schemas (`CodeCommentDraft`,
+    `ReviewResult`, `SetupResult`) emitted by the agents.
+  - `prompts.py` — system prompts for the orchestrator and its four
+    subagents: `summarizer` (PR summary, persisted as the review
+    summary text), `security` (P1_CRITICAL only), `correctness`
+    (P2_WARNING only), and `style` (P3_NITPICK only). Deliberately
+    long and rubric-driven so each specialist has tight vocabulary.
+  - `setup.py` — single-shot deep-agent that installs dependencies
+    in the E2B sandbox before the review pipeline runs. No
+    subagents; emits a `SetupResult`.
+  - `setup_pipeline.py` — Functional Core / Imperative Shell that
+    sequences installation-lookup, token-mint, `git clone`, and the
+    setup agent.
+  - `setup_errors.py` — typed error variants for the setup pipeline.
+- `review/` — the durable review pipeline (the production target of
+  the system).
+  - `workflow.py` — DBOS durable workflows. `review_workflow`
+    sequences idempotent, checkpointed steps (repo lookup, sandbox
+    connect, diff fetch, PR upsert, agent invocation, persistence)
+    and returns a ``Result[ReviewRunResult, ReviewPipelineError]``.
+    `post_review_to_github_workflow` is a separate durable workflow
+    for posting the review to GitHub, so it can be retried
+    independently.
+  - `webhook.py` — GitHub ``pull_request`` ``opened`` / ``synchronize``
+    adapter. Owns the verified-payload → durable-workflow handoff and
+    computes the deterministic workflow id
+    (`review:{repo_id}:{pr}:{head_sha[:7]}`).
+  - `steps/` — discrete I/O steps used by the workflows:
+    `resolve_repo`, `resolve_sandbox`, `fetch_diff`, `upsert_pr`,
+    `invoke_agent`, `persist_summary`, `persist_comments`.
+  - `types.py` — `DeepAgentGraph` alias.
+  - `errors.py` — typed error variants for the review pipeline.
 
 `src/app/models/`:
 
@@ -272,6 +313,101 @@ returns `{accepted: N}`. The pipeline that follows (snapshot creation,
 code fetch, AI analysis, comment + summary writes, GitHub posting) is
 not yet wired in this codebase.
 
+**Review pipeline.** GitHub's `pull_request` `opened` (or
+`synchronize`) webhook is verified and handed to
+`app.services.review.webhook.handle_pull_request_opened`. The handler
+validates the payload, resolves the owning `user_id` and local
+`Repo.id`, then starts a durable DBOS workflow with id
+`review:{repo_id}:{pr_number}:{head_sha[:7]}`. The workflow id is
+used as an idempotency key, so duplicate webhook deliveries for the
+same head SHA do not run the agent twice. `review_workflow` runs the
+steps in order:
+
+1. Looks up the `Repo` row (`@dbos_datasource.transaction`).
+2. Looks up the active `Sandbox` row and connects to the E2B sandbox
+   (`@DBOS.step`).
+3. Fetches the unified diff (`git diff base_sha...head_sha`).
+4. **Parses the diff** into a structured `HunkMap` and writes it to
+   `diff.json` alongside `file.diff` in the sandbox
+   (`@DBOS.step`, see `parse_diff_step`). The `HunkMap` is the source
+   of truth for which `(file, line, side)` anchors GitHub will accept
+   as review comments.
+5. Upserts the `PullRequest` row (`@dbos_datasource.transaction`).
+6. Builds the chat model and the review deep-agent graph. The graph
+   has one orchestrator (the root deep-agent) and four `SubAgent`
+   children registered in `assemble_review_subagents()`:
+   `summarizer`, `security`, `correctness`, `style`. All four
+   subagents receive the `verify_comment_line` tool, which is bound
+   to the `HunkMap` and answers a single boolean question: "is this
+   anchor one that GitHub will accept?".
+7. Invokes the agent (`@DBOS.step`). The orchestrator's loop is:
+   read the diff and surrounding code → delegate to the
+   `summarizer` first (its markdown output becomes
+   `ReviewResult.summary` verbatim) → delegate to the three
+   severity-bucketed specialists (in parallel if appropriate) →
+   collect + dedupe findings → pick the verdict from the severities
+   present (any P1 → `REQUEST_CHANGES`, else any P2/P3 → `COMMENT`,
+   else `APPROVE`). The three specialists MUST call
+   `verify_comment_line(file, line, side)` before emitting each
+   `CodeCommentDraft`; the prompt tells them to drop the draft if
+   the tool returns `valid=false` rather than re-anchor to another
+   line.
+8. **Filters the agent's output** via `filter_drafts(review, hunk_map)`
+   (one pure call, in the workflow body). Drops any draft whose
+   anchor is not in the `HunkMap`. Drops are recorded as a single
+   `review_comments_filtered` warning with the dropped tuples.
+9. Persists one `ReviewSummary` row and one `CodeComment` row per
+   surviving draft (`@dbos_datasource.transaction`).
+10. Stops the sandbox (always, in a `finally`).
+
+If `post_to_github` is enabled, the workflow starts a separate
+`post_review_to_github_workflow` with id
+`post:{repo_id}:{pr_number}:{head_sha[:7]}`. This durable workflow
+retries transient GitHub errors (5xx / 429) and can be restarted
+independently via the DBOS admin server without re-running the LLM.
+The main review workflow completes regardless of whether the GitHub
+post succeeds. The post workflow receives the already-filtered
+`ReviewResult`; it does no further line validation beyond the
+existing `< 1` guard in `convert_to_github_comments`.
+
+The summary that lands in `review_summaries.summary` is the
+`summarizer` subagent's bullet output, not a paragraph written by
+the orchestrator. Every bullet in the summary is grounded in a
+`file:line` reference; the summarizer's prompt includes a
+self-critique pass that drops any ungrounded bullet before
+returning.
+
+#### Diff parsing and `verify_comment_line`
+
+GitHub's review-comments API rejects (with HTTP 422) any inline
+comment whose `(file, line, side)` anchor does not appear in the
+PR's diff. The pipeline guards against this at three layers, in
+order:
+
+1. **Agent self-validation.** The `verify_comment_line(file, line, side)`
+   tool is bound to the `HunkMap` and exposed to the four
+   specialist subagents. The tool returns
+   `{"valid": true}` iff the anchor is in the map. The three
+   specialist prompts are written so the LLM calls the tool
+   before emitting each `CodeCommentDraft` and drops the draft
+   (does not re-anchor) if the answer is `false`.
+2. **Server-side filter.** `filter_drafts(review, hunk_map)` is
+   called once in the workflow, immediately after the agent
+   returns, before any persist or post step. It is a pure
+   function and the only server-side line check; it catches
+   anything the agent missed.
+3. **`< 1` guard.** `convert_to_github_comments` still rejects
+   drafts with `from_line < 1` (or `to_line < 1`) as a final
+   defence-in-depth.
+
+The `HunkMap` is computed once in `parse_diff_step` (a
+`@DBOS.step`), held in the workflow's local state, and passed
+into both the agent step (where it is bound into
+`verify_comment_line`) and `filter_drafts`. The
+`/home/user/tmp/{pr_number}/{head_sha}/diff.json` file is written
+to the sandbox so the agent can `read_file` it directly when it
+needs the full per-hunk metadata (function context, line counts).
+
 ### 3.5 Migrations
 
 `packages/api/alembic/versions/0001_init.py` is the only migration. It
@@ -281,6 +417,33 @@ SQLModel for type-safe queries, and `alembic/env.py` imports all
 models to keep `target_metadata` in sync. New schema changes go
 through Alembic; the lifespan's `create_all` is a convenience for
 greenfield dev, not a substitute.
+
+### 3.6 Structured logging
+
+The API emits all logs as JSON. `packages/api/main.py` calls
+`configure_structured_logging()` after `logging.basicConfig(...)` to
+replace the root formatter with `app.core.logging.JsonFormatter`.
+
+Failures in the GitHub review-post path are logged via
+`app.core.logging.structured_log(level, msg, object)`:
+
+- `github_review_post_failed` — emitted by
+  `app.services.github.post_review.post_review_to_github` when the
+  review POST fails. Includes `owner`, `repo`, `pr_number`,
+  `commit_id`, `installation_id`, `error_type`, `status_code`,
+  `error_message`, `response_body`, and `request_body`.
+- `github_review_comments_fetch_failed` — emitted when fetching the
+  comments for a posted review fails. Includes the review ID and the
+  GitHub response body.
+- `github_review_post_exception` — no longer emitted; the GitHub
+  post step now lives in its own durable workflow
+  (`post_review_to_github_workflow`), and retryable errors are
+  retried by DBOS while non-retryable errors are recorded in the
+  workflow result.
+
+`app.services.review.webhook` skips duplicate warning lines for
+`GitHubPosterError` variants because the structured log is already
+emitted at the source.
 
 ## 4. Frontend — `web`
 
@@ -477,6 +640,10 @@ values are set; the `/auth` router returns a 503 if it isn't.
 - Database schema → `packages/api/alembic/versions/0001_init.py`
 - ORM models → `packages/api/src/app/models/`
 - API routers → `packages/api/src/app/routers/`
+- AI agent prompts (orchestrator + 4 subagents) → `packages/api/src/app/services/agent/prompts.py`
+- AI agent response schemas → `packages/api/src/app/services/agent/models.py`
+- Review pipeline (orchestrator + subagent factory + persistence) → `packages/api/src/app/services/review/pipeline.py`
+- Setup agent (single-shot deep-agent) → `packages/api/src/app/services/agent/setup.py`
 - WorkOS + GitHub plumbing → `packages/api/src/app/core/{workos,github,auth,middleware}.py`
 - App wiring (middleware order, router registration) → `packages/api/src/app/main.py`
 - Env loading → `packages/api/src/app/core/config.py`

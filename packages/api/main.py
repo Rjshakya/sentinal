@@ -1,26 +1,61 @@
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+import sys
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
+# psycopg async mode does not work with Windows' default ProactorEventLoop.
+# Force the SelectorEventLoop before any DBOS/SQLAlchemy async imports run.
+# if sys.platform == "win32":
+#     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+#
+from dbos import DBOS, DBOSConfig
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.db import create_db_and_tables
+from app.core.logging import configure_structured_logging
 from app.core.middleware import AuthMiddleware
+from app.core.sandbox.e2b import build_e2b_template
 from app.routers import ai, auth, github, health, users, webhooks
-
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
+configure_structured_logging()
+
+
+def _dbos_config() -> DBOSConfig:
+    """Build DBOS config from application settings.
+
+    DBOS shares the same Postgres database as the application. The URL
+    is stripped of the asyncpg driver suffix because DBOS creates its
+    own SQLAlchemy engine.
+    """
+    db_url = settings.database_url.replace("+asyncpg", "")
+    return {
+        "name": "sentinel",
+        "system_database_url": db_url,
+        "application_database_url": db_url,
+        "executor_id": settings.dbos_executor_id,
+        # "run_admin_server": True,
+        # "admin_port": 3001,
+    }
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await create_db_and_tables()
-    yield
+    DBOS(config=_dbos_config())
+    DBOS.launch()
+    build_e2b_template()
+    try:
+        yield
+    finally:
+        DBOS.destroy()
 
 
 def create_app() -> FastAPI:
@@ -37,6 +72,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
     app.add_middleware(AuthMiddleware)
 
     app.include_router(health.router, prefix=settings.api_prefix)
@@ -50,3 +86,23 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+    import uvicorn.loops.asyncio as uvicorn_asyncio_loop
+
+    if sys.platform == "win32":
+
+        def _selector_loop_factory(
+            use_subprocess: bool = False,
+        ) -> type[asyncio.AbstractEventLoop]:
+            return asyncio.SelectorEventLoop
+
+        uvicorn_asyncio_loop.asyncio_loop_factory = _selector_loop_factory
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+    )

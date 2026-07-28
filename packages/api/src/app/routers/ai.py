@@ -1,20 +1,20 @@
-"""AI routes: the synchronous setup-agent endpoint.
+"""AI routes: the setup-pipeline endpoints.
 
-The only live route is ``POST /ai/repo/setup``. The caller blocks on
-the agent's structured response because there is nothing useful to ack
-before the install lands.
+Two routes:
 
-All handlers are provider-agnostic: they build a
-:class:`SandboxSpec` from current settings (via
-:func:`build_default_spec`) and hand it to the underlying service. The
-service never sees a concrete provider.
+- ``POST /ai/repo/setup`` (asynchronous) — accepts a list of repos,
+  skips any that already have a row in the ``repos`` table, and
+  dispatches a DBOS workflow for the rest. Returns the workflow ids
+  (or skip markers) immediately (``202 Accepted``). The dashboard
+  polls the GET endpoint for terminal state.
+- ``GET /ai/repo/setup/{workflow_id}`` — returns the workflow's
+  current status and the persisted :class:`SetupResult` if the
+  workflow has reached a terminal state.
 
-The setup endpoint is a thin adapter over
-:mod:`app.services.agent.setup_pipeline`. The router owns the
-sandbox lifecycle (``create`` / ``kill``) and the per-repo
-persistence (``Sandbox`` row on create + kill, ``reposetupresult``
-row on completion); the pipeline owns the step sequence and the
-``Result`` composition. No business logic lives in this file.
+The router is a thin shell. All setup logic lives in
+:mod:`app.services.agent.setup_workflow.workflow` and its step modules; the
+router only handles request validation, the Repo-row skip check,
+and the DBOS dispatch / status read.
 """
 
 from __future__ import annotations
@@ -23,37 +23,22 @@ import logging
 from datetime import UTC, datetime
 from typing import cast
 
-from fastapi import APIRouter, HTTPException, Request
-from sqlmodel.ext.asyncio.session import AsyncSession
+from dbos import DBOS, WorkflowStatusString
+from fastapi import APIRouter, HTTPException, Path, Request, status
+from sqlmodel import select
 
 from app.core.config import settings
 from app.core.db import async_session_maker
-from app.core.result import Err, Ok, Result
-from app.core.sandbox import BaseSandbox, build_default_spec, create_sandbox
-from app.core.sandbox.e2b import E2BSandboxSpec
-from app.models.enums import (
-    SandboxState,
-    SetupRunStatus,
+from app.core.llm import LLMProviderStr
+from app.models.repo import Repo
+from app.schemas.setup import (
+    SetupRequest,
+    SetupStatusResponse,
+    SetupWorkflowHandle,
+    StartSetupResponse,
 )
-from app.models.installation import Installation
-from app.models.repo import Repo as RepoModel
-from app.models.repo_setup_result import RepoSetupResult as RepoSetupResultModel
-from app.models.sandbox import Sandbox as SandboxModel
-from app.repositories import make_repo
-from app.schemas.setup import RepoSetupResult, SetupAck, SetupRepo, SetupRequest
-from app.services.agent.models import SetupResult
-from app.services.agent.setup import LLMProviderStr
-from app.services.agent.setup_errors import (
-    SetupAgentCrashed,
-    SetupPipelineError,
-)
-from app.services.agent.setup_pipeline import (
-    E2BInstallTokenMinter,
-    SetupAgentRunner,
-    flatten_pipeline_error_to_setup_result,
-    run_setup_pipeline,
-)
-from app.utils.util import uuidToStr
+from app.services.agent.setup_workflow.types import SetupWorkflowInput
+from app.services.agent.setup_workflow.workflow import setup_workflow
 
 log = logging.getLogger(__name__)
 
@@ -61,35 +46,65 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 
 
 # --------------------------------------------------------------------------- #
-# POST /ai/repo/setup — synchronous setup-agent endpoint                      #
+# Workflow id                                                                  #
 # --------------------------------------------------------------------------- #
 
 
-@router.post("/repo/setup", response_model=SetupAck)
-async def setup_repos(
+def _parse_workflow_id(workflow_id: str) -> tuple[str, int] | None:
+    """Parse ``setup:{user_id}:{github_repo_id}`` into ``(user_id, github_repo_id)``.
+
+    Returns ``None`` on any malformed input. ``user_id`` is assumed
+    not to contain ``:`` (WorkOS user ids do not).
+    """
+    parts = workflow_id.split(":")
+    if len(parts) != 3 or parts[0] != "setup":
+        return None
+    try:
+        return parts[1], int(parts[2])
+    except ValueError:
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# POST /ai/repo/setup — async dispatch                                          #
+# --------------------------------------------------------------------------- #
+
+
+@router.post(
+    "/repo/setup",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=StartSetupResponse,
+)
+async def start_setup_repos(
     payload: SetupRequest,
     request: Request,
-) -> SetupAck:
-    """Synchronously run the setup agent for every repo in the request.
+) -> StartSetupResponse:
+    """Dispatch a setup workflow per repo and return their ids.
 
-    Each repo is processed by :func:`_setup_one_repo`, which owns
-    the sandbox lifecycle (``create`` / ``kill``) and delegates the
-    actual work to :func:`app.services.agent.setup_pipeline.run_setup_pipeline`.
-    The handler does not raise on a per-repo failure — every repo
-    is attempted, and a per-repo failure is encoded in the
-    corresponding :class:`RepoSetupResult.setup` (``ok=False``).
+    The handler is asynchronous — it does not wait for the agents
+    to finish. Each repo in the request that does **not** already
+    have a row in the ``repos`` table gets its own DBOS workflow;
+    repos that do have a row are reported as ``skipped=True`` with
+    ``workflow_id=None`` and the dashboard does not poll them.
 
-    The endpoint is synchronous: the caller blocks on the agent's
-    structured response. There is nothing useful to ack before the
-    install lands.
+    The check is keyed on ``github_repo_id`` alone (which is
+    globally UNIQUE in the ``repos`` table), so a second POST for
+    an already-set-up repo is always skipped regardless of which
+    user triggers it.
+
+    Note: there is no in-flight dedup. A rapid duplicate POST while
+    a setup workflow is mid-run (before its first step commits the
+    ``Repo`` row) will start a second workflow for the same repo.
+    The workflow's own ``_upsert_repo`` is idempotent at the DB
+    layer, so this is safe but wastes work.
 
     Preconditions:
 
     - The LLM must be configured (``LLM_BASE_URL``, ``LLM_MODEL`` and
       an API key). Otherwise we 503.
-    - The active sandbox provider must be configured
-      (``E2B_API_KEY`` for the default provider). The
-      :func:`build_default_spec` factory raises if the key is missing.
+    - The active sandbox provider must be configured. The workflow
+      will surface a 503-equivalent in the status response on the
+      first attempt.
     """
     if not payload.repos:
         raise HTTPException(
@@ -107,208 +122,153 @@ async def setup_repos(
         )
 
     user_id: str = request.state.user_id
-    spec = build_default_spec("e2b")
+    requested_ids = [r.id for r in payload.repos]
+    existing_ids: set[int] = await _existing_repo_ids(requested_ids)
+    workflows: list[SetupWorkflowHandle] = []
 
-    results: list[RepoSetupResult] = []
-
-    for input in payload.repos:
-        result = await _setup_repo(user_id=user_id, input=input, spec=spec)
-        if result is not None:
-            results.append(result)
-
-    return SetupAck(results=results)
-
-
-async def _setup_repo(
-    *,
-    user_id: str,
-    input: SetupRepo,
-    spec: E2BSandboxSpec,
-) -> RepoSetupResult | None:
-    """Thin Ring-3 adapter for a single repo.
-
-    Owns the sandbox lifecycle (``create`` / ``kill``) and the
-    per-repo persistence (``Sandbox`` row on create + kill,
-    ``reposetupresult`` row on completion). Delegates the actual
-    setup work to :func:`run_setup_pipeline`. Never raises —
-    every failure mode is encoded in the returned
-    :class:`RepoSetupResult.setup` (an ``ok=False`` :class:`SetupResult`).
-    """
-    async with async_session_maker() as session:
-        try:
-            sandbox_repo = make_repo(SandboxModel, session)
-            repo_table_repo = make_repo(RepoModel, session)
-            repo_setup_result_table_repo = make_repo(RepoSetupResultModel, session)
-
-            # upsert repo record
-
-            repo_record = await repo_table_repo.find_by_field(
-                RepoModel.github_repo_id, input.id
-            )
-
-            if repo_record is None:
-                repo_record = await repo_table_repo.add(
-                    RepoModel(
-                        id=uuidToStr(),
-                        user_id=user_id,
-                        github_repo_id=input.id,
-                        repo_name=input.name,
-                        repo_owner=input.owner,
-                        clone_url=f"https://github.com/{input.owner}/{input.name}.git",
-                    )
-                )
-                await session.commit()
-                await session.refresh(repo_record)
-
-            # initialize sandbox
-            sandbox: BaseSandbox = create_sandbox(
-                spec=spec,
-                user_id=user_id,
-                repo_id=repo_record.id,
-                sandbox_name=f"{input.owner}-{input.name}-setup",
-            )
-
-            await sandbox.create()
-
-            # Persist sandbox record
-            sandbox_record = await sandbox_repo.add(
-                SandboxModel(
-                    id=sandbox.id,
-                    user_id=user_id,
-                    repo_id=repo_record.id,
-                    sandbox_name=sandbox.sandbox_name,
-                    state=SandboxState.STARTED,
-                    provider_id="e2b",
+    for r in payload.repos:
+        if r.id in existing_ids:
+            workflows.append(
+                SetupWorkflowHandle(
+                    github_repo_id=r.id,
+                    workflow_id=None,
+                    status="PENDING",
+                    skipped=True,
                 )
             )
-
-            await session.commit()
-            await session.refresh(sandbox_record)
-
-            started_at = datetime.now()
-
-            # Run Main Agent loop
-            result = await _run_setup_agent_pipeline(
-                user_id=user_id,
-                input=input,
-                sandbox=sandbox,
-                session=session,
+            log.info(
+                "ai.start_setup: skipped github_repo_id=%s user_id=%s (Repo row exists)",
+                r.id,
+                user_id,
             )
+            continue
 
-            completed_at = datetime.now()
-
-            # save setup result
-            if isinstance(result, Ok):
-                setup_result = result.value
-                payload = create_save_repo_setup_result_payload(
-                    repo_id=repo_record.id,
-                    user_id=user_id,
-                    sandbox_id=sandbox_record.id,
-                    llm_provider=settings.llm_provider,
-                    llm_model=settings.llm_model,
-                    pipeline_result=setup_result,
-                    started_at=started_at,
-                    completed_at=completed_at,
-                )
-
-                await repo_setup_result_table_repo.add(payload)
-
-            # cleanify
-            stop_sandbox = await sandbox.stop()
-            await sandbox_repo.update_by_field(
-                SandboxModel.id,
-                sandbox_record.id,
-                state=SandboxState.STOPPED,
-                stopped_at=stop_sandbox.stopped_at or datetime.now(UTC),
-            )
-
-            await session.commit()
-
-            if isinstance(result, Ok):
-                return RepoSetupResult(
-                    repo_id=repo_record.id,
-                    github_repo_id=input.id,
-                    setup=result.value,
-                )
-
-            return RepoSetupResult(
-                repo_id=repo_record.id,
-                github_repo_id=input.id,
-                setup=flatten_pipeline_error_to_setup_result(result.error),
-            )
-
-        except Exception as e:
-            log.error(e)
-
-
-async def _run_setup_agent_pipeline(
-    *,
-    user_id: str,
-    input: SetupRepo,
-    sandbox: BaseSandbox,
-    session: AsyncSession,
-) -> Result[SetupResult, SetupPipelineError]:
-    """Create the sandbox (persisting the :class:`Sandbox` row on
-    success) and run the setup pipeline. Returns the ``Result``,
-    the sandbox id (when the sandbox was actually created), and
-    the host-clock ``started_at``. Never raises.
-    """
-
-    try:
-        installation_repo = make_repo(Installation, session)
-
-        result = await run_setup_pipeline(
+        workflow_input = SetupWorkflowInput(
             user_id=user_id,
-            input=input,
-            installation_repo=installation_repo,
-            install_token_minter=E2BInstallTokenMinter(),
-            sandbox=sandbox,
-            setup_agent_runner=SetupAgentRunner(
-                llm_provider=cast(LLMProviderStr, settings.llm_provider),
-                llm_base_url=settings.llm_base_url or None,
-                llm_api_key=settings.llm_api_key,
-                llm_model=settings.llm_model,
-            ),
+            github_repo_id=r.id,
+            repo_owner=r.owner,
+            repo_name=r.name,
+            installation_id=r.installation_id,
+            llm_provider=cast(LLMProviderStr, settings.llm_provider),
+            llm_base_url=settings.llm_base_url or None,
+            llm_api_key=settings.llm_api_key or settings.openai_api_key,
+            llm_model=settings.llm_model,
         )
 
-        return result
-    except Exception as e:
-        log.error(e)
-        return Err(SetupAgentCrashed(cause=str(e)))
+        workflow_info = await DBOS.start_workflow_async(setup_workflow, workflow_input)
+
+        workflows.append(
+            SetupWorkflowHandle(
+                github_repo_id=r.id,
+                workflow_id=workflow_info.workflow_id,
+                status="PENDING",
+                skipped=False,
+            )
+        )
+        log.info(
+            "ai.start_setup: dispatched workflow_id=%s user_id=%s github_repo_id=%s",
+            workflow_info.workflow_id,
+            user_id,
+            r.id,
+        )
+
+    return StartSetupResponse(workflows=workflows)
+
+
+async def _existing_repo_ids(github_repo_ids: list[int]) -> set[int]:
+    """Return the subset of ``github_repo_ids`` that already have a ``Repo`` row.
+
+    Single ``SELECT ... WHERE github_repo_id IN (...)``. Mirrors the
+    bulk-lookup pattern in :mod:`app.routers.webhooks` (the
+    ``installation_repositories.removed`` handler).
+    """
+    if not github_repo_ids:
+        return set()
+    async with async_session_maker() as session:
+        stmt = select(Repo.github_repo_id).where(
+            Repo.github_repo_id.in_(github_repo_ids)  # type: ignore[attr-defined]
+        )
+        result = await session.exec(stmt)
+        return set(result.all())
 
 
 # --------------------------------------------------------------------------- #
-# helpers                                                                      #
+# GET /ai/repo/setup/{workflow_id} — status poll                               #
 # --------------------------------------------------------------------------- #
 
 
-def create_save_repo_setup_result_payload(
-    *,
-    repo_id: str,
-    user_id: str,
-    sandbox_id: str | None,
-    started_at: datetime,
-    completed_at: datetime,
-    llm_provider: str,
-    llm_model: str,
-    pipeline_result: SetupResult,
-) -> RepoSetupResultModel:
-    """Pure: build the row payload from the pipeline outcome."""
+@router.get(
+    "/repo/setup/{workflow_id}",
+    response_model=SetupStatusResponse,
+)
+async def get_setup_status(
+    request: Request,
+    workflow_id: str = Path(min_length=1),
+) -> SetupStatusResponse:
+    """Return the current status of a setup workflow.
 
-    configured_repo = pipeline_result
+    The handler reads DBOS's :func:`DBOS.get_workflow_status` (a sync
+    call that does not wait for the workflow to finish). On a
+    terminal ``SUCCESS`` state, the workflow's
+    :class:`SetupWorkflowResult` is deserialized from
+    :attr:`WorkflowStatus.output` and projected onto the response.
+    On a terminal ``ERROR`` state, the exception is read from
+    :attr:`WorkflowStatus.error` and the cached
+    :class:`SetupResult` (``ok=False``) is returned from the
+    persisted DB row.
 
-    return RepoSetupResultModel(
-        repo_id=repo_id,
-        user_id=user_id,
-        status=SetupRunStatus.SUCCEEDED,
-        ok=configured_repo.ok,
-        ecosystem=configured_repo.ecosystem,
-        manager=configured_repo.manager,
-        install_cmd=configured_repo.install_cmd,
-        bootstrapped_tools=configured_repo.bootstrapped_tools,
-        duration_s=int((completed_at - started_at).total_seconds()),
-        notes=configured_repo.notes,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        sandbox_id=sandbox_id,
+    Auth: the workflow id encodes the user_id; the handler refuses
+    cross-user reads with a 404 to avoid leaking workflow existence.
+    """
+    parsed = _parse_workflow_id(workflow_id)
+    if parsed is None:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid workflow_id (expected 'setup:{user_id}:{github_repo_id}')",
+        )
+    owner_user_id, github_repo_id = parsed
+    if owner_user_id != request.state.user_id:
+        # Don't disclose existence to a different user.
+        raise HTTPException(status_code=404, detail="workflow not found")
+
+    dbos_status = DBOS.get_workflow_status(workflow_id)
+    if dbos_status is None:
+        raise HTTPException(status_code=404, detail="workflow not found")
+
+    started_at = _epoch_ms_to_datetime(dbos_status.created_at)
+    completed_at = _epoch_ms_to_datetime(dbos_status.updated_at)
+
+    error_name: str | None = None
+    error_message: str | None = None
+
+    if dbos_status.status in {
+        WorkflowStatusString.ERROR,
+        WorkflowStatusString.MAX_RECOVERY_ATTEMPTS_EXCEEDED,
+    }:
+        if dbos_status.error is not None:
+            error_name = type(dbos_status.error).__name__
+            error_message = str(dbos_status.error)
+
+    return SetupStatusResponse(
+        workflow_id=workflow_id,
+        status=dbos_status.status,
+        github_repo_id=github_repo_id,
+        error_name=error_name,
+        error_message=error_message,
+        started_at=started_at,
+        completed_at=completed_at,
     )
+
+
+def _epoch_ms_to_datetime(epoch_ms: int | None) -> datetime | None:
+    """Convert a DBOS Unix-epoch-ms timestamp to a ``datetime``.
+
+    Returns ``None`` when the input is ``None`` (DBOS leaves these
+    fields unset for not-yet-started / not-yet-completed workflows).
+    """
+    if epoch_ms is None:
+        return None
+    return datetime.fromtimestamp(epoch_ms / 1000.0, tz=UTC)
+
+
+__all__ = ["router"]

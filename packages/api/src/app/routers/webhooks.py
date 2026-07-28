@@ -15,7 +15,10 @@ Verifies the ``X-Hub-Signature-256`` HMAC against
   ``github_installation_id`` (set up by the setup callback).
 - ``installation_repositories`` (action ``removed``) -> delete the
   matching :class:`Repo` rows.
-- ``pull_request`` -> log + 202 (handled in a follow-up).
+- ``pull_request`` (action ``opened``) -> delegate to
+  :func:`app.services.review.webhook.handle_pull_request_opened`,
+  which dispatches a durable DBOS workflow for the review. Other
+  ``pull_request`` actions are log + 202.
 - anything else -> 202 with a log line.
 
 The handler sits outside AuthMiddleware's protected prefixes: GitHub
@@ -31,20 +34,16 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import Response
 from sqlmodel import delete, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.db import async_session_maker
-from app.core.result import Err
-from app.core.sandbox import build_default_spec
-from app.models.enums import PRStatus
 from app.models.installation import Installation
-from app.models.pull_request import PullRequest
 from app.models.repo import Repo
-from app.services import review as review_service
+from app.services.review import webhook as review_webhook
 from app.utils.util import uuidToStr
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -308,192 +307,6 @@ async def _handle_installation_repositories_removed(
 
 
 # --------------------------------------------------------------------------- #
-# pull_request event handler                                                   #
-# --------------------------------------------------------------------------- #
-
-
-def _enqueue_review(
-    background_tasks: BackgroundTasks,
-    *,
-    user_id: str,
-    repo_id: str,
-    repo_name: str,
-    pr_number: int,
-    pr_title: str,
-    pr_author: str,
-    pr_body: str | None,
-    base_branch: str,
-    base_sha: str,
-    head_branch: str,
-    head_sha: str,
-) -> None:
-    """Schedule an auto-review for a PR webhook event."""
-    spec = build_default_spec("e2b")
-
-    async def _run_review() -> None:
-        try:
-            async with async_session_maker() as session:
-                outcome = await review_service.run_review_pipeline(
-                    user_id=user_id,
-                    repo_id=repo_id,
-                    repo_name=repo_name,
-                    pr_number=pr_number,
-                    pr_title=pr_title,
-                    pr_author=pr_author,
-                    pr_body=pr_body,
-                    base_branch=base_branch,
-                    base_sha=base_sha,
-                    head_branch=head_branch,
-                    head_sha=head_sha,
-                    diff_provider=review_service.SandboxDiffProvider(),
-                    agent_runner=review_service.E2BReviewAgentRunner(),
-                    session=session,
-                    spec=spec,
-                )
-            if isinstance(outcome, Err):
-                log.error(
-                    "auto-review failed: repo_id=%s pr_number=%s error=%s",
-                    repo_id,
-                    pr_number,
-                    review_service.flatten_review_error_to_message(outcome.error),
-                )
-                return
-            log.info(
-                "auto-review finished: pr_id=%s commit_id=%s comments=%d",
-                outcome.value.pr_id,
-                outcome.value.commit_id,
-                len(outcome.value.comment_ids),
-            )
-        except Exception:
-            log.exception(
-                "auto-review crashed: repo_id=%s pr_number=%s",
-                repo_id,
-                pr_number,
-            )
-
-    background_tasks.add_task(_run_review)
-
-
-async def _upsert_pull_request(
-    *,
-    repo_id: str,
-    number: int,
-    author: str,
-    title: str,
-    body: str | None,
-    base_branch: str,
-    base_sha: str,
-    head_branch: str,
-    head_sha: str,
-) -> str:
-    """Insert-or-update a single PullRequest row."""
-    async with async_session_maker() as session:
-        stmt = select(PullRequest).where(
-            PullRequest.repo_id == repo_id,
-            PullRequest.number == number,
-        )
-        existing = (await session.exec(stmt)).first()
-        if existing is not None:
-            existing.title = title
-            existing.body = body
-            existing.author = author
-            existing.base_branch = base_branch
-            existing.base_sha = base_sha
-            existing.head_branch = head_branch
-            existing.head_sha = head_sha
-            existing.updated_at = datetime.now(UTC)
-            session.add(existing)
-            await session.commit()
-            await session.refresh(existing)
-            return existing.id
-
-        pr = PullRequest(
-            id=uuidToStr(),
-            repo_id=repo_id,
-            number=number,
-            author=author,
-            title=title,
-            body=body,
-            status=PRStatus.OPEN,
-            base_branch=base_branch,
-            base_sha=base_sha,
-            head_branch=head_branch,
-            head_sha=head_sha,
-        )
-        session.add(pr)
-        await session.commit()
-        await session.refresh(pr)
-        return pr.id
-
-
-async def _handle_pull_request(
-    payload: dict[str, Any],
-    action: str,
-    background_tasks: BackgroundTasks,
-) -> Response:
-    """Persist the PR row and enqueue a review for opened / synchronize."""
-    pr = payload.get("pull_request") or {}
-    number = pr.get("number")
-    if not isinstance(number, int):
-        return Response(status_code=202)
-    user = pr.get("user") or {}
-    author = user.get("login") or ""
-    title = pr.get("title") or ""
-    body = pr.get("body")
-    base = pr.get("base") or {}
-    head = pr.get("head") or {}
-
-    repo = payload.get("repository") or {}
-    github_repo_id = repo.get("id")
-    installation = payload.get("installation") or {}
-    gh_installation_id = installation.get("id")
-    if not isinstance(github_repo_id, int) or not isinstance(gh_installation_id, int):
-        return Response(status_code=202)
-
-    async with async_session_maker() as session:
-        stmt = select(Repo).where(Repo.github_repo_id == github_repo_id)
-        repo_row = (await session.exec(stmt)).first()
-    if repo_row is None:
-        return Response(status_code=202)
-
-    await _upsert_pull_request(
-        repo_id=repo_row.id,
-        number=number,
-        author=author,
-        title=title,
-        body=body,
-        base_branch=base.get("ref") or "",
-        base_sha=base.get("sha") or "",
-        head_branch=head.get("ref") or "",
-        head_sha=head.get("sha") or "",
-    )
-    log.info(
-        "github_webhook: pull_request.%s persisted pr#%s for repo_id=%s",
-        action,
-        number,
-        repo_row.id,
-    )
-
-    if action in {"opened", "synchronize"}:
-        _enqueue_review(
-            background_tasks,
-            user_id=repo_row.user_id,
-            repo_id=repo_row.id,
-            repo_name=repo_row.repo_name,
-            pr_number=number,
-            pr_title=title,
-            pr_author=author,
-            pr_body=body,
-            base_branch=base.get("ref") or "",
-            base_sha=base.get("sha") or "",
-            head_branch=head.get("ref") or "",
-            head_sha=head.get("sha") or "",
-        )
-
-    return Response(status_code=202)
-
-
-# --------------------------------------------------------------------------- #
 # main handler                                                                 #
 # --------------------------------------------------------------------------- #
 
@@ -501,7 +314,6 @@ async def _handle_pull_request(
 @router.post("/github")
 async def github_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
 ) -> Response:
     body = await request.body()
 
@@ -572,21 +384,11 @@ async def github_webhook(
 
     if event == "pull_request":
         action = payload.get("action")
-        summary = _summarize_pull_request(payload)
-        log.info(
-            "github_webhook: pull_request.%s accepted (delivery=%s, repo=%s, "
-            "number=%s, sender=%s, bytes=%d)",
-            action,
-            delivery,
-            summary["repository"],
-            summary["number"],
-            summary["sender"],
-            len(body),
-        )
-        if action in {"opened", "reopened", "synchronize", "edited", "closed"}:
-            return await _handle_pull_request(
-                payload, action or "unknown", background_tasks
-            )
+        # summary = _summarize_pull_request(payload)
+
+        if action == "opened" or action == "synchronize":
+            ack = await review_webhook.handle_pull_request_opened(payload, delivery)
+            log.info("github_webhook: pull_request handled: %s", ack.model_dump_json())
         return Response(status_code=202)
 
     log.info(

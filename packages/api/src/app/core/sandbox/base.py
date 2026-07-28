@@ -202,6 +202,14 @@ class BaseSandbox(ABC):
         raw = await self.fs_read(remote_path)
         return raw.decode("utf-8", errors="ignore")
 
+    async def write_text(self, remote_path: str, data: str) -> WriteInfo:
+        """Write ``data`` (UTF-8) to ``remote_path``.
+
+        Mirror of :meth:`read_text` for symmetry. Auto-creates parent
+        directories via the underlying :meth:`fs_write`.
+        """
+        return await self.fs_write(remote_path, data)
+
     async def execute_streaming(
         self,
         command: str,

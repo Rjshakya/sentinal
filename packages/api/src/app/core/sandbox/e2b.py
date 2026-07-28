@@ -12,13 +12,12 @@ E2B maps cleanly onto every abstract method:
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import logging
 from datetime import UTC, datetime
 from typing import Literal
 
-from e2b import AsyncSandbox, AsyncTemplate
+from e2b import AsyncSandbox, LogEntry, Template
 from e2b.sandbox.filesystem.filesystem import EntryInfo as E2BEntryInfo
 from e2b.sandbox.filesystem.filesystem import FileType
 from e2b.sandbox.filesystem.filesystem import WriteInfo as E2BWriteInfo
@@ -42,6 +41,36 @@ from app.models.enums import SandboxState
 from app.models.sandbox import Sandbox as SandboxModel
 
 log = logging.getLogger(__name__)
+
+CODE_SANDBOX_TEMPLATE_NAME = "SENTINAL_CODE_SANDBOX_TEMP"
+CODE_SANDBOX_CPU = 2
+CODE_SANDBOX_MEM_IN_MB = 1024 * 2
+
+
+def base_e2b_template():
+    template = (
+        Template()
+        .from_python_image()
+        .set_user("root")
+        .run_cmd("mkdir -p /conversation_history")
+    )
+    return template
+
+
+def log_e2b_template_build(data: LogEntry):
+    log.info(data.message)
+
+
+def build_e2b_template():
+    build_info = Template.build(
+        base_e2b_template(),
+        CODE_SANDBOX_TEMPLATE_NAME,
+        cpu_count=CODE_SANDBOX_CPU,
+        memory_mb=CODE_SANDBOX_MEM_IN_MB,
+        api_key=settings.e2b_api_key,
+        on_build_logs=log_e2b_template_build,
+    )
+    return build_info
 
 
 class E2BSandboxSpec(SandboxSpec):
@@ -129,54 +158,19 @@ class E2BSandbox(BaseSandbox):
     async def create(self) -> SandboxModel:
 
         log.info(
-            "creating e2b sandbox",
+            "creating e2b sandbox: cpu=%d memory_mb=%d timeout_s=%d",
             self._spec.cpu_count,
             self._spec.memory_mb,
             self._spec.timeout_s,
-            settings.e2b_api_key,
         )
 
-        template_name = "sentinal-repos-sandbox"
-
-        template = (
-            AsyncTemplate()
-            .from_base_image()
-            .run_cmd(
-                "pip install tree-sitter-language-pack lancedb openai python-dotenv"
-            )
-        )
-
-        template_build = await AsyncTemplate.build(
-            template,
-            template_name,
-            cpu_count=self._spec.cpu_count,
-            memory_mb=self._spec.memory_mb,
-            api_key=settings.e2b_api_key,
-        )
-
-        logs_offset = 0
-        status = "building"
-        while status == "building":
-            build_status = await AsyncTemplate.get_build_status(
-                template_build,
-                logs_offset=0,
-                api_key=settings.e2b_api_key,
-            )
-
-            logs_offset += len(build_status.log_entries)
-            status = build_status.status.value
-
-            for log_entry in build_status.log_entries:
-                log.info("template build: %s", log_entry)
-
-        # Wait for a short period before checking the status again
-        await asyncio.sleep(25)
-
-        if status == "error":
-            raise Exception("Failed to build e2b template")
+        # Resolve the template name from the spec. The default is the
+        # E2B-hosted ``code-interpreter-v1`` template, which requires
+        # no build. Custom templates can be configured via
+        # ``E2B_TEMPLATE`` in the environment.
 
         self._sandbox = await AsyncSandbox.create(
-            template=template_name,
+            template=CODE_SANDBOX_TEMPLATE_NAME,
             api_key=settings.e2b_api_key,
             timeout=20 * 60,
             lifecycle=SandboxLifecycle(on_timeout="pause", auto_resume=True),
