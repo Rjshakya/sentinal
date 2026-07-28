@@ -126,10 +126,10 @@ def extract_last_ai_text(result: object) -> str:
             in it, or the last ``AIMessage`` has empty content.
     """
     # Imported here to keep the helper's import surface small.
+    from app.services.agent.helpers import extract_message_kinds
     from app.services.review.errors import (
         ReviewAgentReturnedNoStructuredResponseError,
     )
-    from app.services.agent.helpers import extract_message_kinds
 
     if not isinstance(result, dict):
         raise ReviewAgentReturnedNoStructuredResponseError(
@@ -186,7 +186,7 @@ def _build_backend(sandbox: E2BSandbox) -> AsyncE2BSandbox:
     is held by the fan-out step and reused by every concurrent
     ``ainvoke``.
     """
-    return AsyncE2BSandbox(sandbox=sandbox.sandbox)
+    return AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
 
 
 # --------------------------------------------------------------------------- #

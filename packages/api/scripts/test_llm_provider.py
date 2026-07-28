@@ -19,13 +19,14 @@ import logging
 import sys
 
 from deepagents import create_deep_agent
-from e2b import AsyncSandbox
+from e2b import AsyncSandbox, SandboxLifecycle
 from langchain_core.tools import tool
 from langchain_e2b import AsyncE2BSandbox
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.llm import build_chat_model
+from app.core.sandbox.e2b import CODE_SANDBOX_TEMPLATE_NAME, build_e2b_template
 from app.services.review.webhook import _resolve_llm_config
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,8 @@ def echo_word(word: str) -> str:
 
 
 async def main() -> int:
+
+    build_e2b_template()
     provider, base_url, api_key, model = _resolve_llm_config()
     log.info(
         "llm config: provider=%s base_url=%s model=%s key=%s…",
@@ -76,13 +79,21 @@ async def main() -> int:
 
     log.info("creating e2b sandbox…")
     sandbox = await AsyncSandbox.create(
+        template=CODE_SANDBOX_TEMPLATE_NAME,
         api_key=settings.e2b_api_key,
-        timeout=600,
+        timeout=20 * 60,
+        lifecycle=SandboxLifecycle(on_timeout="pause", auto_resume=True),
     )
     log.info("sandbox ready: id=%s", sandbox.sandbox_id)
 
     try:
-        backend = AsyncE2BSandbox(sandbox=sandbox)
+        write_file = await sandbox.files.write(
+            "/conversation_history/session_2f4ae646.md", "### This is testing write"
+        )
+
+        log.info(f"write file info, {write_file}")
+
+        backend = AsyncE2BSandbox(sandbox=sandbox, workdir="/home/user")
         agent = create_deep_agent(
             model=chat,
             backend=backend,
@@ -99,6 +110,8 @@ async def main() -> int:
                             "Call the echo_word tool with word='hello'. "
                             "with greeting='done', "
                             "tool_used=true, and echoed_word='hello'."
+                            " and create a file /test/write.md "
+                            " and write content in it , i am testing agent, and i write files. "
                         ),
                     }
                 ]
@@ -123,6 +136,7 @@ async def main() -> int:
         # )
 
         messages = result.get("messages", [])
+        log.info("messages: %s", messages)
         last = messages[-1] if messages else None
         log.info("last message content: %s", getattr(last, "content", last))
         log.info("last message tool_calls: %s", getattr(last, "tool_calls", None))
@@ -136,7 +150,8 @@ async def main() -> int:
 
         raise
     finally:
-        await sandbox.kill()
+        # await sandbox.kill()
+        log.info("sandbox id: %s", sandbox.sandbox_id)
         log.info("sandbox killed")
 
     return 0

@@ -3,17 +3,18 @@
 Two routes:
 
 - ``POST /ai/repo/setup`` (asynchronous) — accepts a list of repos,
-  dispatches a DBOS workflow per repo in parallel, and returns the
-  workflow ids immediately (``202 Accepted``). The dashboard polls
-  the GET endpoint for terminal state.
+  skips any that already have a row in the ``repos`` table, and
+  dispatches a DBOS workflow for the rest. Returns the workflow ids
+  (or skip markers) immediately (``202 Accepted``). The dashboard
+  polls the GET endpoint for terminal state.
 - ``GET /ai/repo/setup/{workflow_id}`` — returns the workflow's
   current status and the persisted :class:`SetupResult` if the
   workflow has reached a terminal state.
 
 The router is a thin shell. All setup logic lives in
 :mod:`app.services.agent.setup_workflow.workflow` and its step modules; the
-router only handles request validation, idempotency, and the
-DBOS dispatch / status read.
+router only handles request validation, the Repo-row skip check,
+and the DBOS dispatch / status read.
 """
 
 from __future__ import annotations
@@ -22,11 +23,14 @@ import logging
 from datetime import UTC, datetime
 from typing import cast
 
-from dbos import DBOS, SetWorkflowID, WorkflowStatusString
+from dbos import DBOS, WorkflowStatusString
 from fastapi import APIRouter, HTTPException, Path, Request, status
+from sqlmodel import select
 
 from app.core.config import settings
+from app.core.db import async_session_maker
 from app.core.llm import LLMProviderStr
+from app.models.repo import Repo
 from app.schemas.setup import (
     SetupRequest,
     SetupStatusResponse,
@@ -44,17 +48,6 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 # --------------------------------------------------------------------------- #
 # Workflow id                                                                  #
 # --------------------------------------------------------------------------- #
-
-
-def _workflow_id(*, user_id: str, github_repo_id: int) -> str:
-    """Build the deterministic workflow id for one ``(user, repo)`` pair.
-
-    Format: ``setup:{user_id}:{github_repo_id}``. The id is also the
-    idempotency key — a second ``POST /ai/repo/setup`` for the same
-    repo reuses the existing workflow if it is still running, or
-    returns the cached status if it has already completed.
-    """
-    return f"setup:{user_id}:{github_repo_id}"
 
 
 def _parse_workflow_id(workflow_id: str) -> tuple[str, int] | None:
@@ -89,18 +82,21 @@ async def start_setup_repos(
     """Dispatch a setup workflow per repo and return their ids.
 
     The handler is asynchronous — it does not wait for the agents
-    to finish. Each repo gets its own DBOS workflow keyed on
-    ``_workflow_id(user_id, github_repo_id)``; duplicate requests
-    for the same repo reuse the running workflow.
+    to finish. Each repo in the request that does **not** already
+    have a row in the ``repos`` table gets its own DBOS workflow;
+    repos that do have a row are reported as ``skipped=True`` with
+    ``workflow_id=None`` and the dashboard does not poll them.
 
-    Idempotency rules (per repo):
+    The check is keyed on ``github_repo_id`` alone (which is
+    globally UNIQUE in the ``repos`` table), so a second POST for
+    an already-set-up repo is always skipped regardless of which
+    user triggers it.
 
-    - ``PENDING`` / ``PROCESSING`` (any non-terminal) → return the
-      existing workflow id.
-    - ``SUCCESS`` → return the existing workflow id and its status
-      (the client should poll for the cached result).
-    - ``ERROR`` / ``MAX_RECOVERY_ATTEMPTS_EXCEEDED`` / ``CANCELLED``
-      → start a fresh workflow so the user can retry.
+    Note: there is no in-flight dedup. A rapid duplicate POST while
+    a setup workflow is mid-run (before its first step commits the
+    ``Repo`` row) will start a second workflow for the same repo.
+    The workflow's own ``_upsert_repo`` is idempotent at the DB
+    layer, so this is safe but wastes work.
 
     Preconditions:
 
@@ -126,24 +122,27 @@ async def start_setup_repos(
         )
 
     user_id: str = request.state.user_id
+    requested_ids = [r.id for r in payload.repos]
+    existing_ids: set[int] = await _existing_repo_ids(requested_ids)
     workflows: list[SetupWorkflowHandle] = []
 
     for r in payload.repos:
-        wf_id = _workflow_id(user_id=user_id, github_repo_id=r.id)
-        existing = await DBOS.get_workflow_status_async(wf_id)
-
-        if existing is not None and existing.status in {
-            WorkflowStatusString.PENDING,
-            WorkflowStatusString.ENQUEUED,
-            WorkflowStatusString.DELAYED,
-            WorkflowStatusString.SUCCESS,
-        }:
+        if r.id in existing_ids:
+            workflows.append(
+                SetupWorkflowHandle(
+                    github_repo_id=r.id,
+                    workflow_id=None,
+                    status="PENDING",
+                    skipped=True,
+                )
+            )
+            log.info(
+                "ai.start_setup: skipped github_repo_id=%s user_id=%s (Repo row exists)",
+                r.id,
+                user_id,
+            )
             continue
 
-        # Either no existing workflow, or the prior one ended in
-        # ERROR / CANCELLED / MAX_RECOVERY_ATTEMPTS_EXCEEDED — start
-        # a fresh one. SetWorkflowID keeps the workflow id stable
-        # across duplicate POSTs even when we want a fresh start.
         workflow_input = SetupWorkflowInput(
             user_id=user_id,
             github_repo_id=r.id,
@@ -155,23 +154,42 @@ async def start_setup_repos(
             llm_api_key=settings.llm_api_key or settings.openai_api_key,
             llm_model=settings.llm_model,
         )
-        with SetWorkflowID(wf_id):
-            await DBOS.start_workflow_async(setup_workflow, workflow_input)
+
+        workflow_info = await DBOS.start_workflow_async(setup_workflow, workflow_input)
+
         workflows.append(
             SetupWorkflowHandle(
                 github_repo_id=r.id,
-                workflow_id=wf_id,
+                workflow_id=workflow_info.workflow_id,
                 status="PENDING",
+                skipped=False,
             )
         )
         log.info(
             "ai.start_setup: dispatched workflow_id=%s user_id=%s github_repo_id=%s",
-            wf_id,
+            workflow_info.workflow_id,
             user_id,
             r.id,
         )
 
     return StartSetupResponse(workflows=workflows)
+
+
+async def _existing_repo_ids(github_repo_ids: list[int]) -> set[int]:
+    """Return the subset of ``github_repo_ids`` that already have a ``Repo`` row.
+
+    Single ``SELECT ... WHERE github_repo_id IN (...)``. Mirrors the
+    bulk-lookup pattern in :mod:`app.routers.webhooks` (the
+    ``installation_repositories.removed`` handler).
+    """
+    if not github_repo_ids:
+        return set()
+    async with async_session_maker() as session:
+        stmt = select(Repo.github_repo_id).where(
+            Repo.github_repo_id.in_(github_repo_ids)  # type: ignore[attr-defined]
+        )
+        result = await session.exec(stmt)
+        return set(result.all())
 
 
 # --------------------------------------------------------------------------- #

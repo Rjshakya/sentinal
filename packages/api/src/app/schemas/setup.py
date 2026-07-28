@@ -85,23 +85,34 @@ class SetupWorkflowHandle(BaseModel):
 
     Returned by the POST handler. The dashboard stores these and
     polls :class:`SetupStatusResponse` for each ``workflow_id`` until
-    it sees a terminal state.
+    it sees a terminal state. Entries with ``skipped=True`` have
+    ``workflow_id=None`` and must not be polled — the corresponding
+    repo already has a row in the ``repos`` table.
     """
 
     github_repo_id: int = Field(
         description="GitHub repo id, echoed back from the request.",
     )
-    workflow_id: str = Field(
+    workflow_id: Optional[str] = Field(
+        default=None,
         description=(
-            "DBOS workflow id of the form "
-            "'setup:{user_id}:{github_repo_id}'. The dashboard "
-            "uses this as the poll key."
+            "DBOS workflow id; the dashboard uses this as the poll "
+            "key. ``None`` when ``skipped=True``."
         ),
     )
     status: WorkflowStatus = Field(
         description="Initial workflow status. Always 'PENDING' for "
-        "freshly-started workflows; 'SUCCESS' / 'ERROR' / "
-        "'PENDING' when an existing workflow is reused.",
+        "freshly-started workflows and for skipped entries.",
+    )
+    skipped: bool = Field(
+        default=False,
+        description=(
+            "True when the repo was skipped because a row already "
+            "exists in the ``repos`` table for this "
+            "``github_repo_id``. In that case ``workflow_id`` is "
+            "``None`` and the dashboard should not poll the status "
+            "endpoint."
+        ),
     )
 
 

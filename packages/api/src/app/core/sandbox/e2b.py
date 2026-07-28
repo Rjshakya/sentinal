@@ -48,7 +48,12 @@ CODE_SANDBOX_MEM_IN_MB = 1024 * 2
 
 
 def base_e2b_template():
-    template = Template().from_python_image()
+    template = (
+        Template()
+        .from_python_image()
+        .set_user("root")
+        .run_cmd("mkdir -p /conversation_history")
+    )
     return template
 
 
