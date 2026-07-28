@@ -34,13 +34,15 @@ from typing import Any, Literal, cast
 
 from dbos import DBOS, SetWorkflowID
 from githubkit_schemas.v2026_03_10.models import PullRequestReview
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
 from sqlmodel import select
 
 from app.core.config import settings
 from app.core.db import async_session_maker, dbos_datasource
 from app.core.github_app import installation_client
-from app.core.llm import LLMProviderStr
+from app.core.llm import LLMProviderStr, build_chat_model
+from app.core.llm_callbacks import make_llm_io_handler
 from app.core.result import Ok
 from app.core.sandbox import build_default_spec
 from app.core.sandbox.e2b import E2BSandbox, E2BSandboxSpec
@@ -60,9 +62,12 @@ from app.services.github.post_review import (
 )
 from app.services.review.agent import (
     assemble_user_prompt,
+    build_orchestrator_agent,
     build_review_agents,
+    build_review_subagents,
     combine_review_results,
     extract_last_ai_text,
+    verdict_for,
 )
 from app.services.review.diff import fetch_diff, parse_and_write_diff_json
 from app.services.review.errors import (
@@ -79,6 +84,10 @@ from app.services.review.helpers import get_repo_path
 from app.services.review.hunk_map import HunkMap, ParsedDiff, filter_drafts
 from app.services.review.steps.persist_summary import persist_review_summary
 from app.services.review.steps.upsert_pr import upsert_pull_request
+from app.services.review.tools import (
+    make_get_diff_tool,
+    make_verify_comment_line_tool,
+)
 
 log = logging.getLogger(__name__)
 
@@ -421,6 +430,12 @@ async def upsert_pull_request_tx(
     return pr.id
 
 
+# Deprecated: replaced by ``invoke_review_agent_step`` (singular) below,
+# which runs the new orchestrator-with-subagents design. This old
+# parallel-fanout step is kept as a one-line revert path — the call
+# site in ``review_workflow`` was switched to the singular step. Do
+# not modify this function. If the new design needs a rollback, change
+# the call site in ``review_workflow`` back to this name.
 @DBOS.step(
     retries_allowed=True,
     max_attempts=2,
@@ -624,6 +639,273 @@ async def invoke_review_agents_step(
             await sandbox.stop()
         except Exception:
             log.exception("failed to stop sandbox after agent invocation")
+
+
+@DBOS.step(
+    retries_allowed=True,
+    max_attempts=2,
+    backoff_rate=2,
+)
+async def invoke_review_agent_step(
+    *,
+    sandbox_id: str,
+    sandbox_name: str,
+    repo_id: str,
+    repo_name: str,
+    user_id: str,
+    pr_number: int,
+    head_sha: str,
+    provider: LLMProviderStr,
+    llm_baseurl: str | None,
+    llm_api_key: str,
+    llm_model: str,
+    hunk_map: HunkMap,
+) -> ReviewResult:
+    """Durable step: run the orchestrator-with-subagents review and combine.
+
+    This is the production review step. It replaces
+    :func:`invoke_review_agents_step` (plural). The flow:
+
+    1. Reconnects to the E2B sandbox (one connection for the step).
+    2. Builds four review subagents (summary, security, correctness,
+       style) — each with its own chat model and its own per-agent
+       LLM I/O callback.
+    3. Builds the root deep-agent (the orchestrator) with the four
+       subagents attached via ``subagents=[]`` and a chat model
+       tagged ``agent="orchestrator"``. The orchestrator's
+       ``response_format`` is :class:`ReviewResult` directly.
+    4. ``ainvoke``s the orchestrator once. The orchestrator
+       delegates to the four subagents in turn, absorbs any
+       subagent failure (substituting an empty result), and emits
+       a single ``ReviewResult`` as its structured response.
+    5. Validates the structured response and overwrites the
+       ``verdict`` field with the deterministic value
+       :func:`verdict_for` (the orchestrator is told to set
+       ``"COMMENT"``; the real verdict is recomputed here from the
+       merged comments).
+
+    Failure semantics:
+
+    - The orchestrator absorbs subagent failures (its prompt tells
+      it to substitute an empty result and continue). Therefore a
+      single subagent's failure does NOT cause a DBOS step retry.
+    - Orchestrator-level failures (LLM 5xx / 429 / timeout) raise
+      :class:`ReviewAgentRateLimitedError`, which is a
+      :class:`TransientStepError`; DBOS retries up to
+      ``max_attempts`` times.
+    - Orchestrator crashes (anything else) raise
+      :class:`ReviewAgentCrashedError` (not retried).
+    - A missing or unparseable structured response raises
+      :class:`ReviewAgentReturnedNoStructuredResponseError` (not
+      retried).
+
+    The whole step is a single DBOS checkpoint: a crash mid-fanout
+    resumes from the cached result, so transient failures don't
+    re-run the LLM. The sandbox is stopped in a ``finally`` so a
+    parse / combine failure does not leak the connection.
+
+    ``hunk_map`` is the parsed diff structure from
+    :func:`app.services.review.hunk_map.parse_hunk_map`. It is
+    bound into the ``verify_comment_line`` tool on each subagent
+    so the specialists can self-validate ``(file, line, side)``
+    anchors before emitting :class:`CodeCommentDraft` entries.
+
+    Raises:
+        SandboxConnectError: reconnect to E2B failed.
+            :class:`TransientStepError` — DBOS retries.
+        ReviewAgentRateLimitedError: the orchestrator returned
+            429 / 5xx / timeout. :class:`TransientStepError` —
+            DBOS retries up to ``max_attempts`` times.
+        ReviewAgentCrashedError: any other exception from
+            ``orchestrator.ainvoke`` — business outcome, not
+            retried.
+        ReviewAgentReturnedNoStructuredResponseError: the
+            orchestrator finished without ``structured_response``,
+            or the response could not be validated as
+            :class:`ReviewResult`. Business outcome, not retried.
+    """
+    spec = _e2b_spec()
+    try:
+        sandbox = await E2BSandbox.connect(
+            sandbox_id=sandbox_id,
+            sandbox_name=sandbox_name,
+            repo_id=repo_id,
+            user_id=user_id,
+            spec=spec,
+            timeout=60 * 60,
+            api_key=spec.api_key,
+        )
+    except Exception as exc:
+        raise SandboxConnectError(
+            user_id=user_id,
+            repo_id=repo_id,
+            sandbox_id=sandbox_id,
+            cause=(
+                f"failed to reconnect sandbox for orchestrator: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        ) from exc
+
+    try:
+        subagents = build_review_subagents(
+            sandbox=sandbox,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            hunk_map=hunk_map,
+            provider=provider,
+            llm_baseurl=llm_baseurl,
+            llm_api_key=llm_api_key,
+            llm_model=llm_model,
+            repo_id=repo_id,
+            repo_name=repo_name,
+            workflow_id=DBOS.workflow_id,
+        )
+        orchestrator_model = build_chat_model(
+            provider=provider,
+            base_url=llm_baseurl,
+            api_key=llm_api_key,
+            model=llm_model,
+            headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
+            callbacks=make_llm_io_handler(
+                agent_name="orchestrator",
+                repo_name=repo_name,
+                repo_id=repo_id,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                workflow_id=DBOS.workflow_id,
+                model=llm_model,
+            ),
+        )
+        orchestrator = build_orchestrator_agent(
+            model=orchestrator_model,
+            backend=cast(Any, _orchestrator_backend(sandbox)),
+            subagents=subagents,
+            tools=_orchestrator_tools(
+                sandbox=sandbox,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                hunk_map=hunk_map,
+            ),
+        )
+        user_prompt = assemble_user_prompt(
+            repo_name=repo_name,
+            repo_id=repo_id,
+            user_id=user_id,
+            pr_number=pr_number,
+        )
+        prompt_payload = {"messages": [{"role": "user", "content": user_prompt}]}
+        log.info(
+            "invoking review orchestrator: repo=%s user=%s pr_number=%s",
+            repo_name,
+            user_id,
+            pr_number,
+        )
+
+        try:
+            result = await orchestrator.ainvoke(prompt_payload)
+        except Exception as exc:
+            if is_llm_transient_error(exc):
+                wait = extract_retry_after_seconds(exc)
+                log.warning(
+                    "review orchestrator transient: repo=%s pr_number=%s "
+                    "wait_s=%s cause=%s",
+                    repo_name,
+                    pr_number,
+                    wait,
+                    exc,
+                )
+                raise ReviewAgentRateLimitedError(
+                    cause=f"{type(exc).__name__}: {exc}",
+                    retry_after_seconds=wait,
+                ) from exc
+
+            log.exception(
+                "review orchestrator crashed: repo=%s pr_number=%s",
+                repo_name,
+                pr_number,
+            )
+            raise ReviewAgentCrashedError(cause=f"{type(exc).__name__}: {exc}") from exc
+
+        if not isinstance(result, dict) or "structured_response" not in result:
+            from app.services.agent.helpers import extract_message_kinds
+            from app.services.review.errors import (
+                ReviewAgentReturnedNoStructuredResponseError,
+            )
+
+            log.exception(
+                "review orchestrator returned no structured_response: "
+                "repo=%s pr_number=%s",
+                repo_name,
+                pr_number,
+            )
+            raise ReviewAgentReturnedNoStructuredResponseError(
+                message_kinds=extract_message_kinds((result or {}).get("messages"))
+            )
+
+        try:
+            review = ReviewResult.model_validate(result["structured_response"])
+        except Exception as exc:
+            from app.services.agent.helpers import extract_message_kinds
+            from app.services.review.errors import (
+                ReviewAgentReturnedNoStructuredResponseError,
+            )
+
+            log.exception(
+                "review orchestrator returned unparseable output: repo=%s pr_number=%s",
+                repo_name,
+                pr_number,
+            )
+            raise ReviewAgentReturnedNoStructuredResponseError(
+                message_kinds=extract_message_kinds((result or {}).get("messages"))
+            ) from exc
+
+        # The orchestrator's LLM is told to set ``verdict="COMMENT"``;
+        # we overwrite with the deterministic value derived from the
+        # actual comments. This is the only place the verdict is
+        # computed; the LLM's value is discarded.
+        review.verdict = verdict_for(review.comments)
+        return review
+    finally:
+        try:
+            await sandbox.stop()
+        except Exception:
+            log.exception("failed to stop sandbox after orchestrator invocation")
+
+
+# --------------------------------------------------------------------------- #
+# Orchestrator helpers                                                          #
+# --------------------------------------------------------------------------- #
+
+
+def _orchestrator_backend(sandbox: E2BSandbox):  # type: ignore[no-untyped-def]
+    """Wrap the E2B sandbox as a deepagents AsyncE2BSandbox backend.
+
+    Imported lazily so the singular step file doesn't pay the
+    import cost on every step invocation outside this function.
+    """
+    from langchain_e2b import AsyncE2BSandbox
+
+    return AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
+
+
+def _orchestrator_tools(
+    *,
+    sandbox: E2BSandbox,
+    pr_number: int,
+    head_sha: str,
+    hunk_map: HunkMap,
+) -> list[BaseTool]:
+    """Return the orchestrator's own tools (same as a subagent's).
+
+    The orchestrator uses ``get_diff`` to read the diff first, and
+    ``verify_comment_line`` is exposed for any anchor the
+    orchestrator might want to sanity-check. Subagents get the same
+    tools independently (each in its own sandbox view).
+    """
+    return [
+        make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
+        make_verify_comment_line_tool(hunk_map=hunk_map),
+    ]
 
 
 @dbos_datasource.transaction()
@@ -877,7 +1159,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             status=input.status,
         )
 
-        review = await invoke_review_agents_step(
+        review = await invoke_review_agent_step(
             sandbox_id=sandbox.sandbox_id,
             sandbox_name=sandbox.sandbox_name,
             repo_id=repo.id,

@@ -138,9 +138,13 @@ class Settings(BaseSettings):
     llm_log_io: bool = Field(
         default=False,
         description=(
-            "Emit per-LLM-call input/output JSON log lines for the review "
-            "agents (verbose; dev only). When false, no LLM I/O callback "
-            "handler is attached and there is zero per-call overhead."
+            "Emit per-LLM-call metadata JSON log lines for the review "
+            "agents. Each line carries correlation context (agent / "
+            "repo / pr / head_sha / workflow_id / model), the "
+            "per-call index, run id, latency, and token usage. Input "
+            "messages, output text, and tool inputs/outputs are NOT "
+            "captured. When false, no LLM I/O callback handler is "
+            "attached and there is zero per-call overhead."
         ),
     )
 

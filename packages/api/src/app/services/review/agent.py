@@ -1,18 +1,32 @@
 """Review-agent factories.
 
-The pipeline runs four independent ``create_deep_agent`` instances in
-parallel — one summary agent and three severity-bucketed specialists
-(security / correctness / style). There is no orchestrator. Each
-agent gets the same shared tools (``get_diff``,
-``verify_comment_line``) and the same sandbox backend, but its own
-system prompt and ``response_format``.
+This module owns two parallel agent designs:
 
-The four results are combined by :func:`combine_review_results` into
-a single :class:`ReviewResult` — verdict is a deterministic function
-of the severities present, so no LLM is involved in the merge.
+- **Legacy (deprecated).** :func:`build_review_agents` returns four
+  independent ``create_deep_agent`` instances (summary / security /
+  correctness / style). The workflow's old
+  :func:`app.services.review.workflow.invoke_review_agents_step`
+  (plural) runs them in parallel via ``asyncio.gather`` and combines
+  the results with :func:`combine_review_results`. Kept as a
+  revert path; the new workflow calls the singular step instead.
 
-This module is pure: no I/O, no session, no clock. The chat model and
-sandbox connection are passed in by the caller.
+- **New (production).** :func:`build_review_subagents` returns four
+  ``SubAgent`` specs (TypedDicts); :func:`build_orchestrator_agent`
+  returns one root deep-agent whose ``subagents=`` is the list from
+  the first call. The new step
+  :func:`app.services.review.workflow.invoke_review_agent_step`
+  (singular) ``ainvoke``s the orchestrator once. The orchestrator
+  coordinates the four subagents, absorbs their failures, and emits a
+  single :class:`ReviewResult`. The verdict field is recomputed
+  deterministically in code from the merged comments.
+
+Each chat model (one per subagent + the orchestrator) gets its own
+:func:`app.core.llm_callbacks.make_llm_io_handler` so the log
+stream can tell ``agent="orchestrator"`` from
+``agent="summary" | "security" | "correctness" | "style"``.
+
+This module is pure: no I/O, no session, no clock. The chat model
+and sandbox connection are passed in by the caller.
 """
 
 from __future__ import annotations
@@ -21,6 +35,8 @@ import logging
 from collections.abc import Sequence
 
 from deepagents import create_deep_agent
+from deepagents.middleware.subagents import SubAgent
+from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.tools import BaseTool
@@ -40,6 +56,7 @@ from app.services.agent.models import (
 )
 from app.services.agent.prompts import (
     CORRECTNESS_SYSTEM_PROMPT,
+    ORCHESTRATOR_SYSTEM_PROMPT,
     PR_SUMMARY_SYSTEM_PROMPT,
     SECURITY_SYSTEM_PROMPT,
     STYLE_SYSTEM_PROMPT,
@@ -59,7 +76,7 @@ log = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 
-def _verdict_for(comments: Sequence[CodeCommentDraft]) -> ReviewVerdictStr:
+def verdict_for(comments: Sequence[CodeCommentDraft]) -> ReviewVerdictStr:
     """Return the review verdict implied by ``comments``.
 
     Pure rule:
@@ -89,7 +106,7 @@ def combine_review_results(
     Comments are concatenated in severity order (P1 → P2 → P3) so the
     GitHub review renders with the most important findings first. The
     summary is the summarizer's markdown verbatim. The verdict is
-    computed from the merged comments by :func:`_verdict_for`.
+    computed from the merged comments by :func:`verdict_for`.
 
     No dedup. Each specialist stays in its own lane; in practice they
     look at different classes of bugs and rarely overlap. Adding a
@@ -104,7 +121,7 @@ def combine_review_results(
     return ReviewResult(
         comments=comments,
         summary=summary_markdown,
-        verdict=_verdict_for(comments),
+        verdict=verdict_for(comments),
     )
 
 
@@ -359,6 +376,242 @@ def build_review_agents(
 
 
 # --------------------------------------------------------------------------- #
+# New design: orchestrator + subagents                                          #
+# --------------------------------------------------------------------------- #
+#
+# These factories back the new ``invoke_review_agent_step`` (singular).
+# They are deliberately separate from the legacy
+# ``build_review_agents`` above so the old step keeps working as a
+# revert path.
+
+
+def _make_callback_handler(
+    *,
+    agent_name: str,
+    repo_name: str,
+    repo_id: str,
+    pr_number: int,
+    head_sha: str,
+    workflow_id: str | None,
+    llm_model: str,
+) -> list[BaseCallbackHandler]:
+    """Build a callback list tagged with the given agent name.
+
+    Returns an empty list when ``settings.llm_log_io_enabled`` is
+    false; the caller can pass the result unconditionally.
+    """
+    return make_llm_io_handler(
+        agent_name=agent_name,
+        repo_name=repo_name,
+        repo_id=repo_id,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        workflow_id=workflow_id,
+        model=llm_model,
+    )
+
+
+def _build_chat_model_for(
+    *,
+    agent_name: str,
+    provider: LLMProviderStr,
+    llm_baseurl: str | None,
+    llm_api_key: str,
+    llm_model: str,
+    repo_id: str,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+    workflow_id: str | None,
+) -> BaseChatModel:
+    """Build a chat model with per-agent callback handler attached.
+
+    Each subagent (and the orchestrator) gets its own chat-model
+    instance so the LLM I/O log stream can tag every call with
+    the agent that produced it.
+    """
+    return build_chat_model(
+        provider=provider,
+        base_url=llm_baseurl,
+        api_key=llm_api_key,
+        model=llm_model,
+        headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
+        callbacks=_make_callback_handler(
+            agent_name=agent_name,
+            repo_name=repo_name,
+            repo_id=repo_id,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            workflow_id=workflow_id,
+            llm_model=llm_model,
+        ),
+    )
+
+
+def build_review_subagents(
+    *,
+    sandbox: E2BSandbox,
+    pr_number: int,
+    head_sha: str,
+    hunk_map: HunkMap,
+    provider: LLMProviderStr,
+    llm_baseurl: str | None,
+    llm_api_key: str,
+    llm_model: str,
+    repo_id: str,
+    repo_name: str,
+    workflow_id: str | None = None,
+) -> list[SubAgent]:
+    """Build the four review subagents for the orchestrator.
+
+    Returns a list of :class:`SubAgent` TypedDicts in the order
+    ``[summary, security, correctness, style]``. Each subagent
+    owns its own chat model (and therefore its own per-agent
+    callback handler).
+
+    The summary subagent has no ``response_format`` and emits a
+    single markdown block as its last AI message. The three
+    severity-bucketed subagents have ``response_format`` set to
+    the corresponding ``*Comments`` Pydantic model so the
+    orchestrator receives a structured response from each.
+
+    ``description`` is what the orchestrator reads when deciding
+    which subagent to invoke; it is intentionally short and lane-
+    specific.
+    """
+    common_subagent_kwargs = {
+        "sandbox": sandbox,
+        "pr_number": pr_number,
+        "head_sha": head_sha,
+        "hunk_map": hunk_map,
+        "provider": provider,
+        "llm_baseurl": llm_baseurl,
+        "llm_api_key": llm_api_key,
+        "llm_model": llm_model,
+        "repo_id": repo_id,
+        "repo_name": repo_name,
+        "workflow_id": workflow_id,
+    }
+
+    summary_subagent: SubAgent = SubAgent(
+        name="summary",
+        description=(
+            "Writes a markdown summary of what the PR does. Returns "
+            "a plain markdown string (no JSON envelope). Use this "
+            "subagent for the ReviewResult.summary field."
+        ),
+        system_prompt=PR_SUMMARY_SYSTEM_PROMPT,
+        model=_build_chat_model_for(
+            agent_name="summary", **common_subagent_kwargs
+        ),
+        tools=[
+            make_get_diff_tool(
+                sandbox=sandbox, pr_number=pr_number, head_sha=head_sha
+            ),
+            make_verify_comment_line_tool(hunk_map=hunk_map),
+        ],
+    )
+
+    security_subagent: SubAgent = SubAgent(
+        name="security",
+        description=(
+            "Finds P1_CRITICAL security issues (injection, secrets, "
+            "auth bypass, crypto misuse). Returns a "
+            "SecurityComments object with a `list` of CodeCommentDraft; "
+            "every entry already has severity='P1_CRITICAL'."
+        ),
+        system_prompt=SECURITY_SYSTEM_PROMPT,
+        model=_build_chat_model_for(
+            agent_name="security", **common_subagent_kwargs
+        ),
+        response_format=SecurityComments,
+        tools=[
+            make_get_diff_tool(
+                sandbox=sandbox, pr_number=pr_number, head_sha=head_sha
+            ),
+            make_verify_comment_line_tool(hunk_map=hunk_map),
+        ],
+    )
+
+    correctness_subagent: SubAgent = SubAgent(
+        name="correctness",
+        description=(
+            "Finds P2_WARNING correctness issues (off-by-one, race "
+            "conditions, swallowed exceptions, broken error handling). "
+            "Returns a CorrectnessComments object with a `list` of "
+            "CodeCommentDraft; every entry already has "
+            "severity='P2_WARNING'."
+        ),
+        system_prompt=CORRECTNESS_SYSTEM_PROMPT,
+        model=_build_chat_model_for(
+            agent_name="correctness", **common_subagent_kwargs
+        ),
+        response_format=CorrectnessComments,
+        tools=[
+            make_get_diff_tool(
+                sandbox=sandbox, pr_number=pr_number, head_sha=head_sha
+            ),
+            make_verify_comment_line_tool(hunk_map=hunk_map),
+        ],
+    )
+
+    style_subagent: SubAgent = SubAgent(
+        name="style",
+        description=(
+            "Finds P3_NITPICK style / lint issues a linter would flag. "
+            "Returns a StyleComments object with a `list` of "
+            "CodeCommentDraft; every entry already has "
+            "severity='P3_NITPICK'."
+        ),
+        system_prompt=STYLE_SYSTEM_PROMPT,
+        model=_build_chat_model_for(
+            agent_name="style", **common_subagent_kwargs
+        ),
+        response_format=StyleComments,
+        tools=[
+            make_get_diff_tool(
+                sandbox=sandbox, pr_number=pr_number, head_sha=head_sha
+            ),
+            make_verify_comment_line_tool(hunk_map=hunk_map),
+        ],
+    )
+
+    return [summary_subagent, security_subagent, correctness_subagent, style_subagent]
+
+
+def build_orchestrator_agent(
+    *,
+    model: BaseChatModel,
+    backend: AsyncE2BSandbox,
+    subagents: Sequence[SubAgent],
+    tools: Sequence[BaseTool],
+) -> DeepAgentGraph:
+    """Build the root deep-agent that coordinates the four subagents.
+
+    The orchestrator's ``response_format`` is :class:`ReviewResult`:
+    its LLM is told in :data:`ORCHESTRATOR_SYSTEM_PROMPT` to assemble
+    the four subagent outputs (three structured comment lists plus
+    the summary markdown) into a single ``ReviewResult``. The verdict
+    field is overwritten in code by the workflow step
+    :func:`app.services.review.workflow.invoke_review_agent_step`,
+    so whatever the LLM puts there is discarded.
+
+    Failure handling: the orchestrator is told to absorb subagent
+    failures (its tool result is an error message) by substituting
+    an empty result and continuing. The DBOS step therefore does
+    not retry on a single subagent's failure.
+    """
+    return create_deep_agent(
+        model=model,
+        system_prompt=ORCHESTRATOR_SYSTEM_PROMPT,
+        backend=backend,
+        subagents=list(subagents),
+        response_format=ReviewResult,
+        tools=list(tools),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # User prompt (sent to all four agents)                                        #
 # --------------------------------------------------------------------------- #
 
@@ -388,10 +641,13 @@ def assemble_user_prompt(
 __all__: list[str] = [
     "assemble_user_prompt",
     "build_correctness_agent",
+    "build_orchestrator_agent",
     "build_review_agents",
+    "build_review_subagents",
     "build_security_agent",
     "build_style_agent",
     "build_summary_agent",
     "combine_review_results",
     "extract_last_ai_text",
+    "verdict_for",
 ]

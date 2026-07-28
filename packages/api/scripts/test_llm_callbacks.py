@@ -2,8 +2,9 @@
 
 Exercises :class:`app.core.llm_callbacks.LLMIOCallbackHandler` with
 synthetic langchain events and prints the resulting structured log
-lines. Useful as a quick sanity check after edits to the callback
-module.
+lines. The handler is metadata-only by design — no input messages,
+no output text, no tool input/output are emitted. Each line carries
+the correlation envelope, the per-call index, latency, and usage.
 
 Run from the repo root:  uv run python packages/api/scripts/test_llm_callbacks.py
 """
@@ -112,6 +113,8 @@ def main() -> int:
     except RuntimeError as exc:
         h.on_llm_error(error=exc, run_id=run_id_2)
 
+    # Drive a large input through on_chat_model_start to confirm
+    # the byte counting does not blow up the log line.
     big = "x" * (20 * 1024)
     h.on_chat_model_start(
         serialized={"name": "ChatOpenAI"},
@@ -130,13 +133,19 @@ def main() -> int:
         index = data.get("index", "-")
         tool_name = data.get("tool_name", "-")
         latency = data.get("latency_ms", "-")
-        truncated = "?"
-        if msg == "llm_call_started":
-            first = data["input"][0][0]
-            truncated = str(first["content"].get("truncated"))
+        msg_count = data.get("message_count", "-")
+        total_bytes = data.get("total_input_bytes", "-")
+        output_bytes = data.get("output_bytes", "-")
+        tc_count = data.get("tool_call_count", "-")
+        # Verify the metadata-only contract: no content fields at all.
+        forbidden = {"input", "output", "tool_input", "tool_output"}
+        leaked = forbidden & data.keys()
+        assert not leaked, f"leaked content fields in {msg}: {leaked}"
         print(
             f"  {msg:24s}  agent={agent:8s}  index={index}  "
-            f"tool={tool_name:8s}  latency={latency}  truncated={truncated}"
+            f"tool={tool_name:8s}  latency={latency}  "
+            f"msgs={msg_count}  in_bytes={total_bytes}  "
+            f"out_bytes={output_bytes}  tool_calls={tc_count}"
         )
 
     return 0
