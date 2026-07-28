@@ -1,17 +1,28 @@
-"""Review deep-agent factory.
+"""Review-agent factories.
 
-All review-specific agent composition lives here: prompt assembly,
-specialist subagent wiring, and graph construction. The module is pure
-— no I/O, no session, no clock.
+The pipeline runs four independent ``create_deep_agent`` instances in
+parallel — one summary agent and three severity-bucketed specialists
+(security / correctness / style). There is no orchestrator. Each
+agent gets the same shared tools (``get_diff``,
+``verify_comment_line``) and the same sandbox backend, but its own
+system prompt and ``response_format``.
+
+The four results are combined by :func:`combine_review_results` into
+a single :class:`ReviewResult` — verdict is a deterministic function
+of the severities present, so no LLM is involved in the merge.
+
+This module is pure: no I/O, no session, no clock. The chat model and
+sandbox connection are passed in by the caller.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
-from deepagents import SubAgent, create_deep_agent
+from deepagents import create_deep_agent
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.tools import BaseTool
 from langchain_e2b import AsyncE2BSandbox
 
@@ -19,15 +30,16 @@ from app.core.llm import LLMProviderStr, build_chat_model
 from app.core.sandbox import BaseSandbox
 from app.core.sandbox.e2b import E2BSandbox
 from app.services.agent.models import (
+    CodeCommentDraft,
     CorrectnessComments,
     ReviewResult,
+    ReviewVerdictStr,
     SecurityComments,
     StyleComments,
 )
 from app.services.agent.prompts import (
     CORRECTNESS_SYSTEM_PROMPT,
     PR_SUMMARY_SYSTEM_PROMPT,
-    REVIEW_ORCHESTRATOR_SYSTEM_PROMPT,
     SECURITY_SYSTEM_PROMPT,
     STYLE_SYSTEM_PROMPT,
 )
@@ -41,102 +53,277 @@ from app.services.review.types import DeepAgentGraph
 log = logging.getLogger(__name__)
 
 
-def assemble_orchestrator_system_prompt() -> str:
-    """Return the system prompt for the orchestrator deep-agent.
+# --------------------------------------------------------------------------- #
+# Combine step                                                                 #
+# --------------------------------------------------------------------------- #
 
-    The orchestrator is the single ``create_deep_agent`` instance; the
-    three specialists (security / correctness / style) are wired in as
-    :class:`SubAgent` children via :func:`assemble_review_subagents`.
+
+def _verdict_for(comments: Sequence[CodeCommentDraft]) -> ReviewVerdictStr:
+    """Return the review verdict implied by ``comments``.
+
+    Pure rule:
+
+    - any ``P1_CRITICAL`` → ``REQUEST_CHANGES``
+    - else any ``P2_WARNING`` / ``P3_NITPICK`` → ``COMMENT``
+    - else → ``APPROVE``
     """
-    return REVIEW_ORCHESTRATOR_SYSTEM_PROMPT
+    for draft in comments:
+        if draft.severity == "P1_CRITICAL":
+            return "REQUEST_CHANGES"
+    for draft in comments:
+        if draft.severity in ("P2_WARNING", "P3_NITPICK"):
+            return "COMMENT"
+    return "APPROVE"
 
 
-def assemble_review_subagents(
+def combine_review_results(
+    *,
+    summary_markdown: str,
+    security: SecurityComments,
+    correctness: CorrectnessComments,
+    style: StyleComments,
+) -> ReviewResult:
+    """Merge the four agent outputs into one :class:`ReviewResult`.
+
+    Comments are concatenated in severity order (P1 → P2 → P3) so the
+    GitHub review renders with the most important findings first. The
+    summary is the summarizer's markdown verbatim. The verdict is
+    computed from the merged comments by :func:`_verdict_for`.
+
+    No dedup. Each specialist stays in its own lane; in practice they
+    look at different classes of bugs and rarely overlap. Adding a
+    dedup pass here would need an LLM or fuzzy rules and isn't worth
+    the complexity for the rare case.
+    """
+    comments: list[CodeCommentDraft] = [
+        *security.List,
+        *correctness.List,
+        *style.List,
+    ]
+    return ReviewResult(
+        comments=comments,
+        summary=summary_markdown,
+        verdict=_verdict_for(comments),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Summary agent output extraction                                              #
+# --------------------------------------------------------------------------- #
+
+
+def extract_last_ai_text(result: object) -> str:
+    """Return the content of the last ``AIMessage`` in ``result['messages']``.
+
+    The summary agent does not use a ``response_format`` — its output
+    is a free-form markdown block emitted as the last AI message.
+    The other three agents do use ``response_format`` and their
+    payloads are read from ``result['structured_response']`` directly.
+
+    Raises:
+        ReviewAgentReturnedNoStructuredResponseError: ``result`` is
+            not a dict, has no ``messages`` list, has no ``AIMessage``
+            in it, or the last ``AIMessage`` has empty content.
+    """
+    # Imported here to keep the helper's import surface small.
+    from app.services.review.errors import (
+        ReviewAgentReturnedNoStructuredResponseError,
+    )
+    from app.services.agent.helpers import extract_message_kinds
+
+    if not isinstance(result, dict):
+        raise ReviewAgentReturnedNoStructuredResponseError(
+            message_kinds=extract_message_kinds(result),
+        )
+    messages = result.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ReviewAgentReturnedNoStructuredResponseError(
+            message_kinds=extract_message_kinds(messages),
+        )
+    last: BaseMessage | None = messages[-1]
+    if not isinstance(last, AIMessage):
+        raise ReviewAgentReturnedNoStructuredResponseError(
+            message_kinds=extract_message_kinds(messages),
+        )
+    content = last.content
+    if not isinstance(content, str) or not content.strip():
+        raise ReviewAgentReturnedNoStructuredResponseError(
+            message_kinds=extract_message_kinds(messages),
+        )
+    return content
+
+
+# --------------------------------------------------------------------------- #
+# Shared tool + backend wiring                                                 #
+# --------------------------------------------------------------------------- #
+
+
+def _build_shared_tools(
     *,
     sandbox: BaseSandbox,
     pr_number: int,
     head_sha: str,
     hunk_map: HunkMap,
-) -> list[SubAgent]:
-    """Return the four specialist subagents the orchestrator delegates to.
+) -> list[BaseTool]:
+    """Return the tool list every review agent receives.
 
-    Each subagent gets a unique ``name`` (used as the dispatch key in
-    the orchestrator's ``task()`` tool), a one-line ``description`` the
-    orchestrator uses to decide which subagent to call, and the
-    specialist's own system prompt. Tools are intentionally not set:
-    the deepagents runtime inherits the parent's backend tools (the
-    E2B sandbox's ``read`` / ``write`` / ``execute`` / etc.), so each
-    specialist can verify a suspicion against the repo when needed.
-
-    All four subagents receive ``get_diff_tool`` (read the unified diff)
-    and ``verify_comment_line_tool`` (validate a ``(file, line, side)``
-    anchor against the parsed :data:`HunkMap`). The summarizer does
-    not emit comments but receives the tools for consistency.
-
-    The first subagent, ``summarizer``, is the PR-summary writer. The
-    orchestrator calls it first, takes its markdown output verbatim,
-    and embeds it as ``ReviewResult.summary`` (which is then persisted
-    as the PR's review summary). The other three are the existing
-    severity-bucketed reviewers and only emit findings, not prose.
+    ``get_diff`` reads the unified PR diff from the sandbox.
+    ``verify_comment_line`` answers "is this ``(file, line, side)``
+    anchor one that GitHub will accept?" against the parsed
+    :data:`HunkMap`. The deepagents runtime inherits the backend
+    tools (sandbox ``read_file`` / ``ls`` / ``execute``) separately.
     """
+    return [
+        make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
+        make_verify_comment_line_tool(hunk_map=hunk_map),
+    ]
 
-    get_diff_tool = make_get_diff_tool(
+
+def _build_backend(sandbox: E2BSandbox) -> AsyncE2BSandbox:
+    """Wrap the E2B sandbox for the deepagents runtime.
+
+    All four agents share the same backend instance — the connection
+    is held by the fan-out step and reused by every concurrent
+    ``ainvoke``.
+    """
+    return AsyncE2BSandbox(sandbox=sandbox.sandbox)
+
+
+# --------------------------------------------------------------------------- #
+# Per-agent factories                                                          #
+# --------------------------------------------------------------------------- #
+
+
+def build_summary_agent(
+    *,
+    model: BaseChatModel,
+    backend: AsyncE2BSandbox,
+    tools: Sequence[BaseTool],
+) -> DeepAgentGraph:
+    """Build the PR-summary deep-agent.
+
+    No ``response_format``: the agent emits a single markdown block
+    as its last AI message. The fan-out step extracts that text with
+    :func:`extract_last_ai_text` and passes it to
+    :func:`combine_review_results` as ``summary_markdown``.
+    """
+    return create_deep_agent(
+        model=model,
+        system_prompt=PR_SUMMARY_SYSTEM_PROMPT,
+        backend=backend,
+        tools=list(tools),
+    )
+
+
+def build_security_agent(
+    *,
+    model: BaseChatModel,
+    backend: AsyncE2BSandbox,
+    tools: Sequence[BaseTool],
+) -> DeepAgentGraph:
+    """Build the P1_CRITICAL security deep-agent."""
+    return create_deep_agent(
+        model=model,
+        system_prompt=SECURITY_SYSTEM_PROMPT,
+        backend=backend,
+        response_format=SecurityComments,
+        tools=list(tools),
+    )
+
+
+def build_correctness_agent(
+    *,
+    model: BaseChatModel,
+    backend: AsyncE2BSandbox,
+    tools: Sequence[BaseTool],
+) -> DeepAgentGraph:
+    """Build the P2_WARNING correctness deep-agent."""
+    return create_deep_agent(
+        model=model,
+        system_prompt=CORRECTNESS_SYSTEM_PROMPT,
+        backend=backend,
+        response_format=CorrectnessComments,
+        tools=list(tools),
+    )
+
+
+def build_style_agent(
+    *,
+    model: BaseChatModel,
+    backend: AsyncE2BSandbox,
+    tools: Sequence[BaseTool],
+) -> DeepAgentGraph:
+    """Build the P3_NITPICK style deep-agent."""
+    return create_deep_agent(
+        model=model,
+        system_prompt=STYLE_SYSTEM_PROMPT,
+        backend=backend,
+        response_format=StyleComments,
+        tools=list(tools),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# One-shot factory (all four agents + chat model + backend)                    #
+# --------------------------------------------------------------------------- #
+
+
+def build_review_agents(
+    *,
+    sandbox: E2BSandbox,
+    pr_number: int,
+    head_sha: str,
+    provider: LLMProviderStr,
+    llm_baseurl: str | None,
+    llm_api_key: str,
+    llm_model: str,
+    hunk_map: HunkMap,
+) -> tuple[
+    DeepAgentGraph,
+    DeepAgentGraph,
+    DeepAgentGraph,
+    DeepAgentGraph,
+    BaseChatModel,
+    AsyncE2BSandbox,
+]:
+    """Build the chat model, the shared backend, and the four review agents.
+
+    Returns ``(summary, security, correctness, style, model, backend)``.
+    The model and backend are returned alongside the agents so the
+    caller can reuse them in log lines or in additional invocations
+    without rebuilding the LLM client.
+    """
+    model = build_chat_model(
+        provider=provider,
+        base_url=llm_baseurl,
+        api_key=llm_api_key,
+        model=llm_model,
+        headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
+    )
+    backend = _build_backend(sandbox)
+    tools = _build_shared_tools(
         sandbox=sandbox,
         pr_number=pr_number,
         head_sha=head_sha,
+        hunk_map=hunk_map,
     )
-    verify_comment_line_tool = make_verify_comment_line_tool(hunk_map=hunk_map)
-    subagent_tools = [get_diff_tool, verify_comment_line_tool]
+    log.info(
+        "building review agents: model=%s",
+        getattr(model, "model_name", "<unknown>"),
+    )
+    return (
+        build_summary_agent(model=model, backend=backend, tools=tools),
+        build_security_agent(model=model, backend=backend, tools=tools),
+        build_correctness_agent(model=model, backend=backend, tools=tools),
+        build_style_agent(model=model, backend=backend, tools=tools),
+        model,
+        backend,
+    )
 
-    return [
-        SubAgent(
-            name="summarizer",
-            description=(
-                "PR summary writer. Emits a grounded markdown bullet "
-                "list of what the PR does (one-line title + bullets "
-                "with file:line references). Call this FIRST; its "
-                "output is embedded verbatim as ReviewResult.summary "
-                "and persisted as the PR's review summary. Does not "
-                "emit findings, bugs, or verdicts."
-            ),
-            system_prompt=PR_SUMMARY_SYSTEM_PROMPT,
-            tools=list(subagent_tools),
-        ),
-        SubAgent(
-            name="security",
-            description=(
-                "Security reviewer. Emits only P1_CRITICAL findings. "
-                "Delegate to it whenever the orchestrator suspects an "
-                "injection, secrets leak, auth bypass, or other "
-                "security-class bug."
-            ),
-            system_prompt=SECURITY_SYSTEM_PROMPT,
-            response_format=SecurityComments,
-            tools=list(subagent_tools),
-        ),
-        SubAgent(
-            name="correctness",
-            description=(
-                "Correctness reviewer. Emits only P2_WARNING findings. "
-                "Delegate to it for off-by-one, missing error handling, "
-                "race conditions, API misuse, and similar logic bugs."
-            ),
-            system_prompt=CORRECTNESS_SYSTEM_PROMPT,
-            response_format=CorrectnessComments,
-            tools=list(subagent_tools),
-        ),
-        SubAgent(
-            name="style",
-            description=(
-                "Style reviewer. Emits only P3_NITPICK findings. "
-                "Delegate to it for misleading names, dead code, "
-                "stale comments, and other lintable cleanups."
-            ),
-            system_prompt=STYLE_SYSTEM_PROMPT,
-            response_format=StyleComments,
-            tools=list(subagent_tools),
-        ),
-    ]
+
+# --------------------------------------------------------------------------- #
+# User prompt (sent to all four agents)                                        #
+# --------------------------------------------------------------------------- #
 
 
 def assemble_user_prompt(
@@ -146,10 +333,11 @@ def assemble_user_prompt(
     user_id: str,
     pr_number: int,
 ) -> str:
-    """Build the user message sent to the review deep-agent.
+    """Build the user message sent to each of the four review agents.
 
     Pure formatting — no I/O, no LLM. The diff is no longer inlined;
-    the agent calls the ``get_diff`` tool to read it from the sandbox.
+    every agent calls the ``get_diff`` tool to read it from the
+    sandbox.
     """
     return (
         f"Repo: {repo_name} (id={repo_id})\n"
@@ -160,87 +348,13 @@ def assemble_user_prompt(
     )
 
 
-def get_review_agent(
-    *,
-    system_prompt: str,
-    subagents: Sequence[SubAgent],
-    backend: AsyncE2BSandbox,
-    model: BaseChatModel,
-    tools: Sequence[BaseTool | Callable[..., object]] = (),
-) -> DeepAgentGraph:
-    """Compose the review deep-agent graph.
-
-    Pure factory — no I/O, no session. The caller owns the connected
-    ``backend`` (an :class:`AsyncE2BSandbox` wrapping the E2B handle)
-    and the ``model`` (a langchain chat model). The returned graph is
-    invoked once per review by the orchestrator.
-    """
-    log.info(
-        "building review deep agent: model=%s subagents=%d",
-        getattr(model, "model_name", "<unknown>"),
-        len(subagents),
-    )
-    return create_deep_agent(
-        model=model,
-        system_prompt=system_prompt,
-        subagents=list(subagents),
-        backend=backend,
-        response_format=ReviewResult,
-        tools=list(tools),
-    )
-
-
-def build_review_agent(
-    *,
-    sandbox: E2BSandbox,
-    pr_number: int,
-    head_sha: str,
-    provider: LLMProviderStr,
-    llm_baseurl: str | None,
-    llm_api_key: str,
-    llm_model: str,
-    hunk_map: HunkMap,
-) -> DeepAgentGraph:
-    """High-level convenience factory used by the orchestrator.
-
-    Builds the chat model, wraps the sandbox backend, and composes the
-    review deep-agent with its four specialist subagents.
-
-    ``hunk_map`` is the parsed diff structure from
-    :func:`app.services.review.hunk_map.parse_hunk_map`. It is bound
-    into the ``verify_comment_line`` tool so the subagents can
-    self-validate ``(file, line, side)`` anchors before emitting
-    :class:`CodeCommentDraft` entries.
-    """
-    model = build_chat_model(
-        provider=provider,
-        base_url=llm_baseurl,
-        api_key=llm_api_key,
-        model=llm_model,
-        headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
-    )
-    backend = AsyncE2BSandbox(sandbox=sandbox.sandbox)
-    get_diff_tool = make_get_diff_tool(sandbox, pr_number, head_sha)
-    verify_comment_line_tool = make_verify_comment_line_tool(hunk_map=hunk_map)
-
-    return get_review_agent(
-        system_prompt=assemble_orchestrator_system_prompt(),
-        subagents=assemble_review_subagents(
-            sandbox=sandbox,
-            pr_number=pr_number,
-            head_sha=head_sha,
-            hunk_map=hunk_map,
-        ),
-        backend=backend,
-        model=model,
-        tools=[get_diff_tool, verify_comment_line_tool],
-    )
-
-
 __all__: list[str] = [
-    "assemble_orchestrator_system_prompt",
-    "assemble_review_subagents",
     "assemble_user_prompt",
-    "build_review_agent",
-    "get_review_agent",
+    "build_correctness_agent",
+    "build_review_agents",
+    "build_security_agent",
+    "build_style_agent",
+    "build_summary_agent",
+    "combine_review_results",
+    "extract_last_ai_text",
 ]

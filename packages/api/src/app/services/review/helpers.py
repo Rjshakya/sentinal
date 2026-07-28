@@ -1,6 +1,6 @@
 """Review pipeline helpers.
 
-Pure functions used by the review orchestrator and its steps: no I/O,
+Pure functions used by the review workflow and its steps: no I/O,
 no session, no clock. Every function here is testable with plain
 ``assert`` calls.
 """
@@ -15,14 +15,7 @@ from app.models.enums import (
     CommentSide,
     CommentState,
 )
-from app.services.agent.helpers import extract_message_kinds
-from app.services.agent.models import (
-    CodeCommentDraft,
-    ReviewResult,
-)
-from app.services.review.errors import (
-    ReviewAgentReturnedNoStructuredResponseError,
-)
+from app.services.agent.models import CodeCommentDraft
 from app.utils.util import repo_path, uuidToStr
 
 
@@ -70,29 +63,7 @@ def map_drafts_to_comment_rows(
     return rows
 
 
-def parse_review_response(result: object) -> ReviewResult:
-    """Extract and validate the agent's ``structured_response`` payload.
-
-    Pure: takes the full ``agent.ainvoke()`` result and returns a
-    validated :class:`ReviewResult`. Raises
-    :class:`ReviewAgentReturnedNoStructuredResponseError` when the
-    agent finished without producing a ``structured_response`` key, or
-    when the result is not a dict at all.
-    """
-    if not isinstance(result, dict):
-        raise ReviewAgentReturnedNoStructuredResponseError(
-            message_kinds=extract_message_kinds(result)
-        )
-    structured = result.get("structured_response")
-    if structured is None:
-        raise ReviewAgentReturnedNoStructuredResponseError(
-            message_kinds=extract_message_kinds(result.get("messages"))
-        )
-    return ReviewResult.model_validate(structured)
-
-
-__all__: list[str] = [
+__all__ = [
     "get_repo_path",
     "map_drafts_to_comment_rows",
-    "parse_review_response",
 ]

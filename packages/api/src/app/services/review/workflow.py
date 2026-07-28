@@ -28,6 +28,7 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Literal, cast
 
@@ -45,14 +46,24 @@ from app.core.sandbox import build_default_spec
 from app.core.sandbox.e2b import E2BSandbox, E2BSandboxSpec
 from app.models.enums import PRStatus
 from app.models.repo import Repo as RepoModel
-from app.services.agent.models import ReviewResult
+from app.services.agent.models import (
+    CorrectnessComments,
+    ReviewResult,
+    SecurityComments,
+    StyleComments,
+)
 from app.services.github.post_review import (
     GitHubPosterError,
     GitHubRateLimited,
     GitHubReviewPostFailed,
     post_review_to_github,
 )
-from app.services.review.agent import assemble_user_prompt, build_review_agent
+from app.services.review.agent import (
+    assemble_user_prompt,
+    build_review_agents,
+    combine_review_results,
+    extract_last_ai_text,
+)
 from app.services.review.diff import fetch_diff, parse_and_write_diff_json
 from app.services.review.errors import (
     NoActiveSandboxError,
@@ -64,7 +75,7 @@ from app.services.review.errors import (
     extract_retry_after_seconds,
     is_llm_transient_error,
 )
-from app.services.review.helpers import get_repo_path, parse_review_response
+from app.services.review.helpers import get_repo_path
 from app.services.review.hunk_map import HunkMap, ParsedDiff, filter_drafts
 from app.services.review.steps.persist_summary import persist_review_summary
 from app.services.review.steps.upsert_pr import upsert_pull_request
@@ -416,7 +427,7 @@ async def upsert_pull_request_tx(
     # should_retry=_SHOULD_RETRY_TRANSIENT,
     backoff_rate=2,
 )
-async def invoke_review_agent_step(
+async def invoke_review_agents_step(
     *,
     sandbox_id: str,
     sandbox_name: str,
@@ -431,29 +442,48 @@ async def invoke_review_agent_step(
     llm_model: str,
     hunk_map: HunkMap,
 ) -> ReviewResult:
-    """Durable step: reconnect to the sandbox, build the agent, and invoke it.
+    """Durable step: run the four review agents in parallel and combine.
 
-    This is the most expensive step in the pipeline. Wrapping it with DBOS
-    means a crash mid-invocation resumes from the completed invocation
-    without re-running the LLM.
+    This replaces the single orchestrator-based agent. The fan-out:
+
+    1. Reconnects to the E2B sandbox (one connection for the step).
+    2. Builds the chat model and the four review agents (summary,
+       security, correctness, style) — all sharing the same
+       ``AsyncE2BSandbox`` backend and the same shared tools
+       (``get_diff``, ``verify_comment_line``).
+    3. ``asyncio.gather`` runs all four ``agent.ainvoke`` calls
+       concurrently against the same sandbox.
+    4. Each structured-output agent (security / correctness / style)
+       returns a ``structured_response`` payload. The summary agent
+       uses no ``response_format`` and its last AI message content is
+       the markdown summary.
+    5. :func:`combine_review_results` merges the four results
+       deterministically into a single :class:`ReviewResult`.
+
+    The whole step is a single DBOS checkpoint: a crash mid-fan-out
+    resumes from the cached result, so transient failures don't
+    re-run the LLM. The sandbox is stopped in a ``finally`` so a
+    parse / combine failure does not leak the connection.
 
     ``hunk_map`` is the parsed diff structure from
     :func:`app.services.review.hunk_map.parse_hunk_map`. It is bound
-    into the ``verify_comment_line`` tool so the agent can self-validate
-    ``(file, line, side)`` anchors before emitting
+    into the ``verify_comment_line`` tool so each specialist agent
+    can self-validate ``(file, line, side)`` anchors before emitting
     :class:`CodeCommentDraft` entries.
 
     Raises:
         SandboxConnectError: reconnect to E2B failed.
             :class:`TransientStepError` — DBOS retries.
-        ReviewAgentRateLimitedError: the LLM returned 429 / 5xx /
-            timeout. :class:`TransientStepError` — DBOS retries up to
-            ``max_attempts`` times.
+        ReviewAgentRateLimitedError: any of the four agents returned
+            429 / 5xx / timeout. :class:`TransientStepError` — DBOS
+            retries up to ``max_attempts`` times.
         ReviewAgentCrashedError: any other exception from
             ``agent.ainvoke`` — business outcome, not retried.
-        ReviewAgentReturnedNoStructuredResponseError: the agent ran but
-            produced no ``structured_response`` payload — business
-            outcome, not retried.
+        ReviewAgentReturnedNoStructuredResponseError: any of the
+            three structured agents finished without
+            ``structured_response``, or the summary agent's last AI
+            message had no string content. Business outcome, not
+            retried.
     """
     spec = _e2b_spec()
     try:
@@ -471,11 +501,18 @@ async def invoke_review_agent_step(
             user_id=user_id,
             repo_id=repo_id,
             sandbox_id=sandbox_id,
-            cause=f"failed to reconnect sandbox for agent: {type(exc).__name__}: {exc}",
+            cause=f"failed to reconnect sandbox for agents: {type(exc).__name__}: {exc}",
         ) from exc
 
     try:
-        agent = build_review_agent(
+        (
+            summary_agent,
+            security_agent,
+            correctness_agent,
+            style_agent,
+            _,
+            _,
+        ) = build_review_agents(
             sandbox=sandbox,
             pr_number=pr_number,
             head_sha=head_sha,
@@ -491,40 +528,94 @@ async def invoke_review_agent_step(
             user_id=user_id,
             pr_number=pr_number,
         )
+        prompt_payload = {"messages": [{"role": "user", "content": user_prompt}]}
         log.info(
-            "invoking review agent: repo=%s user=%s pr_number=%s",
+            "invoking review agents (parallel): repo=%s user=%s pr_number=%s",
             repo_name,
             user_id,
             pr_number,
         )
+
         try:
-            raw = await agent.ainvoke(
-                {"messages": [{"role": "user", "content": user_prompt}]}
+            (
+                summary_raw,
+                security_raw,
+                correctness_raw,
+                style_raw,
+            ) = await asyncio.gather(
+                summary_agent.ainvoke(prompt_payload),
+                security_agent.ainvoke(prompt_payload),
+                correctness_agent.ainvoke(prompt_payload),
+                style_agent.ainvoke(prompt_payload),
             )
         except Exception as exc:
             if is_llm_transient_error(exc):
                 wait = extract_retry_after_seconds(exc)
-
                 log.warning(
-                    "review agent transient: repo=%s pr_number=%s wait_s=%s cause=%s",
+                    "review agents transient: repo=%s pr_number=%s wait_s=%s cause=%s",
                     repo_name,
                     pr_number,
                     wait,
                     exc,
                 )
-
                 raise ReviewAgentRateLimitedError(
                     cause=f"{type(exc).__name__}: {exc}",
                     retry_after_seconds=wait,
                 ) from exc
 
             log.exception(
-                "review agent crashed: repo=%s pr_number=%s",
+                "review agents crashed: repo=%s pr_number=%s",
                 repo_name,
                 pr_number,
             )
             raise ReviewAgentCrashedError(cause=f"{type(exc).__name__}: {exc}") from exc
-        return parse_review_response(raw)
+
+        # Parse each result. ``parse_review_response`` is gone; the
+        # three structured agents return ``structured_response`` and
+        # the summary agent returns its last AI message content.
+        try:
+            summary_markdown = extract_last_ai_text(summary_raw)
+            security = SecurityComments.model_validate(
+                security_raw["structured_response"]
+            )
+            correctness = CorrectnessComments.model_validate(
+                correctness_raw["structured_response"]
+            )
+            style = StyleComments.model_validate(style_raw["structured_response"])
+        except KeyError as exc:
+            from app.services.agent.helpers import extract_message_kinds
+            from app.services.review.errors import (
+                ReviewAgentReturnedNoStructuredResponseError,
+            )
+
+            raise ReviewAgentReturnedNoStructuredResponseError(
+                message_kinds=extract_message_kinds(
+                    (security_raw or {}).get("messages")
+                )
+            ) from exc
+        except Exception as exc:
+            from app.services.agent.helpers import extract_message_kinds
+            from app.services.review.errors import (
+                ReviewAgentReturnedNoStructuredResponseError,
+            )
+
+            log.exception(
+                "review agents returned unparseable output: repo=%s pr_number=%s",
+                repo_name,
+                pr_number,
+            )
+            raise ReviewAgentReturnedNoStructuredResponseError(
+                message_kinds=extract_message_kinds(
+                    (security_raw or {}).get("messages")
+                )
+            ) from exc
+
+        return combine_review_results(
+            summary_markdown=summary_markdown,
+            security=security,
+            correctness=correctness,
+            style=style,
+        )
     finally:
         try:
             await sandbox.stop()
@@ -783,7 +874,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             status=input.status,
         )
 
-        review = await invoke_review_agent_step(
+        review = await invoke_review_agents_step(
             sandbox_id=sandbox.sandbox_id,
             sandbox_name=sandbox.sandbox_name,
             repo_id=repo.id,
