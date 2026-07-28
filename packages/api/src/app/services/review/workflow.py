@@ -1049,7 +1049,6 @@ async def post_review_to_github_step(
     if isinstance(result, Ok):
         return result.value
     _raise_github_post_error(result.error)
-    # _raise_github_post_error always raises; this satisfies the type checker.
     raise AssertionError("unreachable")
 
 
