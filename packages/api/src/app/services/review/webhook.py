@@ -122,6 +122,14 @@ def extract_payload(payload: dict[str, Any]) -> PRReviewInput | None:
         return None
 
 
+def opencode_anthropic_models():
+    provider = "anthropic"
+    base_url = "https://opencode.ai/zen/go"
+    model = "minimax-m3"
+    api_key = settings.llm_api_key
+    return provider, base_url, api_key, model
+
+
 def _resolve_llm_config() -> tuple[LLMProviderStr, str | None, str, str]:
     """Read the LLM configuration from :class:`Settings`.
 
@@ -137,9 +145,12 @@ def _resolve_llm_config() -> tuple[LLMProviderStr, str | None, str, str]:
     base_url = (
         f"https://api.cloudflare.com/client/v4/accounts/{settings.cf_account_id}/ai/v1"
     )
+
     api_key = settings.cf_ai_gateway_auth_token
     # model = "@cf/moonshotai/kimi-k2.7-code"
     model = "openai/gpt-5.1"
+
+    return opencode_anthropic_models()
     return provider, base_url, api_key, model  # type: ignore[return-value]
 
 
