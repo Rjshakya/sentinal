@@ -135,6 +135,14 @@ class Settings(BaseSettings):
         default="", description="CF ai gateway auth token"
     )
     cf_account_id: str = Field(default="", description="CF account id")
+    llm_log_io: bool = Field(
+        default=False,
+        description=(
+            "Emit per-LLM-call input/output JSON log lines for the review "
+            "agents (verbose; dev only). When false, no LLM I/O callback "
+            "handler is attached and there is zero per-call overhead."
+        ),
+    )
 
     # --- GitHub App ---
     github_app_id: str = Field(
@@ -229,6 +237,15 @@ class Settings(BaseSettings):
             and self.llm_base_url
             and (self.llm_api_key or self.openai_api_key)
         )
+
+    @property
+    def llm_log_io_enabled(self) -> bool:
+        """True when per-LLM-call I/O logging is enabled.
+
+        The chat model factory reads this to decide whether to attach
+        the :class:`app.core.llm_callbacks.LLMIOCallbackHandler`.
+        """
+        return self.llm_log_io
 
     @property
     def github_webhook_configured(self) -> bool:

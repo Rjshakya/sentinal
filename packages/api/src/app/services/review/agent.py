@@ -27,6 +27,7 @@ from langchain_core.tools import BaseTool
 from langchain_e2b import AsyncE2BSandbox
 
 from app.core.llm import LLMProviderStr, build_chat_model
+from app.core.llm_callbacks import make_llm_io_handler
 from app.core.sandbox import BaseSandbox
 from app.core.sandbox.e2b import E2BSandbox
 from app.services.agent.models import (
@@ -278,6 +279,9 @@ def build_review_agents(
     llm_api_key: str,
     llm_model: str,
     hunk_map: HunkMap,
+    repo_id: str,
+    repo_name: str,
+    workflow_id: str | None = None,
 ) -> tuple[
     DeepAgentGraph,
     DeepAgentGraph,
@@ -289,17 +293,26 @@ def build_review_agents(
     """Build the chat model, the shared backend, and the four review agents.
 
     Returns ``(summary, security, correctness, style, model, backend)``.
-    The model and backend are returned alongside the agents so the
-    caller can reuse them in log lines or in additional invocations
-    without rebuilding the LLM client.
+    The model returned as the 5th tuple element is the summary agent's
+    chat model — kept for backward compatibility with callers that
+    reused the model. The three specialist agents own their own chat
+    model instances so each can carry its own per-agent callback
+    handler.
+
+    When ``settings.llm_log_io_enabled`` is true, each agent gets a
+    :class:`app.core.llm_callbacks.LLMIOCallbackHandler` attached to
+    the chat model. LangChain threads the model's callbacks through
+    every inner run, so one outer ``ainvoke`` produces N
+    ``llm_call_started`` / ``llm_call_completed`` log lines plus the
+    interleaved ``tool_call_started`` / ``tool_call_completed`` lines
+    for ``get_diff`` and ``verify_comment_line``. When the flag is
+    off, no handler is attached and there is zero per-call overhead.
+
+    ``repo_id`` and ``repo_name`` are required for the handler's
+    correlation context; ``workflow_id`` is optional and is filled in
+    by :func:`app.services.review.workflow.invoke_review_agents_step`
+    from ``DBOS.workflow_id``.
     """
-    model = build_chat_model(
-        provider=provider,
-        base_url=llm_baseurl,
-        api_key=llm_api_key,
-        model=llm_model,
-        headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
-    )
     backend = _build_backend(sandbox)
     tools = _build_shared_tools(
         sandbox=sandbox,
@@ -307,16 +320,40 @@ def build_review_agents(
         head_sha=head_sha,
         hunk_map=hunk_map,
     )
+
+    def _model_for(agent_name: str) -> BaseChatModel:
+        return build_chat_model(
+            provider=provider,
+            base_url=llm_baseurl,
+            api_key=llm_api_key,
+            model=llm_model,
+            headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
+            callbacks=make_llm_io_handler(
+                agent_name=agent_name,
+                repo_name=repo_name,
+                repo_id=repo_id,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                workflow_id=workflow_id,
+                model=llm_model,
+            ),
+        )
+
+    summary_model = _model_for("summary")
+    security_model = _model_for("security")
+    correctness_model = _model_for("correctness")
+    style_model = _model_for("style")
+
     log.info(
         "building review agents: model=%s",
-        getattr(model, "model_name", "<unknown>"),
+        getattr(summary_model, "model_name", "<unknown>"),
     )
     return (
-        build_summary_agent(model=model, backend=backend, tools=tools),
-        build_security_agent(model=model, backend=backend, tools=tools),
-        build_correctness_agent(model=model, backend=backend, tools=tools),
-        build_style_agent(model=model, backend=backend, tools=tools),
-        model,
+        build_summary_agent(model=summary_model, backend=backend, tools=tools),
+        build_security_agent(model=security_model, backend=backend, tools=tools),
+        build_correctness_agent(model=correctness_model, backend=backend, tools=tools),
+        build_style_agent(model=style_model, backend=backend, tools=tools),
+        summary_model,
         backend,
     )
 

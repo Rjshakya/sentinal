@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.llm import build_chat_model
+from app.core.llm_callbacks import make_llm_io_handler
+from app.core.logging import configure_structured_logging
 from app.core.sandbox.e2b import CODE_SANDBOX_TEMPLATE_NAME, build_e2b_template
 from app.services.review.webhook import _resolve_llm_config
 
@@ -59,6 +61,11 @@ def echo_word(word: str) -> str:
 
 async def main() -> int:
 
+    # Install the JSON formatter on the root logger so the LLM I/O
+    # callback handler's structured payloads render as JSON lines.
+    # No-op when LLM_LOG_IO is unset (the handler list is empty).
+    configure_structured_logging()
+
     build_e2b_template()
     provider, base_url, api_key, model = _resolve_llm_config()
     log.info(
@@ -69,12 +76,26 @@ async def main() -> int:
         api_key[:6],
     )
 
+    # When settings.llm_log_io_enabled is false (the default), this
+    # returns an empty list and the chat model gets no callbacks —
+    # behavior is identical to before this change.
+    callbacks = make_llm_io_handler(
+        agent_name="smoke",
+        repo_name="-",
+        repo_id="-",
+        pr_number=0,
+        head_sha="-",
+        workflow_id=None,
+        model=model,
+    )
+
     chat = build_chat_model(
         provider=provider,
         base_url=base_url,
         api_key=api_key,
         model=model,
         headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
+        callbacks=callbacks,
     )
 
     log.info("creating e2b sandbox…")

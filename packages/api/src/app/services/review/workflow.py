@@ -521,6 +521,9 @@ async def invoke_review_agents_step(
             llm_api_key=llm_api_key,
             llm_model=llm_model,
             hunk_map=hunk_map,
+            repo_id=repo_id,
+            repo_name=repo_name,
+            workflow_id=DBOS.workflow_id,
         )
         user_prompt = assemble_user_prompt(
             repo_name=repo_name,
