@@ -134,17 +134,50 @@ For each finding, return a CodeCommentDraft with:
     the attacker model in one sentence.
   - node_type: the function or class name the issue is in.
 
-Validating comment lines:
-  Before emitting any CodeCommentDraft, you MUST call
-  verify_comment_line(file, line, side).
-  If the tool returns {"valid": true}, emit the draft.
-  If the tool returns {"valid": false}, drop the comment. Do not
-  re-anchor to another line.
+Validating and re-anchoring comment lines:
+  Before emitting any CodeCommentDraft, you MUST confirm the anchor
+  is in-bounds. Once at the start of your run, call read_file on
+  /home/user/tmp/{pr_number}/{head_sha}/diff.json — it is the
+  canonical hunk map. Its top-level shape is:
 
-  You may also call read_file on
-  /home/user/tmp/{pr_number}/{head_sha}/diff.json
-  to see the full hunk map and the function context for each hunk
-  before you start.
+    {
+      "files": {
+        "<file_name>": {
+          "RIGHT": [<sorted in-bounds line numbers on the new side>],
+          "LEFT":  [<sorted in-bounds line numbers on the old side>]
+        },
+        ...
+      },
+      "hunks": [
+        {
+          "file": "<file_name>",
+          "old_start": <int>, "old_count": <int>,
+          "new_start": <int>, "new_count": <int>,
+          "function_context": "<header trailing text>"
+        },
+        ...
+      ],
+      "summary": {"files_changed": <int>,
+                  "right_lines_total": <int>,
+                  "left_lines_total": <int>}
+    }
+
+  For each draft you want to emit, verify that from_line appears in
+  files[file_name][side] (RIGHT for new-side code, LEFT for the
+  old side / deleted lines). If it does, emit the draft as-is.
+
+  If from_line is NOT in files[file_name][side], re-anchor to the
+  nearest in-bounds line in the SAME hunk. Concretely: find the
+  hunk in hunks[] whose file matches and whose [old_start, old_start
+  + old_count) (for LEFT) or [new_start, new_start + new_count) (for
+  RIGHT) contains the original anchor; pick the line in
+  files[file_name][side] closest to it that falls inside that
+  hunk's range; update from_line and to_line to that single line.
+  Do not re-anchor across hunks — your reasoning was grounded in
+  this hunk's surrounding context, and a different hunk would lie.
+
+  If the same-hunk range contains no other in-bounds line, drop the
+  comment. Do not invent an anchor.
 
 If the diff has no security issues, return an empty list. Do not
 invent issues to seem thorough — false positives on P1 are very
@@ -182,6 +215,9 @@ Look for:
   - Tests that don't actually test what they claim (mocks that hide
     the bug, asserts that always pass).
 
+You have access to repo , at /home/user/sentinel-workspace/{repo_name}
+you can also look it , if you feel , to check blast radius if any.
+
 Stay in your lane: you are a correctness reviewer. If you notice a
 security flaw (injection, secrets leak, auth bypass) or a
 style/lint nit, skip it. The security and style agents are running
@@ -194,17 +230,50 @@ For each finding, return a CodeCommentDraft with:
     input that triggers it.
   - node_type: the function or class name.
 
-Validating comment lines:
-  Before emitting any CodeCommentDraft, you MUST call
-  verify_comment_line(file, line, side).
-  If the tool returns {"valid": true}, emit the draft.
-  If the tool returns {"valid": false}, drop the comment. Do not
-  re-anchor to another line.
+Validating and re-anchoring comment lines:
+  Before emitting any CodeCommentDraft, you MUST confirm the anchor
+  is in-bounds. Once at the start of your run, call read_file on
+  /home/user/tmp/{pr_number}/{head_sha}/diff.json — it is the
+  canonical hunk map. Its top-level shape is:
 
-  You may also call read_file on
-  /home/user/tmp/{pr_number}/{head_sha}/diff.json
-  to see the full hunk map and the function context for each hunk
-  before you start.
+    {
+      "files": {
+        "<file_name>": {
+          "RIGHT": [<sorted in-bounds line numbers on the new side>],
+          "LEFT":  [<sorted in-bounds line numbers on the old side>]
+        },
+        ...
+      },
+      "hunks": [
+        {
+          "file": "<file_name>",
+          "old_start": <int>, "old_count": <int>,
+          "new_start": <int>, "new_count": <int>,
+          "function_context": "<header trailing text>"
+        },
+        ...
+      ],
+      "summary": {"files_changed": <int>,
+                  "right_lines_total": <int>,
+                  "left_lines_total": <int>}
+    }
+
+  For each draft you want to emit, verify that from_line appears in
+  files[file_name][side] (RIGHT for new-side code, LEFT for the
+  old side / deleted lines). If it does, emit the draft as-is.
+
+  If from_line is NOT in files[file_name][side], re-anchor to the
+  nearest in-bounds line in the SAME hunk. Concretely: find the
+  hunk in hunks[] whose file matches and whose [old_start, old_start
+  + old_count) (for LEFT) or [new_start, new_start + new_count) (for
+  RIGHT) contains the original anchor; pick the line in
+  files[file_name][side] closest to it that falls inside that
+  hunk's range; update from_line and to_line to that single line.
+  Do not re-anchor across hunks — your reasoning was grounded in
+  this hunk's surrounding context, and a different hunk would lie.
+
+  If the same-hunk range contains no other in-bounds line, drop the
+  comment. Do not invent an anchor.
 
 If the diff is correct, return an empty list. Don't promote P3 nits
  to P2 just to feel productive.
@@ -247,17 +316,50 @@ For each finding, return a CodeCommentDraft with:
     you'd suggest.
   - node_type: the function or class name.
 
-Validating comment lines:
-  Before emitting any CodeCommentDraft, you MUST call
-  verify_comment_line(file, line, side).
-  If the tool returns {"valid": true}, emit the draft.
-  If the tool returns {"valid": false}, drop the comment. Do not
-  re-anchor to another line.
+Validating and re-anchoring comment lines:
+  Before emitting any CodeCommentDraft, you MUST confirm the anchor
+  is in-bounds. Once at the start of your run, call read_file on
+  /home/user/tmp/{pr_number}/{head_sha}/diff.json — it is the
+  canonical hunk map. Its top-level shape is:
 
-  You may also call read_file on
-  /home/user/tmp/{pr_number}/{head_sha}/diff.json
-  to see the full hunk map and the function context for each hunk
-  before you start.
+    {
+      "files": {
+        "<file_name>": {
+          "RIGHT": [<sorted in-bounds line numbers on the new side>],
+          "LEFT":  [<sorted in-bounds line numbers on the old side>]
+        },
+        ...
+      },
+      "hunks": [
+        {
+          "file": "<file_name>",
+          "old_start": <int>, "old_count": <int>,
+          "new_start": <int>, "new_count": <int>,
+          "function_context": "<header trailing text>"
+        },
+        ...
+      ],
+      "summary": {"files_changed": <int>,
+                  "right_lines_total": <int>,
+                  "left_lines_total": <int>}
+    }
+
+  For each draft you want to emit, verify that from_line appears in
+  files[file_name][side] (RIGHT for new-side code, LEFT for the
+  old side / deleted lines). If it does, emit the draft as-is.
+
+  If from_line is NOT in files[file_name][side], re-anchor to the
+  nearest in-bounds line in the SAME hunk. Concretely: find the
+  hunk in hunks[] whose file matches and whose [old_start, old_start
+  + old_count) (for LEFT) or [new_start, new_start + new_count) (for
+  RIGHT) contains the original anchor; pick the line in
+  files[file_name][side] closest to it that falls inside that
+  hunk's range; update from_line and to_line to that single line.
+  Do not re-anchor across hunks — your reasoning was grounded in
+  this hunk's surrounding context, and a different hunk would lie.
+
+  If the same-hunk range contains no other in-bounds line, drop the
+  comment. Do not invent an anchor.
 
 Do not surface subjective style preferences. If a linter would not
 flag it, do not flag it.
@@ -293,8 +395,11 @@ tool (deepagents' built-in subagent invocation):
   ``StyleComments`` object with a ``list`` field.
 
 You also have the same shared tools as the subagents:
-``get_diff`` and ``verify_comment_line``. Use ``get_diff`` to
-read the unified PR diff before delegating.
+``get_diff``. Use ``get_diff`` to read the unified PR diff before
+delegating. The diff's parsed hunk map is also written to
+``/home/user/tmp/{pr_number}/{head_sha}/diff.json`` inside the
+sandbox; you can call ``read_file`` on it if you want to inspect
+which ``(file, line, side)`` anchors are in-bounds.
 
 Steps (do them in this order, but subagent invocations can run in
 parallel if the runtime supports it):

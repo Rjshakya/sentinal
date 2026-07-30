@@ -123,9 +123,13 @@ async def parse_and_write_diff_json(
 
     The returned :data:`ParsedDiff` is the same data structure that
     was written to the file. The caller can use it directly (without
-    re-reading the sandbox) to bind into
-    :func:`app.services.review.tools.make_verify_comment_line_tool` and
-    to call :func:`app.services.review.hunk_map.filter_drafts`.
+    re-reading the sandbox) to build the in-memory :data:`HunkMap`
+    that the workflow passes into
+    :func:`app.services.review.hunk_map.filter_drafts` (the
+    server-side backstop). The agent reads ``diff.json`` from the
+    sandbox on its own via the deepagents backend's ``read_file``
+    tool to self-validate and re-anchor its ``(file, line, side)``
+    anchors.
 
     Raises:
         DiffUnavailableError: when ``file.diff`` is missing, empty, or

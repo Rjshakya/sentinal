@@ -84,10 +84,7 @@ from app.services.review.helpers import get_repo_path
 from app.services.review.hunk_map import HunkMap, ParsedDiff, filter_drafts
 from app.services.review.steps.persist_summary import persist_review_summary
 from app.services.review.steps.upsert_pr import upsert_pull_request
-from app.services.review.tools import (
-    make_get_diff_tool,
-    make_verify_comment_line_tool,
-)
+from app.services.review.tools import make_get_diff_tool
 
 log = logging.getLogger(__name__)
 
@@ -455,7 +452,6 @@ async def invoke_review_agents_step(
     llm_baseurl: str | None,
     llm_api_key: str,
     llm_model: str,
-    hunk_map: HunkMap,
 ) -> ReviewResult:
     """Durable step: run the four review agents in parallel and combine.
 
@@ -464,8 +460,12 @@ async def invoke_review_agents_step(
     1. Reconnects to the E2B sandbox (one connection for the step).
     2. Builds the chat model and the four review agents (summary,
        security, correctness, style) — all sharing the same
-       ``AsyncE2BSandbox`` backend and the same shared tools
-       (``get_diff``, ``verify_comment_line``).
+       ``AsyncE2BSandbox`` backend and the same shared tool
+       (``get_diff``). Comment-line validation is prompt-driven:
+       each specialist reads ``diff.json`` (the hunk map written
+       by :func:`app.services.review.diff.parse_and_write_diff_json`)
+       and self-checks / re-anchors its draft anchors before
+       emitting them.
     3. ``asyncio.gather`` runs all four ``agent.ainvoke`` calls
        concurrently against the same sandbox.
     4. Each structured-output agent (security / correctness / style)
@@ -481,10 +481,11 @@ async def invoke_review_agents_step(
     parse / combine failure does not leak the connection.
 
     ``hunk_map`` is the parsed diff structure from
-    :func:`app.services.review.hunk_map.parse_hunk_map`. It is bound
-    into the ``verify_comment_line`` tool so each specialist agent
-    can self-validate ``(file, line, side)`` anchors before emitting
-    :class:`CodeCommentDraft` entries.
+    :func:`app.services.review.hunk_map.parse_hunk_map`. The
+    specialist agents re-derive what they need from ``diff.json``;
+    the server-side :func:`app.services.review.hunk_map.filter_drafts`
+    (called by the workflow after this step) is the final backstop
+    that drops any draft whose anchor is not in ``hunk_map``.
 
     Raises:
         SandboxConnectError: reconnect to E2B failed.
@@ -535,7 +536,6 @@ async def invoke_review_agents_step(
             llm_baseurl=llm_baseurl,
             llm_api_key=llm_api_key,
             llm_model=llm_model,
-            hunk_map=hunk_map,
             repo_id=repo_id,
             repo_name=repo_name,
             workflow_id=DBOS.workflow_id,
@@ -659,7 +659,6 @@ async def invoke_review_agent_step(
     llm_baseurl: str | None,
     llm_api_key: str,
     llm_model: str,
-    hunk_map: HunkMap,
 ) -> ReviewResult:
     """Durable step: run the orchestrator-with-subagents review and combine.
 
@@ -705,10 +704,14 @@ async def invoke_review_agent_step(
     parse / combine failure does not leak the connection.
 
     ``hunk_map`` is the parsed diff structure from
-    :func:`app.services.review.hunk_map.parse_hunk_map`. It is
-    bound into the ``verify_comment_line`` tool on each subagent
-    so the specialists can self-validate ``(file, line, side)``
-    anchors before emitting :class:`CodeCommentDraft` entries.
+    :func:`app.services.review.hunk_map.parse_hunk_map`. Each
+    specialist subagent reads the parallel ``diff.json`` file (also
+    written by :func:`app.services.review.diff.parse_and_write_diff_json`)
+    directly via the deepagents backend's ``read_file`` to
+    self-validate and re-anchor its ``(file, line, side)`` anchors
+    before emitting :class:`CodeCommentDraft` entries. The
+    server-side :func:`app.services.review.hunk_map.filter_drafts`
+    (called by the workflow after this step) is the final backstop.
 
     Raises:
         SandboxConnectError: reconnect to E2B failed.
@@ -768,7 +771,6 @@ async def invoke_review_agent_step(
             sandbox=sandbox,
             pr_number=pr_number,
             head_sha=head_sha,
-            hunk_map=hunk_map,
             model=orchestrator_model,
         )
 
@@ -780,7 +782,6 @@ async def invoke_review_agent_step(
                 sandbox=sandbox,
                 pr_number=pr_number,
                 head_sha=head_sha,
-                hunk_map=hunk_map,
             ),
         )
         user_prompt = assemble_user_prompt(
@@ -889,18 +890,20 @@ def _orchestrator_tools(
     sandbox: E2BSandbox,
     pr_number: int,
     head_sha: str,
-    hunk_map: HunkMap,
 ) -> list[BaseTool]:
     """Return the orchestrator's own tools (same as a subagent's).
 
-    The orchestrator uses ``get_diff`` to read the diff first, and
-    ``verify_comment_line`` is exposed for any anchor the
-    orchestrator might want to sanity-check. Subagents get the same
-    tools independently (each in its own sandbox view).
+    The orchestrator uses ``get_diff`` to read the diff first.
+    Comment-line validation is prompt-driven: any anchor the
+    orchestrator (or its subagents) cares to inspect is read
+    directly from ``/home/user/tmp/{pr_number}/{head_sha}/diff.json``
+    in the sandbox via the deepagents backend's ``read_file`` tool.
+    The orchestrator does not own a comment-anchor validation tool
+    of its own. Subagents get the same tool independently (each in
+    its own sandbox view).
     """
     return [
         make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
-        make_verify_comment_line_tool(hunk_map=hunk_map),
     ]
 
 
@@ -1154,7 +1157,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             status=input.status,
         )
 
-        review = await invoke_review_agent_step(
+        review = await invoke_review_agents_step(
             sandbox_id=sandbox.sandbox_id,
             sandbox_name=sandbox.sandbox_name,
             repo_id=repo.id,
@@ -1166,7 +1169,6 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             llm_baseurl=input.llm_baseurl,
             llm_api_key=input.llm_api_key,
             llm_model=input.llm_model,
-            hunk_map=hunk_map,
         )
 
         filtered_review = filter_drafts(review, hunk_map)

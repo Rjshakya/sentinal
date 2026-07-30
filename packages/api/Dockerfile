@@ -36,6 +36,11 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl libpq5 \
  && rm -rf /var/lib/apt/lists/*
 
+RUN useradd --create-home --uid 1000 app
+
+
+
+
 # Prebuilt venv (all wheels, including the api package itself).
 COPY --from=builder /build/.venv /app/.venv
 # COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
@@ -47,7 +52,6 @@ COPY packages/api/alembic.ini /app/alembic.ini
 COPY packages/api/alembic /app/alembic
 COPY --chmod=755 packages/api/docker/migrate.sh /app/docker/migrate.sh
 
-RUN useradd --create-home --uid 1000 app && chown -R app:app /app
 USER app
 
 EXPOSE 8000

@@ -61,11 +61,7 @@ from app.services.agent.prompts import (
     SECURITY_SYSTEM_PROMPT,
     STYLE_SYSTEM_PROMPT,
 )
-from app.services.review.hunk_map import HunkMap
-from app.services.review.tools import (
-    make_get_diff_tool,
-    make_verify_comment_line_tool,
-)
+from app.services.review.tools import make_get_diff_tool
 from app.services.review.types import DeepAgentGraph
 
 log = logging.getLogger(__name__)
@@ -181,19 +177,25 @@ def _build_shared_tools(
     sandbox: BaseSandbox,
     pr_number: int,
     head_sha: str,
-    hunk_map: HunkMap,
 ) -> list[BaseTool]:
     """Return the tool list every review agent receives.
 
-    ``get_diff`` reads the unified PR diff from the sandbox.
-    ``verify_comment_line`` answers "is this ``(file, line, side)``
-    anchor one that GitHub will accept?" against the parsed
-    :data:`HunkMap`. The deepagents runtime inherits the backend
-    tools (sandbox ``read_file`` / ``ls`` / ``execute``) separately.
+    ``get_diff`` reads the unified PR diff from the sandbox. The
+    diff's parsed hunk map is also written to
+    ``/home/user/tmp/{pr_number}/{head_sha}/diff.json`` in the
+    sandbox; the agents read it directly via the deepagents
+    backend's ``read_file`` tool when they need to validate or
+    re-anchor a ``(file, line, side)`` comment. The deepagents
+    runtime inherits the backend tools (sandbox ``read_file`` /
+    ``ls`` / ``execute``) separately.
+
+    ``hunk_map`` is currently unused by the tool list itself — it
+    is only passed in so the workflow step can hand the same parsed
+    structure to both the agent step (for diff.json regeneration
+    parity) and the server-side :func:`filter_drafts` backstop.
     """
     return [
         make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
-        make_verify_comment_line_tool(hunk_map=hunk_map),
     ]
 
 
@@ -295,7 +297,6 @@ def build_review_agents(
     llm_baseurl: str | None,
     llm_api_key: str,
     llm_model: str,
-    hunk_map: HunkMap,
     repo_id: str,
     repo_name: str,
     workflow_id: str | None = None,
@@ -322,8 +323,10 @@ def build_review_agents(
     every inner run, so one outer ``ainvoke`` produces N
     ``llm_call_started`` / ``llm_call_completed`` log lines plus the
     interleaved ``tool_call_started`` / ``tool_call_completed`` lines
-    for ``get_diff`` and ``verify_comment_line``. When the flag is
-    off, no handler is attached and there is zero per-call overhead.
+    for ``get_diff`` (and the deepagents backend's ``read_file`` /
+    ``ls`` / ``execute`` tools the agent uses to inspect
+    ``diff.json``). When the flag is off, no handler is attached
+    and there is zero per-call overhead.
 
     ``repo_id`` and ``repo_name`` are required for the handler's
     correlation context; ``workflow_id`` is optional and is filled in
@@ -335,7 +338,6 @@ def build_review_agents(
         sandbox=sandbox,
         pr_number=pr_number,
         head_sha=head_sha,
-        hunk_map=hunk_map,
     )
 
     def _model_for(agent_name: str) -> BaseChatModel:
@@ -453,7 +455,6 @@ def build_review_subagents(
     sandbox: E2BSandbox,
     pr_number: int,
     head_sha: str,
-    hunk_map: HunkMap,
     model: BaseChatModel,
 ) -> list[SubAgent]:
     """Build the four review subagents for the orchestrator.
@@ -485,7 +486,6 @@ def build_review_subagents(
         model=model,
         tools=[
             make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
-            make_verify_comment_line_tool(hunk_map=hunk_map),
         ],
     )
 
@@ -502,7 +502,6 @@ def build_review_subagents(
         response_format=SecurityComments,
         tools=[
             make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
-            make_verify_comment_line_tool(hunk_map=hunk_map),
         ],
     )
 
@@ -520,7 +519,6 @@ def build_review_subagents(
         response_format=CorrectnessComments,
         tools=[
             make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
-            make_verify_comment_line_tool(hunk_map=hunk_map),
         ],
     )
 
@@ -537,7 +535,6 @@ def build_review_subagents(
         response_format=StyleComments,
         tools=[
             make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
-            make_verify_comment_line_tool(hunk_map=hunk_map),
         ],
     )
 

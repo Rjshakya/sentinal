@@ -337,9 +337,11 @@ steps in order:
    has one orchestrator (the root deep-agent) and four `SubAgent`
    children registered in `assemble_review_subagents()`:
    `summarizer`, `security`, `correctness`, `style`. All four
-   subagents receive the `verify_comment_line` tool, which is bound
-   to the `HunkMap` and answers a single boolean question: "is this
-   anchor one that GitHub will accept?".
+   subagents share the `get_diff` tool. Comment-line validation
+   is prompt-driven: the three severity specialists read
+   `diff.json` (the parsed hunk map written alongside the diff)
+   and self-check / re-anchor each `(file, line, side)` anchor
+   before emitting a `CodeCommentDraft`.
 7. Invokes the agent (`@DBOS.step`). The orchestrator's loop is:
    read the diff and surrounding code → delegate to the
    `summarizer` first (its markdown output becomes
@@ -347,11 +349,11 @@ steps in order:
    severity-bucketed specialists (in parallel if appropriate) →
    collect + dedupe findings → pick the verdict from the severities
    present (any P1 → `REQUEST_CHANGES`, else any P2/P3 → `COMMENT`,
-   else `APPROVE`). The three specialists MUST call
-   `verify_comment_line(file, line, side)` before emitting each
-   `CodeCommentDraft`; the prompt tells them to drop the draft if
-   the tool returns `valid=false` rather than re-anchor to another
-   line.
+   else `APPROVE`). The three specialists MUST read `diff.json`
+   and confirm each draft's `from_line` is in
+   `files[file_name][side]`; if not, the prompt tells them to
+   re-anchor to the nearest in-bounds line in the **same hunk**
+   before emitting, or drop the comment if no such line exists.
 8. **Filters the agent's output** via `filter_drafts(review, hunk_map)`
    (one pure call, in the workflow body). Drops any draft whose
    anchor is not in the `HunkMap`. Drops are recorded as a single
@@ -377,36 +379,48 @@ the orchestrator. Every bullet in the summary is grounded in a
 self-critique pass that drops any ungrounded bullet before
 returning.
 
-#### Diff parsing and `verify_comment_line`
+#### Diff parsing and comment-line validation
 
 GitHub's review-comments API rejects (with HTTP 422) any inline
 comment whose `(file, line, side)` anchor does not appear in the
 PR's diff. The pipeline guards against this at three layers, in
 order:
 
-1. **Agent self-validation.** The `verify_comment_line(file, line, side)`
-   tool is bound to the `HunkMap` and exposed to the four
-   specialist subagents. The tool returns
-   `{"valid": true}` iff the anchor is in the map. The three
-   specialist prompts are written so the LLM calls the tool
-   before emitting each `CodeCommentDraft` and drops the draft
-   (does not re-anchor) if the answer is `false`.
-2. **Server-side filter.** `filter_drafts(review, hunk_map)` is
+1. **Agent self-validation (prompt-driven).** The three severity
+   specialist subagents read
+   `/home/user/tmp/{pr_number}/{head_sha}/diff.json` directly via
+   the deepagents backend's `read_file`. The file is the canonical
+   hunk map: `files[file_name].RIGHT` and `files[file_name].LEFT`
+   are sorted arrays of in-bounds line numbers, and `hunks[]`
+   carries per-hunk function context and `old_start` /
+   `old_count` / `new_start` / `new_count` ranges. For every
+   `CodeCommentDraft`, the agent confirms `from_line` is in
+   `files[file_name][side]`. If it is, the draft is emitted as-is.
+   If it is not, the agent re-anchors to the nearest in-bounds
+   line in the **same hunk** (the range of the matching entry in
+   `hunks[]`) and updates `from_line` / `to_line` to that single
+   line. If the same-hunk range has no other valid line, the
+   draft is dropped. Re-anchoring never crosses hunk boundaries:
+   the agent's reasoning was grounded in this hunk's surrounding
+   context.
+2. **Server-side backstop.** `filter_drafts(review, hunk_map)` is
    called once in the workflow, immediately after the agent
    returns, before any persist or post step. It is a pure
-   function and the only server-side line check; it catches
-   anything the agent missed.
+   function and the final server-side line check; it catches any
+   draft the agent failed to re-anchor (the agent can still be
+   notorious). Drops are logged as `review_comments_filtered`
+   with the dropped tuples and their reasons.
 3. **`< 1` guard.** `convert_to_github_comments` still rejects
    drafts with `from_line < 1` (or `to_line < 1`) as a final
    defence-in-depth.
 
 The `HunkMap` is computed once in `parse_diff_step` (a
 `@DBOS.step`), held in the workflow's local state, and passed
-into both the agent step (where it is bound into
-`verify_comment_line`) and `filter_drafts`. The
-`/home/user/tmp/{pr_number}/{head_sha}/diff.json` file is written
-to the sandbox so the agent can `read_file` it directly when it
-needs the full per-hunk metadata (function context, line counts).
+into `filter_drafts`. The
+`/home/user/tmp/{pr_number}/{head_sha}/diff.json` file is the
+JSON-serialised form of the same `HunkMap` (plus per-hunk
+metadata); it is written to the sandbox in the same step so the
+agent can `read_file` it directly during the review.
 
 ### 3.5 Migrations
 

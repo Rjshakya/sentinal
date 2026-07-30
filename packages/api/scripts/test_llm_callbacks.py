@@ -85,8 +85,8 @@ def main() -> int:
                             tool_calls=[
                                 {
                                     "id": "call_1",
-                                    "name": "verify_comment_line",
-                                    "args": {"file": "a.py", "line": 10, "side": "RIGHT"},
+                                    "name": "read_file",
+                                    "args": {"file_path": "/home/user/tmp/42/abc1234/diff.json"},
                                 }
                             ],
                             usage_metadata={
