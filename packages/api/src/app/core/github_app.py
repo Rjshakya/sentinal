@@ -23,6 +23,8 @@ Module layout:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +34,8 @@ from githubkit import GitHub
 from githubkit.auth import AppAuthStrategy
 from githubkit_schemas.v2026_03_10.models import (
     Installation as GhInstallation,
+)
+from githubkit_schemas.v2026_03_10.models import (
     InstallationRepositoriesGetResponse200PropRepositoriesItems,
 )
 from pydantic import BaseModel
@@ -60,6 +64,16 @@ class InstallationRepo(BaseModel):
 
 
 def _resolve_private_key() -> str:
+
+    b64 = settings.github_app_private_key
+    if b64:
+        try:
+            return base64.b64decode(b64, validate=True).decode("utf-8")
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError(
+                f"Failed to decode GITHUB_APP_PRIVATE_KEY_BASE64: {exc}"
+            ) from exc
+
     path = settings.github_app_private_key_path
     if path:
         try:
