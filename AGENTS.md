@@ -154,22 +154,48 @@ psycopg async, which fails with the default `ProactorEventLoop`.
   - `setup_errors.py` — typed error variants for the setup pipeline.
 - `review/` — the durable review pipeline (the production target of
   the system).
-  - `workflow.py` — DBOS durable workflows. `review_workflow`
-    sequences idempotent, checkpointed steps (repo lookup, sandbox
-    connect, diff fetch, PR upsert, agent invocation, persistence)
-    and returns a ``Result[ReviewRunResult, ReviewPipelineError]``.
-    `post_review_to_github_workflow` is a separate durable workflow
-    for posting the review to GitHub, so it can be retried
-    independently.
+  - `workflow.py` — the top-level `review_workflow` DBOS orchestrator.
+    Sequences idempotent, checkpointed steps (repo lookup, sandbox
+    connect, diff fetch, PR upsert, agent invocation, persistence,
+    optional GitHub post) and returns a
+    ``ReviewRunResult``. The post-to-GitHub step is delegated to a
+    separate workflow (see `github/workflow.py` below).
+  - `workflow_types.py` — the six Pydantic models the workflow crosses:
+    `ReviewWorkflowInput`, `PostReviewInput`, `ReviewRunResult`,
+    `PostReviewResult`, `RepoSnapshot`, `ResolvedSandbox`.
+  - `_internal.py` — module-private helpers shared across the
+    pipeline: `_e2b_spec` and the `_SHOULD_RETRY_TRANSIENT` predicate
+    passed to every durable step.
   - `webhook.py` — GitHub ``pull_request`` ``opened`` / ``synchronize``
     adapter. Owns the verified-payload → durable-workflow handoff and
     computes the deterministic workflow id
     (`review:{repo_id}:{pr}:{head_sha[:7]}`).
-  - `steps/` — discrete I/O steps used by the workflows:
-    `resolve_repo`, `resolve_sandbox`, `fetch_diff`, `upsert_pr`,
-    `invoke_agent`, `persist_summary`, `persist_comments`.
+  - `steps/` — discrete I/O steps used by the workflow, one file per
+    step. Each file exposes a **pure** helper (no DBOS) and a
+    **DBOS-wrapped** variant (`*_tx` / `*_step`):
+    `resolve_repo` / `resolve_repo_tx`,
+    `resolve_sandbox` / `resolve_sandbox_step`, `fetch_diff_step`,
+    `parse_diff_step`, `upsert_pr` / `upsert_pull_request_tx`,
+    `invoke_review_agents_step` (legacy, kept as a revert path) +
+    `invoke_review_agent_step` (production orchestrator),
+    `persist_summary` / `persist_review_summary_tx`,
+    `persist_comments` / `persist_code_comments_tx`,
+    `stop_sandbox_step`.
   - `types.py` — `DeepAgentGraph` alias.
   - `errors.py` — typed error variants for the review pipeline.
+- `github/` — the GitHub post-pipeline.
+  - `post_review.py` — pure conversion (`convert_to_github_*`),
+    `post_review_to_github` (the REST call), the DB-update helpers
+    (`update_github_review_id`, `update_github_comment_ids`), and the
+    full orchestrator `post_review_and_update_db`. Same module as
+    before; left as-is because it's already structured with banner
+    comments.
+  - `workflow.py` — `post_review_to_github_workflow` (the durable
+    workflow) + the single `post_review_to_github_step` it wraps +
+    the `RetryableGitHubPostError` / `NonRetryableGitHubPostError`
+    internal variants DBOS uses for retry semantics.
+  - `steps/` — placeholder for sub-step helpers used by
+    `workflow.py`. Empty today.
 
 `src/app/models/`:
 

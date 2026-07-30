@@ -1,4 +1,14 @@
-"""Upsert the pull-request row during a review."""
+"""Upsert the pull-request row during a review.
+
+Two layers, following the Functional Core / Imperative Shell split:
+
+- :func:`upsert_pull_request` — the **pure** helper. Takes a
+  :class:`AsyncSession` and the PR fields, returns the persisted
+  :class:`PullRequest` row. No DBOS, no workflow boundary.
+- :func:`upsert_pull_request_tx` — the **DBOS-wrapped** transaction.
+  Acquires the DBOS datasource session, calls the pure helper, and
+  returns the ``pr.id`` so the workflow can carry it forward.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +18,11 @@ from datetime import UTC, datetime
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import dbos_datasource
 from app.models.enums import PRStatus
 from app.models.pull_request import PullRequest
 from app.utils.util import uuidToStr
+
 log = logging.getLogger(__name__)
 
 
@@ -93,4 +105,42 @@ async def upsert_pull_request(
     return pr
 
 
-__all__: list[str] = ["upsert_pull_request"]
+@dbos_datasource.transaction()
+async def upsert_pull_request_tx(
+    *,
+    repo_id: str,
+    github_pr_id: int,
+    number: int,
+    base_branch: str,
+    base_sha: str,
+    head_branch: str,
+    head_sha: str,
+    title: str,
+    body: str,
+    author: str,
+    status: PRStatus,
+) -> str:
+    """Durable DBOS transaction: insert or update the :class:`PullRequest` row.
+
+    Returns the ``pr.id`` so the workflow can carry it across the
+    step boundary.
+    """
+    session = dbos_datasource.sql_session()
+    pr = await upsert_pull_request(
+        session,
+        repo_id=repo_id,
+        github_pr_id=github_pr_id,
+        number=number,
+        base_branch=base_branch,
+        base_sha=base_sha,
+        head_branch=head_branch,
+        head_sha=head_sha,
+        title=title,
+        body=body,
+        author=author,
+        status=status,
+    )
+    return pr.id
+
+
+__all__ = ["upsert_pull_request", "upsert_pull_request_tx"]

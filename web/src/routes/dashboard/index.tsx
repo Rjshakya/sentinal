@@ -1,8 +1,12 @@
-import { GithubConnectionCard } from "@/routes/dashboard/_components/-github-connection-card";
+import { ActionsCard } from "@/routes/dashboard/_components/-actions-card";
+import { GreetingCard } from "@/routes/dashboard/_components/-greeting-card";
+import { StatCard } from "@/routes/dashboard/_components/-stat-card";
 import { protectPage } from "@/lib/auth";
 import { useInstallation } from "@/lib/installation";
+import { useUserStats } from "@/lib/stats";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { IconAlertTriangle, IconClipboardCheck, IconMessage2 } from "@tabler/icons-react";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 
@@ -13,14 +17,32 @@ export const Route = createFileRoute("/dashboard/")({
 });
 
 function DashboardOverview() {
+  const { data: stats, isLoading: statsLoading } = useUserStats();
+
   return (
     <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-      <div className="grid auto-rows-min gap-4 md:grid-cols-3">
-        <GithubConnectionCard />
-        <div className="aspect-video rounded-xl bg-muted/50" />
-        <div className="aspect-video rounded-xl bg-muted/50" />
+      <GreetingCard />
+      <div className="grid gap-4 md:grid-cols-3">
+        <StatCard
+          label="PRs reviewed"
+          value={stats?.prs_reviewed}
+          loading={statsLoading}
+          icon={<IconClipboardCheck className="text-muted-foreground size-4" />}
+        />
+        <StatCard
+          label="Comments issued"
+          value={stats?.comments_issued}
+          loading={statsLoading}
+          icon={<IconMessage2 className="text-muted-foreground size-4" />}
+        />
+        <StatCard
+          label="Bugs caught"
+          value={stats?.bugs_caught}
+          loading={statsLoading}
+          icon={<IconAlertTriangle className="text-muted-foreground size-4" />}
+        />
       </div>
-      <div className="min-h-screen flex-1 rounded-xl bg-muted/50 md:min-h-min" />
+      <ActionsCard />
       <InstallResultToast />
     </div>
   );

@@ -21,13 +21,15 @@ the workflow lets them propagate and the DBOS workflow is marked as
 ERROR.
 
 The module also exposes two helpers for LLM error handling:
-:func:`is_llm_transient_error` and :func:`extract_retry_after_seconds`.
+:func:`is_llm_retry_error` and :func:`extract_retry_after_seconds`.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
+from typing import Any, TypeAlias
 
 log = logging.getLogger(__name__)
 
@@ -70,9 +72,7 @@ class NoActiveSandboxError(StepError):
     def __init__(self, user_id: str, repo_id: str) -> None:
         self.user_id = user_id
         self.repo_id = repo_id
-        super().__init__(
-            f"no active sandbox for user {user_id!r} repo {repo_id!r}"
-        )
+        super().__init__(f"no active sandbox for user {user_id!r} repo {repo_id!r}")
 
 
 class SandboxConnectError(TransientStepError):
@@ -145,6 +145,187 @@ class ReviewAgentReturnedNoStructuredResponseError(StepError):
 
 
 # --------------------------------------------------------------------------- #
+# Per-subagent invocation errors (parallel fan-out)                            #
+# --------------------------------------------------------------------------- #
+
+
+class AgentInvocationError(StepError):
+    """Base for a single subagent's failure during parallel fan-out.
+
+    Raised from the ``invoke_<name>_agent`` wrappers in
+    :mod:`app.services.review.steps.invoke_agent`. Each subclass
+    hard-codes the value of :attr:`name` so the failure can be
+    attributed to a specific specialist.
+
+    The :attr:`retryable` flag mirrors DBOS retry semantics — when
+    ``True``, the wrapping step's ``should_retry`` predicate should
+    return ``True``. The flag is set by the wrapper based on whether
+    the underlying exception is a transient LLM failure (429 / 5xx /
+    timeout).
+
+    Attributes:
+        name: The subagent's name (``"summarizer"``, ``"security"``,
+            ``"correctness"``, or ``"style"``).
+        cause_exception: The original exception raised by the
+            subagent's ``ainvoke`` call or its post-processing.
+        retryable: ``True`` iff DBOS should retry the wrapping step.
+        details: Free-form dict (e.g. ``{"message_kinds": [...]}``)
+            with whatever context the wrapper could capture before the
+            failure.
+    """
+
+    name: str
+    cause_exception: BaseException
+    retryable: bool
+    details: dict[str, Any]
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        cause: BaseException,
+        retryable: bool,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self.name = name
+        self.cause_exception = cause
+        self.retryable = retryable
+        self.details = details or {}
+        super().__init__(f"{name} agent invocation failed: {cause!r}")
+
+
+class SummaryAgentInvocationError(AgentInvocationError):
+    """The ``summarizer`` subagent failed."""
+
+    def __init__(
+        self,
+        *,
+        cause: BaseException,
+        retryable: bool,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            name="summarizer", cause=cause, retryable=retryable, details=details
+        )
+
+
+class SecurityAgentInvocationError(AgentInvocationError):
+    """The ``security`` subagent failed."""
+
+    def __init__(
+        self,
+        *,
+        cause: BaseException,
+        retryable: bool,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            name="security", cause=cause, retryable=retryable, details=details
+        )
+
+
+class CorrectnessAgentInvocationError(AgentInvocationError):
+    """The ``correctness`` subagent failed."""
+
+    def __init__(
+        self,
+        *,
+        cause: BaseException,
+        retryable: bool,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            name="correctness", cause=cause, retryable=retryable, details=details
+        )
+
+
+class StyleAgentInvocationError(AgentInvocationError):
+    """The ``style`` subagent failed."""
+
+    def __init__(
+        self,
+        *,
+        cause: BaseException,
+        retryable: bool,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            name="style", cause=cause, retryable=retryable, details=details
+        )
+
+
+# Union of the four per-subagent error classes. Use this (or
+# ``type[SubagentInvocationError]``) when a callable accepts the class
+# itself — e.g. the per-subagent wrappers in
+# :mod:`app.services.review.steps.invoke_agent`.
+SubagentInvocationError: TypeAlias = (
+    SummaryAgentInvocationError
+    | SecurityAgentInvocationError
+    | CorrectnessAgentInvocationError
+    | StyleAgentInvocationError
+)
+
+
+class ReviewAgentsInvocationError(StepError):
+    """One or more subagents failed during parallel fan-out.
+
+    Raised from
+    :func:`app.services.review.steps.invoke_agent.invoke_review_agents_step`
+    after :func:`asyncio.gather` partitions successes from failures.
+    Each per-subagent error is preserved in :attr:`failed_agents`; the
+    aggregate carries the full run context (user, repo, pr, head_sha,
+    LLM provider/model/base URL, workflow id, and the UTC timestamp of
+    the failure) so production dashboards have everything needed to
+    attribute a failure without cross-referencing logs.
+    """
+
+    user_id: str
+    repo_id: str
+    pr_number: int
+    head_sha: str
+    llm_provider: str
+    llm_model: str
+    llm_base_url: str | None
+    workflow_id: str
+    failed_agents: list[AgentInvocationError]
+    succeeded_agents: list[str]
+    occurred_at: datetime
+
+    def __init__(
+        self,
+        *,
+        user_id: str,
+        repo_id: str,
+        pr_number: int,
+        head_sha: str,
+        llm_provider: str,
+        llm_model: str,
+        llm_base_url: str | None,
+        workflow_id: str,
+        failed_agents: list[AgentInvocationError],
+        succeeded_agents: list[str],
+        occurred_at: datetime,
+    ) -> None:
+        self.user_id = user_id
+        self.repo_id = repo_id
+        self.pr_number = pr_number
+        self.head_sha = head_sha
+        self.llm_provider = llm_provider
+        self.llm_model = llm_model
+        self.llm_base_url = llm_base_url
+        self.workflow_id = workflow_id
+        self.failed_agents = list(failed_agents)
+        self.succeeded_agents = list(succeeded_agents)
+        self.occurred_at = occurred_at
+        names = [e.name for e in failed_agents]
+        super().__init__(
+            f"review agents invocation failed for pr={pr_number} "
+            f"head_sha={head_sha[:7]}: failed={names} "
+            f"succeeded={succeeded_agents}"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # LLM error classification                                                     #
 # --------------------------------------------------------------------------- #
 
@@ -167,7 +348,7 @@ def _status_code(exc: BaseException) -> int | None:
     return raw if isinstance(raw, int) else None
 
 
-def is_llm_transient_error(exc: BaseException) -> bool:
+def is_llm_retry_error(exc: BaseException) -> bool:
     """Return ``True`` iff ``exc`` is a retryable LLM failure.
 
     Covers OpenAI, Anthropic, and Google GenAI SDKs. Falls back to a
@@ -283,15 +464,22 @@ def extract_retry_after_seconds(exc: BaseException) -> float | None:
 
 
 __all__ = [
+    "AgentInvocationError",
+    "CorrectnessAgentInvocationError",
     "DiffUnavailableError",
     "NoActiveSandboxError",
     "RepoNotFoundError",
     "ReviewAgentCrashedError",
     "ReviewAgentRateLimitedError",
     "ReviewAgentReturnedNoStructuredResponseError",
+    "ReviewAgentsInvocationError",
     "SandboxConnectError",
+    "SecurityAgentInvocationError",
     "StepError",
+    "StyleAgentInvocationError",
+    "SubagentInvocationError",
+    "SummaryAgentInvocationError",
     "TransientStepError",
     "extract_retry_after_seconds",
-    "is_llm_transient_error",
+    "is_llm_retry_error",
 ]

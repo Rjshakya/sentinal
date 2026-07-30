@@ -33,7 +33,8 @@ from app.core.llm import LLMProviderStr
 from app.models.enums import PRStatus
 from app.models.installation import Installation
 from app.models.repo import Repo
-from app.services.review.workflow import ReviewWorkflowInput, review_workflow
+from app.services.review.workflow import review_workflow
+from app.services.review.workflow_types import ReviewWorkflowInput
 
 log = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ This module owns two parallel agent designs:
 - **Legacy (deprecated).** :func:`build_review_agents` returns four
   independent ``create_deep_agent`` instances (summary / security /
   correctness / style). The workflow's old
-  :func:`app.services.review.workflow.invoke_review_agents_step`
+  :func:`app.services.review.steps.invoke_review_agents_step`
   (plural) runs them in parallel via ``asyncio.gather`` and combines
   the results with :func:`combine_review_results`. Kept as a
   revert path; the new workflow calls the singular step instead.
@@ -14,7 +14,7 @@ This module owns two parallel agent designs:
   ``SubAgent`` specs (TypedDicts); :func:`build_orchestrator_agent`
   returns one root deep-agent whose ``subagents=`` is the list from
   the first call. The new step
-  :func:`app.services.review.workflow.invoke_review_agent_step`
+  :func:`app.services.review.steps.invoke_review_agent_step`
   (singular) ``ainvoke``s the orchestrator once. The orchestrator
   coordinates the four subagents, absorbs their failures, and emits a
   single :class:`ReviewResult`. The verdict field is recomputed
@@ -330,7 +330,7 @@ def build_review_agents(
 
     ``repo_id`` and ``repo_name`` are required for the handler's
     correlation context; ``workflow_id`` is optional and is filled in
-    by :func:`app.services.review.workflow.invoke_review_agents_step`
+    by :func:`app.services.review.steps.invoke_review_agents_step`
     from ``DBOS.workflow_id``.
     """
     backend = _build_backend(sandbox)
@@ -555,7 +555,7 @@ def build_orchestrator_agent(
     the four subagent outputs (three structured comment lists plus
     the summary markdown) into a single ``ReviewResult``. The verdict
     field is overwritten in code by the workflow step
-    :func:`app.services.review.workflow.invoke_review_agent_step`,
+    :func:`app.services.review.steps.invoke_review_agent_step`,
     so whatever the LLM puts there is discarded.
 
     Failure handling: the orchestrator is told to absorb subagent

@@ -98,9 +98,7 @@ class GitCloneError(SetupError):
     def __init__(self, *, exit_code: int, output_tail: str) -> None:
         self.exit_code = exit_code
         self.output_tail = output_tail
-        super().__init__(
-            f"git clone failed (exit_code={exit_code}): {output_tail}"
-        )
+        super().__init__(f"git clone failed (exit_code={exit_code}): {output_tail}")
 
 
 class GitCloneTransientError(TransientSetupError):
@@ -120,7 +118,7 @@ class SetupAgentCrashedError(SetupError):
     """The setup agent raised an unexpected, non-transient exception.
 
     Final — not retried. Anything that is not classified as a
-    transient LLM error by :func:`app.services.review.errors.is_llm_transient_error`
+    transient LLM error by :func:`app.services.review.errors.is_llm_retry_error`
     lands here. Workflow's :keyword:`except SetupError` block flattens
     it to ``ok=False`` for the dashboard.
     """

@@ -4,6 +4,8 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import sentry_sdk
+
 # psycopg async mode does not work with Windows' default ProactorEventLoop.
 # Force the SelectorEventLoop before any DBOS/SQLAlchemy async imports run.
 # if sys.platform == "win32":
@@ -12,6 +14,7 @@ from contextlib import asynccontextmanager
 from dbos import DBOS, DBOSConfig
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sentry_sdk.integrations.logging import LoggingIntegration
 
 from app.core.config import settings
 from app.core.db import create_db_and_tables
@@ -26,6 +29,42 @@ logging.basicConfig(
 )
 
 configure_structured_logging()
+if settings.sentry_configured:
+    _sentry_log_level = getattr(
+        logging, settings.sentry_log_level.upper(), logging.INFO
+    )
+    if not isinstance(_sentry_log_level, int):
+        _sentry_log_level = logging.INFO
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.sentry_environment,
+        send_default_pii=settings.sentry_send_default_pii,
+        enable_logs=settings.sentry_enable_logs,
+        # Set traces_sample_rate to 1.0 to capture 100%
+        # of transactions for tracing.
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+        # Set profile_session_sample_rate to 1.0 to profile 100%
+        # of profile sessions.
+        profile_session_sample_rate=settings.sentry_profiles_sample_rate,
+        # Set profile_lifecycle to "trace" to automatically
+        # run the profiler on when there is an active transaction
+        profile_lifecycle="trace",
+        integrations=[
+            LoggingIntegration(
+                level=_sentry_log_level,
+                event_level=logging.ERROR,
+            ),
+        ],
+    )
+    logging.getLogger(__name__).info(
+        "sentry initialised: env=%s log_level=%s",
+        settings.sentry_environment,
+        settings.sentry_log_level,
+    )
+else:
+    logging.getLogger(__name__).info(
+        "sentry not configured (SENTRY_DSN empty); skipping init"
+    )
 
 
 def _dbos_config() -> DBOSConfig:

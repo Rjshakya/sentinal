@@ -203,6 +203,38 @@ class Settings(BaseSettings):
         "blank.",
     )
 
+    # --- Sentry observability ---
+    sentry_dsn: str = Field(
+        default="",
+        description="Sentry DSN. Leave empty to skip Sentry initialisation "
+        "entirely (no SDK is loaded, no log records are captured).",
+    )
+    sentry_environment: str = Field(
+        default="development",
+        description="Sentry environment tag (e.g. 'development', 'staging', 'production').",
+    )
+    sentry_traces_sample_rate: float = Field(
+        default=1.0,
+        description="Fraction of transactions to capture for tracing (0.0 - 1.0).",
+    )
+    sentry_profiles_sample_rate: float = Field(
+        default=1.0,
+        description="Fraction of profile sessions to capture (0.0 - 1.0).",
+    )
+    sentry_send_default_pii: bool = Field(
+        default=True,
+        description="Send request headers and IP for users; see Sentry docs.",
+    )
+    sentry_enable_logs: bool = Field(
+        default=True,
+        description="Enable the Sentry structured-logs API.",
+    )
+    sentry_log_level: str = Field(
+        default="INFO",
+        description="Minimum stdlib logging level to forward to Sentry as breadcrumbs "
+        "(records at ERROR or higher become Sentry events regardless).",
+    )
+
     @property
     def daytona_configured(self) -> bool:
         return bool(self.daytona_api_key)
@@ -284,6 +316,11 @@ class Settings(BaseSettings):
     @property
     def cognee_dataset_prefix(self) -> str:
         return "sentinel:repo:"
+
+    @property
+    def sentry_configured(self) -> bool:
+        """True when a Sentry DSN is set and the SDK should be initialised."""
+        return bool(self.sentry_dsn)
 
 
 settings = Settings()
