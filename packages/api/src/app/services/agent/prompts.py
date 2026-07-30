@@ -303,7 +303,7 @@ parallel if the runtime supports it):
    to ``/home/user/tmp/{pr_number}/{head_sha}/file.diff`` inside
    the sandbox; you can call ``read_file`` on the sandbox to look
    at it again if you need to.
-2. Call each of the four subagents in turn (or in parallel). The
+2. Call each of the four subagents in parallel. The
    exact invocation order does not matter.
 3. Assemble their outputs into a ``ReviewResult``:
 
@@ -324,10 +324,9 @@ parallel if the runtime supports it):
    discarded.
 
 5. If a subagent returns an error (its tool result is an error
-   message instead of a structured response), treat that subagent
-   as if it returned an empty list / empty string and continue. Do
-   NOT raise, do NOT retry, do NOT abort the orchestrator loop. The
-   surviving subagents' outputs are still assembled normally.
+   message instead of a structured response. Then re run that subagent ,and 
+   if again ouputs error , then considered as empty list of comments,
+   or empty string of summary agent.
 
 Hard rules:
 
@@ -347,4 +346,3 @@ Hard rules:
 Output contract: a single ``ReviewResult`` object. No other
 content in the final message.
 """
-

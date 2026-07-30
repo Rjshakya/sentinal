@@ -271,6 +271,33 @@ Open <http://localhost:3000>. The **Sign in with GitHub** button on
 `/about` will round-trip through WorkOS and land you on
 `/dashboard`.
 
+### Run the API in Docker (optional)
+
+If you'd rather skip the local Python toolchain, the backend (Postgres,
+Alembic migrations, FastAPI) runs end-to-end in Docker:
+
+```bash
+cp .env.example .env          # then fill in WORKOS_*, GITHUB_*, E2B_*, LLM_*
+docker compose up -d --build
+curl http://localhost:8000/api/health   # {"status":"ok"}
+```
+
+On first boot, the `migrate` compose service runs `alembic upgrade head`
+against the `db` service; the `api` service only starts after
+migrations finish. `DATABASE_URL` is rewritten by Compose to point at
+the `db` service; the rest of the env comes from the repo-root `.env`
+via `env_file`.
+
+The web app is not containerised — run it on the host with
+`pnpm --dir web dev` and point `VITE_API_URL` at
+`http://localhost:8000/api`.
+
+Re-run migrations manually:
+
+```bash
+docker compose run --rm migrate
+```
+
 ---
 
 ## Environment variables
