@@ -27,7 +27,6 @@ import base64
 import binascii
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from githubkit import GitHub
@@ -63,7 +62,7 @@ class InstallationRepo(BaseModel):
     clone_url: str
 
 
-def _resolve_private_key() -> str:
+def _resolve_private_key():
 
     b64 = settings.github_app_private_key
     if b64:
@@ -73,20 +72,6 @@ def _resolve_private_key() -> str:
             raise RuntimeError(
                 f"Failed to decode GITHUB_APP_PRIVATE_KEY_BASE64: {exc}"
             ) from exc
-
-    path = settings.github_app_private_key_path
-    if path:
-        try:
-            return Path(path).read_text(encoding="utf-8")
-        except OSError as exc:
-            raise RuntimeError(
-                f"Failed to read GITHUB_APP_PRIVATE_KEY_PATH={path}: {exc}"
-            ) from exc
-
-    raw = settings.github_app_private_key
-    if "\\n" in raw and "\n" not in raw:
-        return raw.replace("\\n", "\n")
-    return raw
 
 
 def get_app_github() -> GitHub[AppAuthStrategy]:
@@ -107,7 +92,7 @@ def get_app_github() -> GitHub[AppAuthStrategy]:
         _app_github = GitHub(
             AppAuthStrategy(
                 app_id=settings.github_app_id,
-                private_key=_resolve_private_key(),
+                private_key=_resolve_private_key() or "",
                 client_id=settings.github_app_client_id,
                 client_secret=settings.github_app_client_secret,
             )
