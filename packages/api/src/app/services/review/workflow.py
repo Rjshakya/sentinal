@@ -1,4 +1,4 @@
-"""Main review durable workflow — orchestrator only.
+"""Main review durable workflow.
 
 This module owns the top-level :func:`review_workflow` DBOS workflow
 that sequences the review pipeline. Every step / transaction is
@@ -24,6 +24,10 @@ Design notes:
   (:func:`app.services.github.workflow.post_review_to_github_workflow`)
   so it can be retried / restarted independently without re-running
   the LLM agent.
+- Token-usage accounting happens at the end of the local pipeline
+  via :func:`app.services.review.steps.persist_usage.persist_review_usage_tx`,
+  which writes a :class:`app.models.review_usage.ReviewUsage` row
+  for every successful run.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ import logging
 
 from dbos import DBOS, SetWorkflowID
 
+from app.models.enums import ReviewRunStatus
 from app.services.github.workflow import post_review_to_github_workflow
 from app.services.review.hunk_map import HunkMap, filter_drafts
 from app.services.review.steps import (
@@ -39,12 +44,14 @@ from app.services.review.steps import (
     parse_diff_step,
     persist_code_comments_tx,
     persist_review_summary_tx,
+    persist_review_usage_tx,
     resolve_repo_tx,
     resolve_sandbox_step,
     stop_sandbox_step,
     upsert_pull_request_tx,
 )
 from app.services.review.steps.invoke_agent import invoke_review_agents_step
+from app.services.review.steps.persist_usage import sum_total_usages
 from app.services.review.workflow_types import (
     PostReviewInput,
     ReviewRunResult,
@@ -118,7 +125,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             status=input.status,
         )
 
-        review = await invoke_review_agents_step(
+        review_result = await invoke_review_agents_step(
             sandbox_id=sandbox.sandbox_id,
             sandbox_name=sandbox.sandbox_name,
             repo_id=repo.id,
@@ -126,15 +133,14 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             user_id=input.user_id,
             pr_number=input.pr_number,
             head_sha=input.head_sha,
-            provider=input.provider,
-            llm_baseurl=input.llm_baseurl,
-            llm_api_key=input.llm_api_key,
-            llm_model=input.llm_model,
+            llm_config=input.llm_config,
         )
+
+        review, usages = review_result
 
         filtered_review = filter_drafts(review, hunk_map)
 
-        await persist_review_summary_tx(
+        summary_id = await persist_review_summary_tx(
             pr_id=pr_id,
             commit_id=input.head_sha,
             result=filtered_review,
@@ -143,6 +149,22 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             pr_id=pr_id,
             commit_id=input.head_sha,
             comments=[c.model_dump(mode="json") for c in filtered_review.comments],
+        )
+
+        input_tokens, output_tokens, total_tokens, input_token_details = (
+            sum_total_usages(usages)
+        )
+        await persist_review_usage_tx(
+            pr_id=pr_id,
+            user_id=input.user_id,
+            pr_number=input.pr_number,
+            repo_id=repo.id,
+            review_summary_id=summary_id,
+            review_status=ReviewRunStatus.SUCCESS,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            input_token_details=input_token_details,
         )
 
         if input.post_to_github and input.github_installation_id is not None:
@@ -166,6 +188,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             pr_id=pr_id,
             commit_id=input.head_sha,
             review=filtered_review,
+            usages=usages,
         )
     finally:
         await stop_sandbox_step(

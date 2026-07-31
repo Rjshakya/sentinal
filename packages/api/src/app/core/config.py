@@ -1,10 +1,44 @@
+import os
 import socket
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.llm import LLMConfig
+
 BASE_DIR = Path(__file__).resolve().parents[3]
+
+
+# Provider prefix -> env-var name expected by the underlying SDK.
+# Used by :meth:`Settings.llm_configured` to decide whether the active
+# provider can pick up its API key from the environment when
+# ``LLM_API_KEY`` is blank.
+_PROVIDER_ENV_KEY: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google_genai": "GOOGLE_API_KEY",
+    "google_vertexai": "GOOGLE_API_KEY",
+    "azure_openai": "AZURE_OPENAI_API_KEY",
+    "azure_ai": "AZURE_AI_API_KEY",
+    "cohere": "COHERE_API_KEY",
+    "fireworks": "FIREWORKS_API_KEY",
+    "together": "TOGETHER_API_KEY",
+    "mistralai": "MISTRAL_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "ollama": "OLLAMA_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "xai": "XAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "perplexity": "PPLX_API_KEY",
+    "upstage": "UPSTAGE_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
+    "ibm": "IBM_API_KEY",
+    "huggingface": "HUGGINGFACEHUB_API_TOKEN",
+    "bedrock": "AWS_ACCESS_KEY_ID",
+    "anthropic_bedrock": "AWS_ACCESS_KEY_ID",
+    "bedrock_converse": "AWS_ACCESS_KEY_ID",
+}
 
 
 class Settings(BaseSettings):
@@ -14,10 +48,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    port: int = Field(default=8000, description="Port")
+
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/aicode",
         description="Async SQLAlchemy database URL.",
     )
+
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:3000"],
         description="Allowed CORS origins (JSON array in env).",
@@ -109,32 +146,69 @@ class Settings(BaseSettings):
     )
 
     # --- LLM (review agent) ---
-    llm_provider: str = Field(
-        default="openai",
-        description="Active LLM provider tag for the review/setup agent "
-        "('openai', 'anthropic', or 'google'). Validated at call time "
-        "by build_chat_model; unknown values raise ValueError.",
-    )
-    llm_base_url: str = Field(
+    # The combined "provider:model" string consumed by
+    # langchain.chat_models.init_chat_model. Examples:
+    #   LLM_MODEL=openai:gpt-5.5
+    #   LLM_MODEL=anthropic:claude-opus-4-6
+    #   LLM_MODEL=google_genai:gemini-3.6-flash
+    # For OpenAI-compatible proxies / gateways (Cloudflare AI
+    # Gateway, OpenCode Zen, Baseten, OpenRouter, Ollama, …) also
+    # set LLM_BASE_URL and LLM_API_KEY; the provider prefix in
+    # LLM_MODEL stays the same.
+    llm_model: str = Field(
         default="",
-        description="Base URL for the chat model used by the review agent "
-        "(e.g. https://api.openai.com/v1, or a custom OpenAI-compatible "
-        "endpoint). Leave empty to disable review routes.",
+        description=(
+            'The combined "provider:model" string consumed by '
+            "langchain.chat_models.init_chat_model. Examples: "
+            "'openai:gpt-5.5', 'anthropic:claude-opus-4-6', "
+            "'google_genai:gemini-3.6-flash'. Leave empty to "
+            "disable review routes."
+        ),
     )
     llm_api_key: str = Field(
         default="",
-        description="API key for the review-agent chat model. Falls back to "
-        "openai_api_key when blank.",
+        description=(
+            "API key for the active provider. When blank, the "
+            "provider's native env-var resolution is used "
+            "(OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY / "
+            "…)."
+        ),
     )
-    llm_model: str = Field(
+    llm_base_url: str = Field(
         default="",
-        description="Model name passed to ChatOpenAI (e.g. gpt-5.5, "
-        "claude-sonnet-4-6 via a proxy, etc.).",
+        description=(
+            "Base URL for the chat model. Required when proxying "
+            "through an OpenAI-compatible gateway (Cloudflare AI "
+            "Gateway, OpenCode Zen, Baseten, OpenRouter, Ollama, "
+            "…). Leave empty for direct provider calls."
+        ),
     )
-    cf_ai_gateway_auth_token: str = Field(
-        default="", description="CF ai gateway auth token"
+    llm_default_headers: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "JSON-encoded dict of HTTP headers attached to every "
+            "LLM request (e.g. gateway identifiers, project tags). "
+            "Forwarded as default_headers to providers that accept "
+            "the kwarg; ignored by providers that don't."
+        ),
     )
-    cf_account_id: str = Field(default="", description="CF account id")
+    llm_max_retries: int = Field(
+        default=3,
+        ge=0,
+        description=(
+            "Number of retries the underlying SDK will attempt on "
+            "transient errors. 0 disables retries."
+        ),
+    )
+    llm_rate_limit_rps: float = Field(
+        default=0.5,
+        ge=0.0,
+        description=(
+            "Client-side requests-per-second rate limit applied via "
+            "langchain_core.rate_limiters.InMemoryRateLimiter. "
+            "0 disables the limiter."
+        ),
+    )
     llm_log_io: bool = Field(
         default=False,
         description=(
@@ -185,6 +259,11 @@ class Settings(BaseSettings):
         default=socket.gethostname(),
         description="Unique executor ID for this DBOS process. Must be "
         "unique per running API instance when self-hosting multiple workers.",
+    )
+
+    dbos_database_url: str = Field(
+        default="postgresql://postgres:postgres@localhost:5432/aicode",
+        description="Async SQLAlchemy database URL.",
     )
 
     # --- GitHub webhook ---
@@ -265,13 +344,47 @@ class Settings(BaseSettings):
     def llm_configured(self) -> bool:
         """True when the review-agent LLM is fully configured.
 
-        Requires a model name, a base URL, and an API key (either the
-        dedicated ``llm_api_key`` or a fallback to ``openai_api_key``).
+        Requires a non-empty ``llm_model`` (``"provider:model"``
+        string) and an API key, either the dedicated
+        ``llm_api_key`` or a provider-native env var
+        (``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` /
+        ``GOOGLE_API_KEY`` / …). ``llm_base_url`` is not required
+        for direct provider calls.
         """
-        return bool(
-            self.llm_model
-            and self.llm_base_url
-            and (self.llm_api_key or self.openai_api_key)
+        if not self.llm_model:
+            return False
+        if self.llm_api_key:
+            return True
+        return self._env_key_for(self.llm_model)
+
+    def _env_key_for(self, model: str) -> bool:
+        """True when a provider-native env var is set for ``model``.
+
+        Lets ``llm_configured`` treat ``LLM_API_KEY=…`` and the
+        provider's own env var (``OPENAI_API_KEY`` etc.) as
+        equivalent, since :func:`langchain.chat_models.init_chat_model`
+        does its own env-var resolution.
+        """
+        provider = model.split(":", 1)[0]
+        env_key = _PROVIDER_ENV_KEY.get(provider, "")
+        return bool(env_key) and bool(os.environ.get(env_key))
+
+    @property
+    def llm_config(self) -> LLMConfig:
+        """The :class:`LLMConfig` value object for the review agent.
+
+        Frozen, DBOS-serializable. A single value object replaces
+        the four scattered fields (provider / base_url / api_key /
+        model) that used to cross the webhook → workflow → step
+        boundary.
+        """
+        return LLMConfig(
+            model=self.llm_model,
+            api_key=self.llm_api_key or None,
+            base_url=self.llm_base_url or None,
+            headers=dict(self.llm_default_headers),
+            max_retries=self.llm_max_retries,
+            rate_limit_rps=self.llm_rate_limit_rps,
         )
 
     @property

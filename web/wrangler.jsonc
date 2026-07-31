@@ -1,7 +1,29 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "tanstack-start-app",
+  "name": "reviewpr-app",
   "compatibility_date": "2025-09-02",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry"
+  "main": "@tanstack/react-start/server-entry",
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true
+    }
+  },
+
+  "routes": [
+    {
+      "custom_domain": true,
+      "pattern": "reviewpr.app",
+      "zone_name": "reviewpr.app"
+    }
+    
+  ]
+
 }

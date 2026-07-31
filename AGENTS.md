@@ -132,6 +132,17 @@ psycopg async, which fails with the default `ProactorEventLoop`.
     `/pipes` and `/github` routers.
 - `github.py` — `github_client_for(user_id)`: mints a GitHub access token
   via Pipes and returns a typed `githubkit.GitHub` client.
+- `llm.py` — `LLMConfig` (frozen, DBOS-serializable value object
+  bundling `model` / `api_key` / `base_url` / `headers` /
+  `max_retries` / `rate_limit_rps`) and `build_chat_model(config,
+  callbacks=...)` (a single-entry factory that calls
+  `langchain.chat_models.init_chat_model("provider:model", ...)`).
+  Provider dispatch is delegated to LangChain, so the factory
+  carries no per-provider branches. The review agent (orchestrator
+  + four subagents) is the sole consumer; the setup pipeline's
+  `LLMConfig` is plumbed but not yet invoked.
+- `llm_callbacks.py` — per-LLM-call JSON observability handler
+  (`LLMIOCallbackHandler` + `make_llm_io_handler`).
 - `logging.py` — `JsonFormatter` and `structured_log(...)`. The root
   logger is configured to emit JSON in `packages/api/main.py`.
 
@@ -685,6 +696,8 @@ values are set; the `/auth` router returns a 503 if it isn't.
 - Review pipeline (orchestrator + subagent factory + persistence) → `packages/api/src/app/services/review/pipeline.py`
 - Setup agent (single-shot deep-agent) → `packages/api/src/app/services/agent/setup.py`
 - WorkOS + GitHub plumbing → `packages/api/src/app/core/{workos,github,auth,middleware}.py`
+- LLM factory (`LLMConfig` + `build_chat_model` via `init_chat_model`) → `packages/api/src/app/core/llm.py`
+- LLM I/O observability callback handler → `packages/api/src/app/core/llm_callbacks.py`
 - App wiring (middleware order, router registration) → `packages/api/src/app/main.py`
 - Env loading → `packages/api/src/app/core/config.py`
 - Route tree → `web/src/routeTree.gen.ts` (generated)

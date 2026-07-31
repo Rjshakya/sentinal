@@ -21,7 +21,7 @@ from app.core.db import create_db_and_tables
 from app.core.logging import configure_structured_logging
 from app.core.middleware import AuthMiddleware
 from app.core.sandbox.e2b import build_e2b_template
-from app.routers import ai, auth, github, health, users, webhooks
+from app.routers import ai, auth, github, health, llm_configs, users, webhooks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,7 +74,7 @@ def _dbos_config() -> DBOSConfig:
     is stripped of the asyncpg driver suffix because DBOS creates its
     own SQLAlchemy engine.
     """
-    db_url = settings.database_url.replace("+asyncpg", "")
+    db_url = settings.dbos_database_url
     return {
         "name": "sentinel",
         "system_database_url": db_url,
@@ -119,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(github.router, prefix=settings.api_prefix)
     app.include_router(ai.router, prefix=settings.api_prefix)
     app.include_router(users.router, prefix=settings.api_prefix)
+    app.include_router(llm_configs.router, prefix=settings.api_prefix)
     app.include_router(webhooks.router, prefix=settings.api_prefix)
 
     return app
@@ -143,5 +144,5 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=settings.port,
     )

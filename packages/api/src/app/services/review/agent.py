@@ -33,17 +33,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from typing import TypedDict
 
 from deepagents import create_deep_agent
 from deepagents.middleware.subagents import SubAgent
-from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.tools import BaseTool
 from langchain_e2b import AsyncE2BSandbox
 
-from app.core.llm import LLMProviderStr, build_chat_model
-from app.core.llm_callbacks import make_llm_io_handler
+from app.core.llm import LLMConfig, build_chat_model
 from app.core.sandbox import BaseSandbox
 from app.core.sandbox.e2b import E2BSandbox
 from app.services.agent.models import (
@@ -288,25 +287,52 @@ def build_style_agent(
 # --------------------------------------------------------------------------- #
 
 
+class SubAgentsModels(TypedDict):
+    summary_model: BaseChatModel
+    security_model: BaseChatModel
+    correctness_model: BaseChatModel
+    style_model: BaseChatModel
+
+
+def create_review_llm_models(
+    llm_config: LLMConfig,
+) -> SubAgentsModels:
+
+    summary_model = build_chat_model(
+        config=llm_config,
+    )
+
+    security_model = build_chat_model(
+        config=llm_config,
+    )
+
+    correctness_model = build_chat_model(
+        config=llm_config,
+    )
+
+    style_model = build_chat_model(
+        config=llm_config,
+    )
+
+    return SubAgentsModels(
+        summary_model=summary_model,
+        security_model=security_model,
+        correctness_model=correctness_model,
+        style_model=style_model,
+    )
+
+
 def build_review_agents(
     *,
     sandbox: E2BSandbox,
     pr_number: int,
     head_sha: str,
-    provider: LLMProviderStr,
-    llm_baseurl: str | None,
-    llm_api_key: str,
-    llm_model: str,
-    repo_id: str,
-    repo_name: str,
-    workflow_id: str | None = None,
+    models: SubAgentsModels,
 ) -> tuple[
     DeepAgentGraph,
     DeepAgentGraph,
     DeepAgentGraph,
     DeepAgentGraph,
-    BaseChatModel,
-    AsyncE2BSandbox,
 ]:
     """Build the chat model, the shared backend, and the four review agents.
 
@@ -340,40 +366,21 @@ def build_review_agents(
         head_sha=head_sha,
     )
 
-    def _model_for(agent_name: str) -> BaseChatModel:
-        return build_chat_model(
-            provider=provider,
-            base_url=llm_baseurl,
-            api_key=llm_api_key,
-            model=llm_model,
-            headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
-            callbacks=make_llm_io_handler(
-                agent_name=agent_name,
-                repo_name=repo_name,
-                repo_id=repo_id,
-                pr_number=pr_number,
-                head_sha=head_sha,
-                workflow_id=workflow_id,
-                model=llm_model,
-            ),
-        )
-
-    summary_model = _model_for("summary")
-    security_model = _model_for("security")
-    correctness_model = _model_for("correctness")
-    style_model = _model_for("style")
+    summary_model = models["summary_model"]
+    security_model = models["security_model"]
+    correctness_model = models["correctness_model"]
+    style_model = models["style_model"]
 
     log.info(
         "building review agents: model=%s",
         getattr(summary_model, "model_name", "<unknown>"),
     )
+
     return (
         build_summary_agent(model=summary_model, backend=backend, tools=tools),
         build_security_agent(model=security_model, backend=backend, tools=tools),
         build_correctness_agent(model=correctness_model, backend=backend, tools=tools),
         build_style_agent(model=style_model, backend=backend, tools=tools),
-        summary_model,
-        backend,
     )
 
 
@@ -385,69 +392,6 @@ def build_review_agents(
 # They are deliberately separate from the legacy
 # ``build_review_agents`` above so the old step keeps working as a
 # revert path.
-
-
-def _make_callback_handler(
-    *,
-    agent_name: str,
-    repo_name: str,
-    repo_id: str,
-    pr_number: int,
-    head_sha: str,
-    workflow_id: str | None,
-    llm_model: str,
-) -> list[BaseCallbackHandler]:
-    """Build a callback list tagged with the given agent name.
-
-    Returns an empty list when ``settings.llm_log_io_enabled`` is
-    false; the caller can pass the result unconditionally.
-    """
-    return make_llm_io_handler(
-        agent_name=agent_name,
-        repo_name=repo_name,
-        repo_id=repo_id,
-        pr_number=pr_number,
-        head_sha=head_sha,
-        workflow_id=workflow_id,
-        model=llm_model,
-    )
-
-
-def _build_chat_model_for(
-    *,
-    agent_name: str,
-    provider: LLMProviderStr,
-    llm_baseurl: str | None,
-    llm_api_key: str,
-    llm_model: str,
-    repo_id: str,
-    repo_name: str,
-    pr_number: int,
-    head_sha: str,
-    workflow_id: str | None,
-) -> BaseChatModel:
-    """Build a chat model with per-agent callback handler attached.
-
-    Each subagent (and the orchestrator) gets its own chat-model
-    instance so the LLM I/O log stream can tag every call with
-    the agent that produced it.
-    """
-    return build_chat_model(
-        provider=provider,
-        base_url=llm_baseurl,
-        api_key=llm_api_key,
-        model=llm_model,
-        headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
-        callbacks=_make_callback_handler(
-            agent_name=agent_name,
-            repo_name=repo_name,
-            repo_id=repo_id,
-            pr_number=pr_number,
-            head_sha=head_sha,
-            workflow_id=workflow_id,
-            llm_model=llm_model,
-        ),
-    )
 
 
 def build_review_subagents(

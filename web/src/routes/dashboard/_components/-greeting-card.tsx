@@ -25,13 +25,13 @@ export function GreetingCard() {
   const initials = name.charAt(0).toUpperCase();
 
   return (
-    <Card>
-      <CardContent className="flex items-center gap-4">
+    <Card className="bg-background ring-0">
+      <CardContent className="flex items-start gap-4 px-0 ">
         {isLoading ? (
           <Skeleton className="size-12 rounded-full" />
         ) : (
-          <Avatar size="lg">
-            {avatar ? <AvatarImage src={avatar} alt={name} /> : null}
+          <Avatar size="default" className={"mt-1"}>
+            {avatar ? <AvatarImage className={"rounded-md"} src={avatar} alt={name} /> : null}
             <AvatarFallback>{initials}</AvatarFallback>
           </Avatar>
         )}
@@ -43,12 +43,8 @@ export function GreetingCard() {
             </>
           ) : (
             <>
-              <h1 className="text-2xl font-semibold tracking-tight">
-                Hi, {name} <span aria-hidden>👋</span>
-              </h1>
-              <p className="text-muted-foreground text-sm">
-                Here&apos;s a snapshot of your repos.
-              </p>
+              <h1 className="text-2xl font-semibold tracking-tight font-sans">Hi, {name} </h1>
+              <p className="text-muted-foreground text-sm">Here&apos;s your stats.</p>
             </>
           )}
         </div>

@@ -1,24 +1,19 @@
 """DBOS durable steps that actually run the review agents.
 
-This module owns both the active parallel-fanout step and the
-orchestrator-with-subagents step, plus the small helpers used to
-wire them to the E2B sandbox.
+This module owns the active parallel-fanout step, plus the small
+helpers used to wire the four review agents to the E2B sandbox.
 
 - :func:`invoke_review_agents_step` (active, parallel) — runs the
   four review agents (``summary`` / ``security`` / ``correctness`` /
-  ``style``) concurrently via :func:`asyncio.gather` and combines
-  their results. Each subagent is wrapped in its own
+  ``style``) concurrently via :func:`asyncio.gather`, combines their
+  results, and aggregates per-model token usage into a
+  :class:`app.services.review.workflow_types.TotalUsagesPerPR`
+  envelope. Each subagent is wrapped in its own
   :func:`invoke_<name>_agent` helper that translates any failure
   into the per-subagent error class with a ``retryable`` flag.
   Failures are aggregated into
   :class:`app.services.review.errors.ReviewAgentsInvocationError`
   and pushed to Sentry before being raised.
-- :func:`invoke_review_agent_step` (orchestrator) — runs the root
-  deep-agent (the orchestrator) once, with the four subagents
-  attached. The orchestrator delegates, absorbs subagent failures by
-  substituting empty results, and emits a single
-  :class:`app.services.agent.models.ReviewResult` as its structured
-  response.
 
 Per-subagent wrappers:
 
@@ -32,11 +27,6 @@ Per-subagent wrappers:
 
 Helpers:
 
-- :func:`_orchestrator_backend` — wraps the connected
-  :class:`E2BSandbox` as a deepagents :class:`AsyncE2BSandbox` backend
-  for filesystem / shell access.
-- :func:`_orchestrator_tools` — returns the tools the orchestrator
-  itself can call (currently just :func:`make_get_diff_tool`).
 - :func:`_capture_review_agents_error_to_sentry` — pushes an
   aggregate :class:`ReviewAgentsInvocationError` to Sentry with the
   full run context as tags and extras.
@@ -47,14 +37,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 import sentry_sdk
 from dbos import DBOS
-from langchain_core.tools import BaseTool
+from langchain_core.callbacks import get_usage_metadata_callback
+from langchain_core.messages import UsageMetadata
 
-from app.core.llm import LLMProviderStr, build_chat_model
-from app.core.llm_callbacks import make_llm_io_handler
+from app.core.llm import LLMConfig
 from app.core.sandbox.e2b import E2BSandbox
 from app.services.agent.models import (
     CorrectnessComments,
@@ -65,68 +55,31 @@ from app.services.agent.models import (
 from app.services.review._internal import _SHOULD_RETRY_AGENT, _e2b_spec
 from app.services.review.agent import (
     assemble_user_prompt,
-    build_orchestrator_agent,
     build_review_agents,
-    build_review_subagents,
     combine_review_results,
+    create_review_llm_models,
     extract_last_ai_text,
-    verdict_for,
 )
 from app.services.review.errors import (
     AgentInvocationError,
     CorrectnessAgentInvocationError,
     ReviewAgentCrashedError,
-    ReviewAgentRateLimitedError,
     ReviewAgentsInvocationError,
     SandboxConnectError,
     SecurityAgentInvocationError,
     StyleAgentInvocationError,
     SubagentInvocationError,
     SummaryAgentInvocationError,
-    extract_retry_after_seconds,
     is_llm_retry_error,
 )
-from app.services.review.tools import make_get_diff_tool
+from app.services.review.types import DeepAgentGraph
+from app.services.review.workflow_types import (
+    InputTokenDetails,
+    TotalUsages,
+    TotalUsagesPerPR,
+)
 
 log = logging.getLogger(__name__)
-
-
-# --------------------------------------------------------------------------- #
-# Orchestrator helpers                                                          #
-# --------------------------------------------------------------------------- #
-
-
-def _orchestrator_backend(sandbox: E2BSandbox):  # type: ignore[no-untyped-def]
-    """Wrap the E2B sandbox as a deepagents AsyncE2BSandbox backend.
-
-    Imported lazily so this file doesn't pay the import cost on every
-    step invocation outside this function.
-    """
-    from langchain_e2b import AsyncE2BSandbox
-
-    return AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
-
-
-def _orchestrator_tools(
-    *,
-    sandbox: E2BSandbox,
-    pr_number: int,
-    head_sha: str,
-) -> list[BaseTool]:
-    """Return the orchestrator's own tools (same as a subagent's).
-
-    The orchestrator uses ``get_diff`` to read the diff first.
-    Comment-line validation is prompt-driven: any anchor the
-    orchestrator (or its subagents) cares to inspect is read directly
-    from ``/home/user/tmp/{pr_number}/{head_sha}/diff.json`` in the
-    sandbox via the deepagents backend's ``read_file`` tool. The
-    orchestrator does not own a comment-anchor validation tool of its
-    own. Subagents get the same tool independently (each in its own
-    sandbox view).
-    """
-    return [
-        make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
-    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -156,11 +109,11 @@ def _style_extractor(result: Any) -> StyleComments:
 
 async def _call_with_error_wrapping(
     *,
-    agent: Any,
+    agent: DeepAgentGraph,
     prompt_payload: dict[str, Any],
     error_cls: type[SubagentInvocationError],
     result_extractor: Callable[[Any], Any],
-) -> Any:
+) -> tuple[Any, dict[str, UsageMetadata]]:
     """Run ``agent.ainvoke`` and translate any failure into ``error_cls``.
 
     The wrapper performs two things:
@@ -179,8 +132,12 @@ async def _call_with_error_wrapping(
     """
     result: Any = None
     try:
-        result = await agent.ainvoke(prompt_payload)
-        return result_extractor(result)
+        with get_usage_metadata_callback() as usage_cb:
+            result = await agent.ainvoke(prompt_payload)
+            usage = usage_cb.usage_metadata
+
+        return result_extractor(result), usage
+
     except Exception as exc:
         retryable = is_llm_retry_error(exc)
         details: dict[str, Any] = {}
@@ -198,8 +155,8 @@ async def _call_with_error_wrapping(
 
 
 async def invoke_summary_agent(
-    agent: Any, prompt_payload: dict[str, Any]
-) -> str:
+    agent: DeepAgentGraph, prompt_payload: dict[str, Any]
+) -> tuple[str, dict[str, UsageMetadata]]:
     """Run the summarizer subagent; on failure raise
     :class:`SummaryAgentInvocationError`."""
     return await _call_with_error_wrapping(
@@ -212,7 +169,7 @@ async def invoke_summary_agent(
 
 async def invoke_security_agent(
     agent: Any, prompt_payload: dict[str, Any]
-) -> SecurityComments:
+) -> tuple[SecurityComments, dict[str, UsageMetadata]]:
     """Run the security subagent; on failure raise
     :class:`SecurityAgentInvocationError`."""
     return await _call_with_error_wrapping(
@@ -225,7 +182,7 @@ async def invoke_security_agent(
 
 async def invoke_correctness_agent(
     agent: Any, prompt_payload: dict[str, Any]
-) -> CorrectnessComments:
+) -> tuple[CorrectnessComments, dict[str, UsageMetadata]]:
     """Run the correctness subagent; on failure raise
     :class:`CorrectnessAgentInvocationError`."""
     return await _call_with_error_wrapping(
@@ -238,7 +195,7 @@ async def invoke_correctness_agent(
 
 async def invoke_style_agent(
     agent: Any, prompt_payload: dict[str, Any]
-) -> StyleComments:
+) -> tuple[StyleComments, dict[str, UsageMetadata]]:
     """Run the style subagent; on failure raise
     :class:`StyleAgentInvocationError`."""
     return await _call_with_error_wrapping(
@@ -269,11 +226,8 @@ async def invoke_review_agents_step(
     user_id: str,
     pr_number: int,
     head_sha: str,
-    provider: LLMProviderStr,
-    llm_baseurl: str | None,
-    llm_api_key: str,
-    llm_model: str,
-) -> ReviewResult:
+    llm_config: LLMConfig,
+) -> tuple[ReviewResult, TotalUsagesPerPR]:
     """Durable step: run the four review agents in parallel and combine.
 
     The fan-out:
@@ -336,32 +290,31 @@ async def invoke_review_agents_step(
         ) from exc
 
     try:
+        # create review models
+
+        review_models = create_review_llm_models(llm_config=llm_config)
+
         (
             summary_agent,
             security_agent,
             correctness_agent,
             style_agent,
-            _,
-            _,
         ) = build_review_agents(
             sandbox=sandbox,
             pr_number=pr_number,
             head_sha=head_sha,
-            provider=provider,
-            llm_baseurl=llm_baseurl,
-            llm_api_key=llm_api_key,
-            llm_model=llm_model,
-            repo_id=repo_id,
-            repo_name=repo_name,
-            workflow_id=DBOS.workflow_id,
+            models=review_models,
         )
+
         user_prompt = assemble_user_prompt(
             repo_name=repo_name,
             repo_id=repo_id,
             user_id=user_id,
             pr_number=pr_number,
         )
+
         prompt_payload = {"messages": [{"role": "user", "content": user_prompt}]}
+
         log.info(
             "invoking review agents (parallel): repo=%s user=%s pr_number=%s",
             repo_name,
@@ -376,10 +329,20 @@ async def invoke_review_agents_step(
             invoke_style_agent(style_agent, prompt_payload),
             return_exceptions=True,
         )
+
         summary_value, security_value, correctness_value, style_value = results
 
         successes: dict[str, Any] = {}
         failures: list[AgentInvocationError] = []
+
+        total_usages_per_pr = TotalUsagesPerPR(
+            pr_number=pr_number,
+            head_sha=head_sha,
+            repo_id=repo_id,
+            user_id=user_id,
+            usages={},
+        )
+
         for agent_name, value in (
             ("summarizer", summary_value),
             ("security", security_value),
@@ -403,7 +366,36 @@ async def invoke_review_agents_step(
                     cause=f"{type(value).__name__}: {value}"
                 ) from value
             else:
-                successes[agent_name] = value
+                agent_result, agent_usage = value
+                successes[agent_name] = agent_result
+
+                for model_name, usage in agent_usage.items():
+                    bucket = total_usages_per_pr["usages"].setdefault(
+                        model_name,
+                        TotalUsages(
+                            input_tokens=0,
+                            output_tokens=0,
+                            total_tokens=0,
+                            input_token_details=InputTokenDetails(
+                                cache_read=0,
+                                cache_creation=0,
+                            ),
+                        ),
+                    )
+                    bucket["input_tokens"] += usage.get("input_tokens", 0)
+                    bucket["output_tokens"] += usage.get("output_tokens", 0)
+                    bucket["total_tokens"] += usage.get("total_tokens", 0)
+                    details = usage.get("input_token_details") or {}
+                    prev_cache_read = bucket["input_token_details"].get("cache_read")
+                    prev_cache_creation = bucket["input_token_details"].get(
+                        "cache_creation"
+                    )
+                    bucket["input_token_details"]["cache_read"] = (
+                        prev_cache_read if prev_cache_read is not None else 0
+                    ) + (details.get("cache_read") or 0)
+                    bucket["input_token_details"]["cache_creation"] = (
+                        prev_cache_creation if prev_cache_creation is not None else 0
+                    ) + (details.get("cache_creation") or 0)
 
         if failures:
             err = ReviewAgentsInvocationError(
@@ -411,9 +403,7 @@ async def invoke_review_agents_step(
                 repo_id=repo_id,
                 pr_number=pr_number,
                 head_sha=head_sha,
-                llm_provider=provider,
-                llm_model=llm_model,
-                llm_base_url=llm_baseurl,
+                llm_config=llm_config,
                 workflow_id=DBOS.workflow_id or "<no-workflow-id>",
                 failed_agents=failures,
                 succeeded_agents=list(successes.keys()),
@@ -427,7 +417,7 @@ async def invoke_review_agents_step(
             security=successes["security"],
             correctness=successes["correctness"],
             style=successes["style"],
-        )
+        ), total_usages_per_pr
     finally:
         try:
             await sandbox.stop()
@@ -484,233 +474,8 @@ def _capture_review_agents_error_to_sentry(
         log.exception("failed to capture ReviewAgentsInvocationError to Sentry")
 
 
-# --------------------------------------------------------------------------- #
-# Production step — orchestrator with subagents                                 #
-# --------------------------------------------------------------------------- #
-
-
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=2,
-    backoff_rate=2,
-)
-async def invoke_review_agent_step(
-    *,
-    sandbox_id: str,
-    sandbox_name: str,
-    repo_id: str,
-    repo_name: str,
-    user_id: str,
-    pr_number: int,
-    head_sha: str,
-    provider: LLMProviderStr,
-    llm_baseurl: str | None,
-    llm_api_key: str,
-    llm_model: str,
-) -> ReviewResult:
-    """Durable step: run the orchestrator-with-subagents review and combine.
-
-    The flow:
-
-    1. Reconnects to the E2B sandbox (one connection for the step).
-    2. Builds the orchestrator's chat model with a per-agent LLM I/O
-       callback tagged ``agent="orchestrator"``.
-    3. Builds four review subagents (summary, security, correctness,
-       style) sharing the orchestrator's chat model.
-    4. Builds the root deep-agent with the four subagents attached
-       via ``subagents=[]``. The orchestrator's ``response_format`` is
-       :class:`ReviewResult` directly.
-    5. ``ainvoke``s the orchestrator once. The orchestrator delegates
-       to the four subagents in turn, absorbs any subagent failure
-       (substituting an empty result), and emits a single
-       :class:`ReviewResult` as its structured response.
-    6. Validates the structured response and overwrites the
-       ``verdict`` field with the deterministic value
-       :func:`verdict_for` (the orchestrator is told to set
-       ``"COMMENT"``; the real verdict is recomputed here from the
-       merged comments).
-
-    Failure semantics:
-
-    - The orchestrator absorbs subagent failures (its prompt tells it
-      to substitute an empty result and continue). Therefore a single
-      subagent's failure does NOT cause a DBOS step retry.
-    - Orchestrator-level failures (LLM 5xx / 429 / timeout) raise
-      :class:`ReviewAgentRateLimitedError`, which is transient; DBOS
-      retries up to ``max_attempts`` times.
-    - Orchestrator crashes (anything else) raise
-      :class:`ReviewAgentCrashedError` (not retried).
-    - A missing or unparseable structured response raises
-      :class:`ReviewAgentReturnedNoStructuredResponseError` (not
-      retried).
-
-    The whole step is a single DBOS checkpoint: a crash mid-fanout
-    resumes from the cached result, so transient failures don't re-run
-    the LLM. The sandbox is stopped in a ``finally`` so a parse /
-    combine failure does not leak the connection.
-
-    Comment-line validation is prompt-driven: each specialist subagent
-    reads the parallel ``diff.json`` file directly via the deepagents
-    backend's ``read_file`` to self-validate and re-anchor its
-    ``(file, line, side)`` anchors before emitting
-    :class:`CodeCommentDraft` entries. The server-side
-    :func:`app.services.review.hunk_map.filter_drafts` (called by the
-    workflow after this step) is the final backstop.
-
-    Raises:
-        SandboxConnectError: reconnect to E2B failed. Transient —
-            DBOS retries.
-        ReviewAgentRateLimitedError: the orchestrator returned 429 /
-            5xx / timeout. Transient — DBOS retries up to
-            ``max_attempts`` times.
-        ReviewAgentCrashedError: any other exception from
-            ``orchestrator.ainvoke`` — business outcome, not retried.
-        ReviewAgentReturnedNoStructuredResponseError: the
-            orchestrator finished without ``structured_response``, or
-            the response could not be validated as
-            :class:`ReviewResult`. Business outcome, not retried.
-    """
-    spec = _e2b_spec()
-    try:
-        sandbox = await E2BSandbox.connect(
-            sandbox_id=sandbox_id,
-            sandbox_name=sandbox_name,
-            repo_id=repo_id,
-            user_id=user_id,
-            spec=spec,
-            timeout=60 * 60,
-            api_key=spec.api_key,
-        )
-    except Exception as exc:
-        raise SandboxConnectError(
-            user_id=user_id,
-            repo_id=repo_id,
-            sandbox_id=sandbox_id,
-            cause=(
-                f"failed to reconnect sandbox for orchestrator: "
-                f"{type(exc).__name__}: {exc}"
-            ),
-        ) from exc
-
-    try:
-        orchestrator_model = build_chat_model(
-            provider=provider,
-            base_url=llm_baseurl,
-            api_key=llm_api_key,
-            model=llm_model,
-            headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
-            callbacks=make_llm_io_handler(
-                agent_name="orchestrator",
-                repo_name=repo_name,
-                repo_id=repo_id,
-                pr_number=pr_number,
-                head_sha=head_sha,
-                workflow_id=DBOS.workflow_id,
-                model=llm_model,
-            ),
-        )
-
-        subagents = build_review_subagents(
-            sandbox=sandbox,
-            pr_number=pr_number,
-            head_sha=head_sha,
-            model=orchestrator_model,
-        )
-
-        orchestrator = build_orchestrator_agent(
-            model=orchestrator_model,
-            backend=cast(Any, _orchestrator_backend(sandbox)),
-            subagents=subagents,
-            tools=_orchestrator_tools(
-                sandbox=sandbox,
-                pr_number=pr_number,
-                head_sha=head_sha,
-            ),
-        )
-        user_prompt = assemble_user_prompt(
-            repo_name=repo_name,
-            repo_id=repo_id,
-            user_id=user_id,
-            pr_number=pr_number,
-        )
-        prompt_payload = {"messages": [{"role": "user", "content": user_prompt}]}
-        log.info(
-            "invoking review orchestrator: repo=%s user=%s pr_number=%s",
-            repo_name,
-            user_id,
-            pr_number,
-        )
-
-        try:
-            result = await orchestrator.ainvoke(prompt_payload)
-        except Exception as exc:
-            if is_llm_retry_error(exc):
-                wait = extract_retry_after_seconds(exc)
-                log.warning(
-                    "review orchestrator transient: repo=%s pr_number=%s "
-                    "wait_s=%s cause=%s",
-                    repo_name,
-                    pr_number,
-                    wait,
-                    exc,
-                )
-                raise ReviewAgentRateLimitedError(
-                    cause=f"{type(exc).__name__}: {exc}",
-                    retry_after_seconds=wait,
-                ) from exc
-
-            log.exception(
-                "review orchestrator crashed: repo=%s pr_number=%s",
-                repo_name,
-                pr_number,
-            )
-            raise ReviewAgentCrashedError(cause=f"{type(exc).__name__}: {exc}") from exc
-
-        if not isinstance(result, dict) or "structured_response" not in result:
-            from app.services.agent.helpers import extract_message_kinds
-            from app.services.review.errors import (
-                ReviewAgentReturnedNoStructuredResponseError,
-            )
-
-            log.exception(
-                "review orchestrator returned no structured_response: "
-                "repo=%s pr_number=%s",
-                repo_name,
-                pr_number,
-            )
-            raise ReviewAgentReturnedNoStructuredResponseError(
-                message_kinds=extract_message_kinds((result or {}).get("messages"))
-            )
-
-        try:
-            review = ReviewResult.model_validate(result["structured_response"])
-        except Exception as exc:
-            from app.services.agent.helpers import extract_message_kinds
-            from app.services.review.errors import (
-                ReviewAgentReturnedNoStructuredResponseError,
-            )
-
-            log.exception(
-                "review orchestrator returned unparseable output: repo=%s pr_number=%s",
-                repo_name,
-                pr_number,
-            )
-            raise ReviewAgentReturnedNoStructuredResponseError(
-                message_kinds=extract_message_kinds((result or {}).get("messages"))
-            ) from exc
-
-        review.verdict = verdict_for(review.comments)
-        return review
-    finally:
-        try:
-            await sandbox.stop()
-        except Exception:
-            log.exception("failed to stop sandbox after orchestrator invocation")
-
-
 __all__ = [
     "invoke_correctness_agent",
-    "invoke_review_agent_step",
     "invoke_review_agents_step",
     "invoke_security_agent",
     "invoke_style_agent",

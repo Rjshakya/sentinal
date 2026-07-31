@@ -54,9 +54,8 @@ COPY --chmod=755 packages/api/docker/migrate.sh /app/docker/migrate.sh
 
 USER app
 
-EXPOSE 8000
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=5 \
-  CMD curl -fsS http://localhost:8000/api/health || exit 1
+HEALTHCHECK --interval=40s --timeout=5s --start-period=15s --retries=5 \
+  CMD curl -fsS http://localhost:${PORT:-8000}/api/health || exit 1
 
 CMD [ "python", "main.py"]

@@ -15,13 +15,18 @@ Types:
   carried across the workflow boundary (DBOS cannot persist ORM objects).
 - :class:`ResolvedSandbox`     — serialisable subset of a resolved sandbox
   (``sandbox_id`` + ``sandbox_name``) used as the workflow's sandbox handle.
+- :class:`TotalUsages`         — per-model token counter (TypedDict, not Pydantic).
+- :class:`TotalUsagesPerPR`    — per-run aggregated token usage envelope
+  (TypedDict, not Pydantic) keyed by model name.
 """
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 from pydantic import BaseModel, ConfigDict
 
-from app.core.llm import LLMProviderStr
+from app.core.llm import LLMConfig
 from app.models.enums import PRStatus
 from app.services.agent.models import ReviewResult
 
@@ -43,10 +48,7 @@ class ReviewWorkflowInput(BaseModel):
     body: str
     title: str
     status: PRStatus
-    llm_baseurl: str | None
-    llm_api_key: str
-    llm_model: str
-    provider: LLMProviderStr
+    llm_config: LLMConfig
     post_to_github: bool
     github_installation_id: int | None = None
 
@@ -74,6 +76,7 @@ class ReviewRunResult(BaseModel):
     pr_id: str
     commit_id: str
     review: ReviewResult
+    usages: TotalUsagesPerPR
 
 
 class PostReviewResult(BaseModel):
@@ -105,11 +108,62 @@ class ResolvedSandbox(BaseModel):
     sandbox_name: str
 
 
+# --------------------------------------------------------------------------- #
+# Token usage envelopes                                                         #
+# --------------------------------------------------------------------------- #
+
+
+class InputTokenDetails(TypedDict, total=False):
+    """Cache-related fields on the input token side.
+
+    Mirrors the JSONB column shape on
+    :class:`app.models.review_usage.ReviewUsage.input_token_details`.
+    Both fields are optional because not every provider surfaces
+    cache metadata.
+    """
+
+    cache_read: int | None
+    cache_creation: int | None
+
+
+class TotalUsages(TypedDict):
+    """Per-model aggregated token counts for one review run.
+
+    ``input_token_details`` is optional and may be empty when the
+    underlying provider does not report cache metadata.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    input_token_details: InputTokenDetails
+
+
+class TotalUsagesPerPR(TypedDict):
+    """Per-run aggregated token usage, keyed by model name.
+
+    The envelope is built by
+    :func:`app.services.review.steps.invoke_agent.invoke_review_agents_step`
+    while the four subagents fan out, then carried through the
+    workflow boundary to be persisted by
+    :func:`app.services.review.steps.persist_usage.persist_review_usage_tx`.
+    """
+
+    pr_number: int
+    head_sha: str
+    repo_id: str
+    user_id: str
+    usages: dict[str, TotalUsages]
+
+
 __all__ = [
+    "InputTokenDetails",
     "PostReviewInput",
     "PostReviewResult",
     "RepoSnapshot",
     "ResolvedSandbox",
     "ReviewRunResult",
     "ReviewWorkflowInput",
+    "TotalUsages",
+    "TotalUsagesPerPR",
 ]

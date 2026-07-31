@@ -13,6 +13,7 @@ Two layers, following the Functional Core / Imperative Shell split:
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
 from app.core.db import dbos_datasource
 from app.models.enums import ReviewVerdict
@@ -55,7 +56,7 @@ async def persist_review_summary_tx(
     pr_id: str,
     commit_id: str,
     result: ReviewResult,
-) -> str:
+) -> UUID:
     """Durable DBOS transaction: persist the review summary row.
 
     Returns the ``summary.id`` so the workflow can carry it across
@@ -68,7 +69,7 @@ async def persist_review_summary_tx(
         commit_id=commit_id,
         result=result,
     )
-    return str(summary.id)
+    return summary.id
 
 
 __all__ = ["persist_review_summary", "persist_review_summary_tx"]

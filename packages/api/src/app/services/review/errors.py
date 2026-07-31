@@ -29,7 +29,10 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
+
+if TYPE_CHECKING:
+    from app.core.llm import LLMConfig
 
 log = logging.getLogger(__name__)
 
@@ -277,6 +280,12 @@ class ReviewAgentsInvocationError(StepError):
     LLM provider/model/base URL, workflow id, and the UTC timestamp of
     the failure) so production dashboards have everything needed to
     attribute a failure without cross-referencing logs.
+
+    The LLM-derived fields (:attr:`llm_provider`, :attr:`llm_model`,
+    :attr:`llm_base_url`) are read from the :class:`LLMConfig` the
+    step received, so the Sentry tags (``llm.provider``,
+    ``llm.model``) and ``llm.base_url`` extra keep their existing
+    names.
     """
 
     user_id: str
@@ -298,9 +307,7 @@ class ReviewAgentsInvocationError(StepError):
         repo_id: str,
         pr_number: int,
         head_sha: str,
-        llm_provider: str,
-        llm_model: str,
-        llm_base_url: str | None,
+        llm_config: LLMConfig,
         workflow_id: str,
         failed_agents: list[AgentInvocationError],
         succeeded_agents: list[str],
@@ -310,9 +317,9 @@ class ReviewAgentsInvocationError(StepError):
         self.repo_id = repo_id
         self.pr_number = pr_number
         self.head_sha = head_sha
-        self.llm_provider = llm_provider
-        self.llm_model = llm_model
-        self.llm_base_url = llm_base_url
+        self.llm_provider = llm_config.provider
+        self.llm_model = llm_config.model_id
+        self.llm_base_url = llm_config.base_url
         self.workflow_id = workflow_id
         self.failed_agents = list(failed_agents)
         self.succeeded_agents = list(succeeded_agents)

@@ -12,18 +12,20 @@ type StatCardProps = {
 
 export function StatCard({ label, value, loading, icon }: StatCardProps) {
   return (
-    <Card>
+    <div className="p-1 ring-1 ring-foreground/10 grid gap-2">
       <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
         <CardTitle>{label}</CardTitle>
         {icon}
       </CardHeader>
-      <CardContent>
-        {loading || value === undefined ? (
-          <Skeleton className="h-8 w-16" />
-        ) : (
-          <div className="text-3xl font-semibold tracking-tight">{value.toLocaleString()}</div>
-        )}
-      </CardContent>
-    </Card>
+      <Card className=" bg-accent  dark:bg-card">
+        <CardContent>
+          {loading || value === undefined ? (
+            <Skeleton className="h-8 w-16" />
+          ) : (
+            <div className="text-3xl font-semibold tracking-tight">{value.toLocaleString()}</div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }

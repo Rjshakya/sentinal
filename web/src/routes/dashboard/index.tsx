@@ -20,14 +20,14 @@ function DashboardOverview() {
   const { data: stats, isLoading: statsLoading } = useUserStats();
 
   return (
-    <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
+    <div className="flex flex-1 flex-col gap-8  p-4 pt-0 max-w-3xl mx-auto w-full ">
       <GreetingCard />
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-2 md:grid-cols-3">
         <StatCard
           label="PRs reviewed"
           value={stats?.prs_reviewed}
           loading={statsLoading}
-          icon={<IconClipboardCheck className="text-muted-foreground size-4" />}
+          icon={<IconClipboardCheck className="text-muted-foreground size-4  " />}
         />
         <StatCard
           label="Comments issued"
