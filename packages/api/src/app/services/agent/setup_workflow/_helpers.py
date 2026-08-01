@@ -11,24 +11,15 @@ replacement that the new DBOS workflow imports.
 from __future__ import annotations
 
 from app.core.sandbox.types import CommandResult
-from app.services.agent.models import SetupResult
 from app.services.agent.setup_workflow.errors import (
     GitCloneError,
     GitCloneTransientError,
-    InstallTokenMintError,
-    InstallationNotFoundError,
-    SetupAgentCrashedError,
-    SetupAgentNoStructuredResponseError,
-    SetupAgentRateLimitedError,
-    SetupError,
-    TransientSetupError,
 )
 
 
 __all__ = [
     "build_authenticated_clone_url",
     "check_git_clone_result",
-    "flatten_setup_error_to_setup_result",
     "truncate_command_output",
 ]
 
@@ -54,8 +45,7 @@ def truncate_command_output(result: CommandResult, *, max_chars: int = 500) -> s
     Prefers ``stderr`` (which usually has the failure cause), falls
     back to ``stdout``, strips whitespace, and truncates to
     ``max_chars``. The output is meant to be embedded in
-    :class:`GitCloneError`'s ``output_tail`` and ultimately in the
-    dashboard's :class:`SetupResult.notes` — keep it short.
+    :class:`GitCloneError`'s ``output_tail`` — keep it short.
     """
     raw = (result.stderr or result.stdout or "").strip()
     return raw[:max_chars]
@@ -93,48 +83,4 @@ def check_git_clone_result(result: CommandResult) -> None:
     if result.exit_code == -1:
         raise GitCloneTransientError(cause=tail or "sandbox command runner failure")
     raise GitCloneError(exit_code=result.exit_code, output_tail=tail)
-
-
-def flatten_setup_error_to_setup_result(error: SetupError) -> SetupResult:
-    """Convert any :class:`SetupError` variant to an ``ok=False``
-    :class:`SetupResult`.
-
-    Pure — single :func:`match` over the closed union. The router's
-    status endpoint and the workflow's :keyword:`except SetupError`
-    block both call this so the dashboard always sees the same shape.
-    """
-    match error:
-        case InstallationNotFoundError(installation_id=installation_id, user_id=user_id):
-            notes = (
-                f"installation_id={installation_id!r} does not "
-                f"belong to user_id={user_id!r}"
-            )
-        case InstallTokenMintError(cause=cause):
-            notes = f"install_token_mint failed: {cause}"
-        case GitCloneError(exit_code=exit_code, output_tail=output_tail):
-            notes = f"git clone failed (exit_code={exit_code}): {output_tail}"
-        case GitCloneTransientError(cause=cause):
-            notes = f"git clone transient sandbox failure: {cause}"
-        case SetupAgentCrashedError(cause=cause):
-            notes = f"setup agent crashed: {cause}"
-        case SetupAgentRateLimitedError(cause=cause):
-            notes = f"setup agent rate-limited: {cause}"
-        case SetupAgentNoStructuredResponseError(message_kinds=message_kinds):
-            notes = (
-                "setup agent returned no structured_response "
-                f"(messages={list(message_kinds)})"
-            )
-        case TransientSetupError():
-            notes = f"setup pipeline failed: {error}"
-        case _:
-            notes = f"setup pipeline failed: {error}"
-    return SetupResult(
-        ok=False,
-        ecosystem="none",
-        manager=None,
-        install_cmd=None,
-        duration_s=0.0,
-        notes=notes,
-        bootstrapped_tools=[],
-    )
 

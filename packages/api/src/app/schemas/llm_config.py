@@ -1,16 +1,20 @@
 """HTTP schemas for the per-user LLM config feature.
 
-Two endpoints:
+Three endpoints:
 
-- ``POST /api/llm_configs`` — accept a candidate config, probe it
+- ``POST /api/llm_config/`` — accept a candidate config, probe it
   via :func:`app.services.llm_config.test_user_llm_config`, and on
   success upsert the row. Always returns ``200`` with the envelope
   described below (the frontend renders the probe result directly
   from the response, so HTTP-status branching is unnecessary).
-- ``GET /api/llm_configs`` — return the user's stored row(s) with
+- ``POST /api/llm_config/test`` — probe a candidate config without
+  persisting it. Returns the same envelope minus the ``data``
+  field, so the UI can have a "Test connection" button that does
+  not commit to a write.
+- ``GET /api/llm_config/`` — return the user's stored row(s) with
   ``api_key`` redacted. Empty list when the user has no row.
 
-The POST response envelope:
+The POST ``/api/llm_config/`` response envelope:
 
     {
         "data": null | LLMConfigResponse,
@@ -26,6 +30,10 @@ The POST response envelope:
 ``exception`` field of ``test_result`` are both populated on
 failure (the human-readable chain). The ``response`` field of
 ``test_result`` is populated on success.
+
+The POST ``/api/llm_config/test`` response envelope drops the
+``data`` field — nothing is persisted — and uses ``success`` to
+signal probe pass/fail.
 """
 
 from __future__ import annotations
@@ -118,7 +126,7 @@ def to_llm_config_response(row) -> LLMConfigResponse:
 
 
 class LLMConfigUpsertResponse(BaseModel):
-    """Body of the ``POST /api/llm_configs`` response."""
+    """Body of the ``POST /api/llm_config/`` response."""
 
     data: LLMConfigResponse | None = Field(
         default=None,
@@ -148,9 +156,41 @@ class LLMConfigUpsertResponse(BaseModel):
     )
 
 
+class LLMConfigTestResponse(BaseModel):
+    """Body of the ``POST /api/llm_config/test`` response.
+
+    Same envelope as :class:`LLMConfigUpsertResponse` minus the
+    ``data`` field — the test endpoint never persists. The client
+    uses ``success`` (and the absence of ``test_result.exception``)
+    to drive its UX.
+    """
+
+    success: bool = Field(
+        description=(
+            "``True`` iff the probe completed without raising. "
+            "Always agrees with ``test_result.exception is None``."
+        ),
+    )
+    error: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable error string on failure; ``None`` on "
+            "success. Mirrors ``test_result.exception`` for "
+            "convenience."
+        ),
+    )
+    test_result: LLMTestResultPublic = Field(
+        description=(
+            "The raw probe outcome. ``response`` is populated on "
+            "success; ``exception`` is populated on failure."
+        ),
+    )
+
+
 __all__ = [
     "CreateLLMConfigRequest",
     "LLMConfigResponse",
+    "LLMConfigTestResponse",
     "LLMConfigUpsertResponse",
     "to_llm_config_response",
 ]

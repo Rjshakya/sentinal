@@ -63,7 +63,15 @@ def map_drafts_to_comment_rows(
     return rows
 
 
-__all__ = [
-    "get_repo_path",
-    "map_drafts_to_comment_rows",
-]
+def create_review_workflow_id(*, repo_id: str, pr_number: int, head_sha: str) -> str:
+    """Build the deterministic inner review workflow id.
+
+    Mirrors the formula used by
+    :func:`app.services.review.webhook.handle_pull_request_opened`
+    so the inner workflow dedupes across triggers.
+    """
+    short_sha = head_sha[:7]
+    return f"review:{repo_id}:{pr_number}:{short_sha}"
+
+
+__all__ = ["get_repo_path", "map_drafts_to_comment_rows", "create_review_workflow_id"]

@@ -72,10 +72,9 @@ class RepoContext(BaseModel):
 class SetupWorkflowResult(BaseModel):
     """The workflow's return value.
 
-    ``setup`` is the canonical :class:`SetupResult` (always present —
-    ``ok=False`` on failure, with ``notes`` describing the cause).
-    ``error_name`` / ``error_message`` mirror the typed error for
-    the API status endpoint; they are ``None`` on success.
+    ``error_name`` / ``error_message`` mirror the typed
+    :class:`SetupError` that aborted the workflow, when any. Both
+    are ``None`` on success.
 
     Frozen so DBOS can serialize it.
     """

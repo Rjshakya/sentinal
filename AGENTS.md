@@ -72,8 +72,11 @@ Data flow at a glance:
    — another 302 → WorkOS Pipes → return to dashboard.
 5. The API lists the user's repos by minting a GitHub token via Pipes and
    calling GitHubKit.
-6. The user picks repos and POSTs them to `/api/ai/code/indexing`, which is
-   the entry point for the review pipeline.
+6. The user picks repos and POSTs them to `/api/ai/repo/setup`, which
+   dispatches a per-repo DBOS workflow that clones the repo and
+   prepares a sandbox for review. The review pipeline is then
+   triggered by GitHub's `pull_request` webhook (not by this UI
+   hand-off), which kicks off the durable `review_workflow`.
 
 Postgres 18 is the only persistence tier, brought up by `docker-compose.yml`.
 
@@ -114,7 +117,8 @@ psycopg async, which fails with the default `ProactorEventLoop`.
   unauthenticated result, missing user_id/email, or missing session_id).
 - `middleware.py` — `AuthMiddleware(BaseHTTPMiddleware)`. Skips
   `OPTIONS` requests (CORS preflight), then guards the path prefixes
-  `/api/pipes`, `/api/github`, `/api/ai`. On success it attaches the
+  `/api/github`, `/api/ai`, `/api/users`, `/api/llm_config` (see
+  `AuthMiddleware.PROTECTED_PREFIXES`). On success it attaches the
   full `Session` plus flat fields (`user_id`, `session_id`, `email`,
   `user_name`, `profile_picture`) to `request.state`. On failure it
   returns `{"detail": "Unauthorized"}` with status 401.
@@ -139,8 +143,10 @@ psycopg async, which fails with the default `ProactorEventLoop`.
   `langchain.chat_models.init_chat_model("provider:model", ...)`).
   Provider dispatch is delegated to LangChain, so the factory
   carries no per-provider branches. The review agent (orchestrator
-  + four subagents) is the sole consumer; the setup pipeline's
-  `LLMConfig` is plumbed but not yet invoked.
+  + four subagents) is the sole consumer; the value object is
+  resolved per-user at review time via
+  `app.services.llm_config.resolve_active_llm_config`, falling back
+  to `settings.llm_config` (env-driven) when the user has no row.
 - `llm_callbacks.py` — per-LLM-call JSON observability handler
   (`LLMIOCallbackHandler` + `make_llm_io_handler`).
 - `logging.py` — `JsonFormatter` and `structured_log(...)`. The root
@@ -150,19 +156,24 @@ psycopg async, which fails with the default `ProactorEventLoop`.
 
 - `agent/` — the deep-agent graph and its subagents.
   - `models.py` — Pydantic response schemas (`CodeCommentDraft`,
-    `ReviewResult`, `SetupResult`) emitted by the agents.
+    `ReviewResult`) emitted by the review agent.
   - `prompts.py` — system prompts for the orchestrator and its four
     subagents: `summarizer` (PR summary, persisted as the review
     summary text), `security` (P1_CRITICAL only), `correctness`
     (P2_WARNING only), and `style` (P3_NITPICK only). Deliberately
     long and rubric-driven so each specialist has tight vocabulary.
-  - `setup.py` — single-shot deep-agent that installs dependencies
-    in the E2B sandbox before the review pipeline runs. No
-    subagents; emits a `SetupResult`.
-  - `setup_pipeline.py` — Functional Core / Imperative Shell that
-    sequences installation-lookup, token-mint, `git clone`, and the
-    setup agent.
-  - `setup_errors.py` — typed error variants for the setup pipeline.
+  - `setup_workflow/` — DBOS durable workflow that prepares a repo
+    for review: `ensure_repo_and_sandbox_step` → `git clone_step`
+    → `mint_installation_token_step` → `stop_setup_sandbox_step`.
+    `setup_workflow.errors` is the typed exception hierarchy;
+    `setup_workflow.types` is the shared Pydantic surface
+    (`SetupWorkflowInput`, `RepoContext`, `SetupWorkflowResult`);
+    `setup_workflow._helpers` is the pure-function toolbox
+    (`build_authenticated_clone_url`, `check_git_clone_result`,
+    `truncate_command_output`). No deep-agent is involved; on
+    success the workflow returns a `SetupWorkflowResult`, on
+    failure DBOS records the typed error and the router surfaces
+    it through `error_name` / `error_message`.
 - `review/` — the durable review pipeline (the production target of
   the system).
   - `workflow.py` — the top-level `review_workflow` DBOS orchestrator.
@@ -240,10 +251,26 @@ psycopg async, which fails with the default `ProactorEventLoop`.
 - `github.py` — `GET /github/repos` lists the authenticated user's repos
   (top 30, sorted by `updated`). Returns a typed `RepoOut`. Failures
   surface as a 502 so the web client can render a retry UI.
-- `ai.py` — `POST /ai/code/indexing` accepts a payload of
-  `{repos: [{id, full_name, html_url}]}` and currently acks with
-  `{accepted: N}`. It is the entry point for the indexing pipeline and
-  is intentionally minimal in its current state.
+- `ai.py` — two routes that drive the setup pipeline.
+  `POST /ai/repo/setup` (asynchronous, `202 Accepted`) accepts a
+  payload of `{repos: [{id, owner, name, installation_id}]}`,
+  skips any that already have a row in the `repos` table, and
+  dispatches a DBOS workflow for the rest. The workflow id encodes
+  the user so duplicate dispatches are idempotent. `GET
+  /ai/repo/setup/{workflow_id}` returns the workflow's current
+  status (`PENDING` / `SUCCESS` / `ERROR` / `MAX_RECOVERY_ATTEMPTS_EXCEEDED`)
+  and, on `ERROR`, the typed error's class name + message. No row
+  is persisted beyond DBOS's own workflow state.
+- `llm_configs.py` — per-user LLM config. Three routes under
+  `/api/llm_config/`. `POST /` (test-and-upsert) probes the
+  candidate config first, then writes the row on success, and
+  always returns `200` with the standard envelope
+  (`{data, success, error, test_result}`) so the frontend never
+  branches on HTTP status. `POST /test` runs the same probe
+  without persisting — the UI's "Test connection" button.
+  `GET /` lists the user's stored row (one element at most,
+  `api_key` always redacted) or an empty list. All three routes
+  are auth-gated by `AuthMiddleware`.
 
 ### 3.3 Domain model
 
@@ -328,12 +355,13 @@ seals the response, sets the cookie, and 302s to
 `http://localhost:3000/dashboard`.
 
 **Protected routes.** The middleware runs first on every non-OPTIONS
-request whose path starts with `/api/pipes`, `/api/github`, or
-`/api/ai`. It loads the sealed cookie, calls `authenticate()` (local
-Fernet decrypt + JWT verify, no network IO), and on success populates
-`request.state`. Failures return `{"detail": "Unauthorized"}` /
-401. `/api/auth` and `/api/health` are intentionally outside the
-guard list.
+request whose path starts with `/api/github`, `/api/ai`,
+`/api/users`, or `/api/llm_config` (see
+`AuthMiddleware.PROTECTED_PREFIXES`). It loads the sealed cookie,
+calls `authenticate()` (local Fernet decrypt + JWT verify, no
+network IO), and on success populates `request.state`. Failures
+return `{"detail": "Unauthorized"}` / 401. `/api/auth` and
+`/api/health` are intentionally outside the guard list.
 
 **GitHub connect.** `/pipes/connections/github/authorize` returns a
 302 to WorkOS's authorize URL. After the user grants, WorkOS redirects
@@ -546,16 +574,25 @@ emitted at the source.
     `VITE_API_URL`. `credentials: "include"` is set on every call so
     the sealed session cookie flows. `ApiError` carries the status
     and body for typed error handling. Exports `apiClient` with
-    `session`, `logout`, `connections`, `repos`, `startIndexing`.
+    `session`, `logout`, `installation`, `repos`, `userRepos`,
+    `userStats`, `setup`, `codeSearch`, `installUrl`, `getLlmConfig`,
+    `updateLlmConfig`, `testLlmConfig`.
   - `auth.ts` — `useSession` (TanStack Query against `/auth/session`),
     `protectPage` (used as `beforeLoad` on protected routes — calls
     `/auth/session`, redirects to `/about` on failure), `useLogout`.
   - `connections.ts` — `useConnections` query and a
     `getGithubConnection` selector that finds the entry with
     `slug === "github"`.
-  - `repos.ts` — `useRepos` and `useStartIndexing` mutations.
+  - `installation.ts` — `useInstallation`, `useInstallUrl`, and the
+    `useForgetInstallation` mutation (invalidates installation + repo
+    query keys on success).
+  - `repos.ts` — `useRepos` and `useSetup` mutations.
+  - `llm.ts` — `useLlmConfig` (TanStack Query against
+    `GET /api/llm_config/`), `useUpdateLlmConfig` (probes then
+    upserts, invalidates the query key on success),
+    `useTestLlmConfig` (probe-only, no persistence).
   - `nav.tsx` — the dashboard nav config (Overview, Repositories,
-    Reviews) using tabler icons.
+    Reviews, Settings) using tabler icons.
   - `utils.ts` — `cn` helper, the standard shadcn `clsx` + `twMerge`
     combo.
 - `src/hooks/use-mobile.ts` — viewport detection used by the
@@ -569,6 +606,7 @@ emitted at the source.
 /dashboard           route.tsx          (SidebarProvider + Outlet)
   /                 index.tsx          (overview, GitHubConnectionCard)
   /repositories     route.tsx          (list, select, "Start indexing")
+  /settings         route.tsx          (per-user LLM config card)
 ```
 
 `/dashboard/reviews` is referenced in the sidebar nav (`lib/nav.tsx`)
@@ -602,9 +640,19 @@ in `:root` and the `.dark` selector.
   or a "Connected" badge.
 - `RepositoriesPage` reads the same connection. Once connected, it
   switches to `ConnectedView`, which calls `useRepos()` and lets the
-  user check off repos. "Start indexing" calls
-  `useStartIndexing(repos)`, which POSTs to `/ai/code/indexing` and
-  toasts the accepted count on success.
+  user check off repos. "Configure" calls `useSetup(repos)`, which
+  POSTs to `/ai/repo/setup` and toasts the accepted count on
+  success.
+- `SettingsPage` at `/dashboard/settings` renders the
+  `LlmConfigCard` (under `_components/`). The card uses
+  `useLlmConfig()` to load the current row, and exposes two
+  mutations: `useTestLlmConfig` (probes via
+  `POST /api/llm_config/test`, no persistence) and
+  `useUpdateLlmConfig` (probes then upserts via
+  `POST /api/llm_config/`, invalidates the query key on success).
+  The card's `provider` field is a `Select` of the eight most
+  common LangChain provider prefixes with an "Other (custom
+  prefix)" option that swaps to a free-form `Input`.
 - `useLogout` clears the session query data, invalidates it, and
   invalidates the router so a re-render of `protectPage` redirects
   to `/about`.
@@ -694,7 +742,8 @@ values are set; the `/auth` router returns a 503 if it isn't.
 - AI agent prompts (orchestrator + 4 subagents) → `packages/api/src/app/services/agent/prompts.py`
 - AI agent response schemas → `packages/api/src/app/services/agent/models.py`
 - Review pipeline (orchestrator + subagent factory + persistence) → `packages/api/src/app/services/review/pipeline.py`
-- Setup agent (single-shot deep-agent) → `packages/api/src/app/services/agent/setup.py`
+- Setup workflow (durable steps for repo prep) → `packages/api/src/app/services/agent/setup_workflow/`
+- Per-user LLM config (service + routes + schemas) → `packages/api/src/app/services/llm_config/`, `packages/api/src/app/routers/llm_configs.py`, `packages/api/src/app/schemas/llm_config.py`
 - WorkOS + GitHub plumbing → `packages/api/src/app/core/{workos,github,auth,middleware}.py`
 - LLM factory (`LLMConfig` + `build_chat_model` via `init_chat_model`) → `packages/api/src/app/core/llm.py`
 - LLM I/O observability callback handler → `packages/api/src/app/core/llm_callbacks.py`
@@ -704,6 +753,7 @@ values are set; the `/auth` router returns a 503 if it isn't.
 - Pages → `web/src/routes/`
 - Shared UI → `web/src/components/ui/`
 - API client → `web/src/lib/api.ts`
+- LLM config hooks → `web/src/lib/llm.ts`
 - Auth hooks + page guard → `web/src/lib/auth.ts`
 - Theming → `web/src/components/ThemeToggle.tsx` and the init script in `web/src/routes/__root.tsx`
 - Env files → `ai-code-review/.env` (API), `web/.env` (Vite)

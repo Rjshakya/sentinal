@@ -1,8 +1,12 @@
 """GitHub ``pull_request`` webhook adapter for the durable review workflow.
 
-Dispatches a verified ``opened`` / ``synchronize`` delivery to the DBOS
-review workflow. The workflow is durable, idempotent, and runs in the
-background without FastAPI ``BackgroundTasks``.
+Dispatches a verified ``opened`` delivery to the DBOS review workflow.
+The workflow is durable, idempotent, and runs in the background without
+FastAPI ``BackgroundTasks``.
+
+Note: the ``synchronize`` action no longer triggers a review. Users
+trigger a review by commenting ``@<app_slug> review`` on the PR; that
+path lives in :mod:`app.services.pr_issue_comment`.
 
 - **Ring 1 (pure)**       — :class:`PRReviewInput`,
   :func:`classify_action`, :func:`extract_payload`,
@@ -34,6 +38,7 @@ from app.models.enums import PRStatus
 from app.models.installation import Installation
 from app.models.repo import Repo
 from app.services.llm_config import NoActiveLLMConfigError, resolve_active_llm_config
+from app.services.review.helpers import create_review_workflow_id
 from app.services.review.workflow import review_workflow
 from app.services.review.workflow_types import ReviewWorkflowInput
 
@@ -80,8 +85,14 @@ class PRReviewInput(BaseModel):
 
 
 def classify_action(action: Any) -> bool:
-    """Return ``True`` iff ``action`` is ``"opened"`` or ``"synchronize"``."""
-    return action == "opened" or action == "synchronize"
+    """Return ``True`` iff ``action`` is ``"opened"``.
+
+    ``synchronize`` (new commit on an open PR) is intentionally not a
+    trigger. Reviews are now kicked off by a user commenting
+    ``@<app_slug> review`` on the PR; see
+    :mod:`app.services.pr_issue_comment`.
+    """
+    return action == "opened"
 
 
 def _classify_status(pr: dict[str, Any]) -> str | None:
@@ -348,7 +359,11 @@ async def handle_pull_request_opened(
         post_to_github=post_to_github,
     )
 
-    workflow_id = f"review:{repo_id}:{view.number}:{view.head_sha[:7]}"
+    workflow_id = create_review_workflow_id(
+        repo_id=repo_id,
+        pr_number=view.number,
+        head_sha=view.head_sha,
+    )
 
     log.info(
         "review.webhook: starting workflow: delivery=%s workflow_id=%s "

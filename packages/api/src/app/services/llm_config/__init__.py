@@ -35,7 +35,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.db import async_session_maker
 from app.core.llm import LLMConfig, build_chat_model
 from app.models.llm_config import LLMConfigRecord
-
 from app.services.llm_config.errors import NoActiveLLMConfigError
 from app.services.llm_config.types import LLMTestResult
 
@@ -122,7 +121,7 @@ async def test_user_llm_config(
         chat = build_chat_model(config=config, callbacks=[])
         response = await chat.ainvoke(
             [
-                SystemMessage(content="Reply with a single word."),
+                SystemMessage(content="Reply with in one sentence"),
                 HumanMessage(content="hi"),
             ]
         )
@@ -159,9 +158,7 @@ async def test_user_llm_config(
 # --------------------------------------------------------------------------- #
 
 
-async def _load_user_row(
-    session: AsyncSession, user_id: str
-) -> LLMConfigRecord | None:
+async def _load_user_row(session: AsyncSession, user_id: str) -> LLMConfigRecord | None:
     stmt = select(LLMConfigRecord).where(LLMConfigRecord.user_id == user_id)
     return (await session.exec(stmt)).first()
 
@@ -278,8 +275,8 @@ async def resolve_active_llm_config(user_id: str) -> LLMConfig:
 
     return LLMConfig(
         model=f"{row.provider}:{row.model_id}",
-        api_key=row.api_key or None,
-        base_url=row.base_url or None,
+        api_key=row.api_key,
+        base_url=row.base_url,
     )
 
 

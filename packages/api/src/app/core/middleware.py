@@ -28,12 +28,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/api/github",
         "/api/ai",
         "/api/users",
-        "/api/llm_configs",
+        "/api/llm_config",
     )
 
-    BYPASS_PREFIXES: tuple[str, ...] = (
-        "/api/github/setup",
-    )
+    BYPASS_PREFIXES: tuple[str, ...] = ("/api/github/setup",)
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)

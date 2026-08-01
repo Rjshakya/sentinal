@@ -75,6 +75,41 @@ export type SetupAck = {
   results: RepoSetupResult[];
 };
 
+export type LlmConfig = {
+  id: string;
+  user_id: string;
+  provider: string;
+  model_id: string;
+  base_url: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LlmTestResult = {
+  response: string | null;
+  exception: string | null;
+};
+
+export type LlmConfigUpsertResponse = {
+  data: LlmConfig | null;
+  success: boolean;
+  error: string | null;
+  test_result: LlmTestResult;
+};
+
+export type LlmConfigTestResponse = {
+  success: boolean;
+  error: string | null;
+  test_result: LlmTestResult;
+};
+
+export type LlmConfigPayload = {
+  provider: string;
+  model_id: string;
+  base_url: string;
+  api_key: string;
+};
+
 export type CodeSearchRequest = {
   repo_id: string;
   repo_name: string;
@@ -164,6 +199,19 @@ export const apiClient = {
       body: JSON.stringify(payload),
     }),
   installUrl: () => request<{ url: string }>("/github/install-url"),
+  getLlmConfig: () => request<LlmConfig[]>("/llm_config/"),
+  updateLlmConfig: (payload: LlmConfigPayload) =>
+    request<LlmConfigUpsertResponse>("/llm_config/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  testLlmConfig: (payload: LlmConfigPayload) =>
+    request<LlmConfigTestResponse>("/llm_config/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
 };
 
 export const apiBaseUrl = BASE;

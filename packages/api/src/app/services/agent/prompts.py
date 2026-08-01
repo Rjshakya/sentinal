@@ -470,14 +470,6 @@ always P3_NITPICK. No prose.
 """
 
 
-SETUP_AGENT_SYSTEM_PROMPT: str = """\
-You are the setup agent for Sentinel, an automated code-review
-pipeline. Your job is narrow and bounded: take a freshly-cloned repo
-and make sure its dependencies are installed so the review agent can
-later run linters, typecheckers, and tests against it.
-"""
-
-
 ORCHESTRATOR_SYSTEM_PROMPT: str = """\
 You are the Sentinel review orchestrator. Your job is mechanical:
 coordinate four specialist subagents and assemble their outputs into

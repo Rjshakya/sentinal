@@ -3,10 +3,13 @@
 The endpoint is **asynchronous** — ``POST /ai/repo/setup`` dispatches
 a DBOS workflow per repo and returns the workflow ids immediately
 (``202 Accepted``). The client polls the new ``GET /ai/repo/setup/{id}``
-endpoint for the terminal status and the persisted :class:`SetupResult`.
+endpoint for the terminal status. Error information is surfaced
+through ``error_name`` / ``error_message`` on
+:class:`SetupStatusResponse`; nothing is persisted beyond the
+workflow's own DBOS-managed state.
 
 The schemas here are the HTTP-shape contract only; the workflow
-itself lives in :mod:`app.services.agent.setup.workflow`.
+itself lives in :mod:`app.services.agent.setup_workflow.workflow`.
 """
 
 from __future__ import annotations

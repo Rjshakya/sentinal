@@ -14,9 +14,8 @@ The setup pipeline's retry policy at every ``@DBOS.step`` is::
 so a step only re-runs when the exception it raises inherits from
 :class:`TransientSetupError`. Plain :class:`SetupError` subclasses
 short-circuit the workflow; DBOS marks the workflow ``ERROR`` and the
-orchestrator's :keyword:`except SetupError` block flattens the cause
-into a :class:`app.services.agent.models.SetupResult` row for the
-dashboard.
+router surfaces the failure through the workflow's
+:class:`SetupWorkflowResult` (``error_name`` / ``error_message``).
 
 The hierarchy mirrors :mod:`app.services.review.errors` but is named
 independently (``SetupError`` vs ``StepError``) so a future shared
@@ -63,7 +62,7 @@ class SandboxCreateError(TransientSetupError):
     The retry re-runs the entire :func:`ensure_repo_and_sandbox_step`
     (idempotent for the DB upserts, fresh for the E2B call). On a
     persistent failure the workflow records the cause in
-    :class:`app.services.agent.models.SetupResult.notes`.
+    :class:`SetupWorkflowResult.error_message`.
     """
 
     def __init__(self, cause: str) -> None:
@@ -76,8 +75,8 @@ class InstallTokenMintError(TransientSetupError):
 
     Wraps the underlying ``githubkit`` / ``mint_installation_token``
     exception. DBOS retries the step; on persistent failure the
-    workflow records the cause in the persisted ``reposetupresult``
-    row.
+    workflow surfaces the cause through
+    :class:`SetupWorkflowResult.error_message`.
     """
 
     def __init__(self, cause: str) -> None:
@@ -119,8 +118,8 @@ class SetupAgentCrashedError(SetupError):
 
     Final — not retried. Anything that is not classified as a
     transient LLM error by :func:`app.services.review.errors.is_llm_retry_error`
-    lands here. Workflow's :keyword:`except SetupError` block flattens
-    it to ``ok=False`` for the dashboard.
+    lands here. The workflow re-raises and DBOS records the
+    error name + message on the workflow result.
     """
 
     def __init__(self, cause: str) -> None:
