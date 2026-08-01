@@ -1,14 +1,25 @@
-"""Persist the review summary row."""
+"""Persist the review summary row.
+
+Two layers, following the Functional Core / Imperative Shell split:
+
+- :func:`persist_review_summary` — the **pure** helper. Takes an
+  :class:`AsyncSession` and the agent's :class:`ReviewResult`, returns
+  the persisted :class:`ReviewSummary` row. No DBOS.
+- :func:`persist_review_summary_tx` — the **DBOS-wrapped**
+  transaction. Acquires the DBOS datasource session, calls the pure
+  helper, and returns the summary id.
+"""
 
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.core.db import dbos_datasource
 from app.models.enums import ReviewVerdict
 from app.models.review_summary import ReviewSummary
 from app.services.agent.models import ReviewResult
+from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
 
@@ -39,4 +50,26 @@ async def persist_review_summary(
     return summary
 
 
-__all__: list[str] = ["persist_review_summary"]
+@dbos_datasource.transaction()
+async def persist_review_summary_tx(
+    *,
+    pr_id: str,
+    commit_id: str,
+    result: ReviewResult,
+) -> UUID:
+    """Durable DBOS transaction: persist the review summary row.
+
+    Returns the ``summary.id`` so the workflow can carry it across
+    the step boundary.
+    """
+    session = dbos_datasource.sql_session()
+    summary = await persist_review_summary(
+        session,
+        pr_id=pr_id,
+        commit_id=commit_id,
+        result=result,
+    )
+    return summary.id
+
+
+__all__ = ["persist_review_summary", "persist_review_summary_tx"]

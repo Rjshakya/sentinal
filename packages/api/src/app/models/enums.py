@@ -49,3 +49,8 @@ class SetupErrorCode(str, enum.Enum):
     GIT_CLONE_FAILED = "GIT_CLONE_FAILED"
     AGENT_CRASHED = "AGENT_CRASHED"
     NO_STRUCTURED_RESPONSE = "NO_STRUCTURED_RESPONSE"
+
+
+class ReviewRunStatus(str, enum.Enum):
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"

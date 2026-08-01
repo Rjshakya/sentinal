@@ -14,7 +14,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from app.core.llm import LLMProviderStr
+from app.core.llm import LLMConfig
 
 __all__ = [
     "RepoContext",
@@ -39,10 +39,7 @@ class SetupWorkflowInput(BaseModel):
     repo_owner: str
     repo_name: str
     installation_id: str  # local Installation.id (UUID)
-    llm_provider: LLMProviderStr
-    llm_base_url: Optional[str] = None
-    llm_api_key: str
-    llm_model: str
+    llm_config: LLMConfig
 
 
 class RepoContext(BaseModel):

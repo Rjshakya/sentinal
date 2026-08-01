@@ -23,15 +23,18 @@ Module layout:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from githubkit import GitHub
 from githubkit.auth import AppAuthStrategy
 from githubkit_schemas.v2026_03_10.models import (
     Installation as GhInstallation,
+)
+from githubkit_schemas.v2026_03_10.models import (
     InstallationRepositoriesGetResponse200PropRepositoriesItems,
 )
 from pydantic import BaseModel
@@ -59,20 +62,16 @@ class InstallationRepo(BaseModel):
     clone_url: str
 
 
-def _resolve_private_key() -> str:
-    path = settings.github_app_private_key_path
-    if path:
-        try:
-            return Path(path).read_text(encoding="utf-8")
-        except OSError as exc:
-            raise RuntimeError(
-                f"Failed to read GITHUB_APP_PRIVATE_KEY_PATH={path}: {exc}"
-            ) from exc
+def _resolve_private_key():
 
-    raw = settings.github_app_private_key
-    if "\\n" in raw and "\n" not in raw:
-        return raw.replace("\\n", "\n")
-    return raw
+    b64 = settings.github_app_private_key
+    if b64:
+        try:
+            return base64.b64decode(b64, validate=True).decode("utf-8")
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError(
+                f"Failed to decode GITHUB_APP_PRIVATE_KEY_BASE64: {exc}"
+            ) from exc
 
 
 def get_app_github() -> GitHub[AppAuthStrategy]:
@@ -93,7 +92,7 @@ def get_app_github() -> GitHub[AppAuthStrategy]:
         _app_github = GitHub(
             AppAuthStrategy(
                 app_id=settings.github_app_id,
-                private_key=_resolve_private_key(),
+                private_key=_resolve_private_key() or "",
                 client_id=settings.github_app_client_id,
                 client_secret=settings.github_app_client_secret,
             )

@@ -1,11 +1,12 @@
 """Manual smoke test for the LLM provider config used by the review workflow.
 
-Calls ``_resolve_llm_config()`` from the webhook adapter, builds a chat
-model from it, creates a vanilla E2B sandbox, wires both into a minimal
-``create_deep_agent`` with a Pydantic ``response_format`` schema and a
-single custom tool. If this script works but the real workflow fails,
-the problem is in the review-agent stack (subagents, long prompts,
-HunkMap), not the provider config.
+Calls ``settings.llm_config`` (the canonical review LLM config), builds
+a chat model from it via :func:`app.core.llm.build_chat_model`, creates
+a vanilla E2B sandbox, wires both into a minimal ``create_deep_agent``
+with a Pydantic ``response_format`` schema and a single custom tool.
+If this script works but the real workflow fails, the problem is in
+the review-agent stack (subagents, long prompts, HunkMap), not the
+provider config.
 
 Run from ``packages/api/``:
 
@@ -17,19 +18,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from typing import Any
 
 from deepagents import create_deep_agent
 from e2b import AsyncSandbox, SandboxLifecycle
+from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.tools import tool
 from langchain_e2b import AsyncE2BSandbox
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.llm import build_chat_model
-from app.core.llm_callbacks import make_llm_io_handler
 from app.core.logging import configure_structured_logging
 from app.core.sandbox.e2b import CODE_SANDBOX_TEMPLATE_NAME, build_e2b_template
-from app.services.review.webhook import _resolve_llm_config
 
 log = logging.getLogger(__name__)
 
@@ -67,36 +68,19 @@ async def main() -> int:
     configure_structured_logging()
 
     build_e2b_template()
-    provider, base_url, api_key, model = _resolve_llm_config()
+    llm_config = settings.llm_config
     log.info(
-        "llm config: provider=%s base_url=%s model=%s key=%s…",
-        provider,
-        base_url,
-        model,
-        api_key[:6],
+        "llm config: model=%s base_url=%s key=%s…",
+        llm_config.model,
+        llm_config.base_url,
+        (llm_config.api_key or "")[:6],
     )
 
     # When settings.llm_log_io_enabled is false (the default), this
     # returns an empty list and the chat model gets no callbacks —
     # behavior is identical to before this change.
-    callbacks = make_llm_io_handler(
-        agent_name="smoke",
-        repo_name="-",
-        repo_id="-",
-        pr_number=0,
-        head_sha="-",
-        workflow_id=None,
-        model=model,
-    )
 
-    chat = build_chat_model(
-        provider=provider,
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        headers={"cf-aig-gateway-id": "sentinal-ai-gateway"},
-        callbacks=callbacks,
-    )
+    chat = build_chat_model(config=llm_config)
 
     log.info("creating e2b sandbox…")
     sandbox = await AsyncSandbox.create(
@@ -122,39 +106,25 @@ async def main() -> int:
             response_format=EchoResult,
             tools=[echo_word],
         )
-        result = await agent.ainvoke(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": (
-                            "Call the echo_word tool with word='hello'. "
-                            "with greeting='done', "
-                            "tool_used=true, and echoed_word='hello'."
-                            " and create a file /test/write.md "
-                            " and write content in it , i am testing agent, and i write files. "
-                        ),
-                    }
-                ]
-            }
-        )
+        result = Any
 
-        # agent = create_agent(
-        #     model=chat,
-        #     system_prompt="You are a helpful assistant. Reply briefly.",
-        #     tools=[echo_word],
-        #     response_format=ToolStrategy(EchoResult),
-        # )
-        # result = await agent.ainvoke(
-        #     {
-        #         "messages": [
-        #             {
-        #                 "role": "user",
-        #                 "content": "Call echo_word with word='hello', then return the result.",
-        #             }
-        #         ]
-        #     }
-        # )
+        with get_usage_metadata_callback() as cb:
+            result = await agent.ainvoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Call the echo_word tool with word='hello'. "
+                                "with greeting='done', "
+                                "tool_used=true, and echoed_word='hello'."
+                                " and create a file /test/write.md "
+                                " and write content in it , i am testing agent, and i write files. "
+                            ),
+                        }
+                    ]
+                }
+            )
 
         messages = result.get("messages", [])
         log.info("messages: %s", messages)
@@ -162,6 +132,7 @@ async def main() -> int:
         log.info("last message content: %s", getattr(last, "content", last))
         log.info("last message tool_calls: %s", getattr(last, "tool_calls", None))
         log.info("structured_response: %s", result.get("structured_response"))
+        log.info("usages: %s", cb.usage_metadata)
 
     except Exception as e:
         body = getattr(e, "body", None) or getattr(

@@ -8,14 +8,19 @@ atomically.
 
 This module parses a unified diff into a ``hunk_map`` — a dict that maps
 each file to the set of line numbers visible on the ``RIGHT`` and
-``LEFT`` sides of the diff. The map is then used by:
+``LEFT`` sides of the diff. The map is used by:
 
 - :func:`filter_drafts` — the server-side filter, called once in
   :func:`app.services.review.workflow.review_workflow` after the agent
-  returns. Drops drafts whose anchor is not in the map.
-- :func:`make_verify_comment_line_tool` — the ``verify_comment_line``
-  tool exposed to the review agent, which lets the LLM self-validate
-  before emitting a draft.
+  returns. It is the final backstop: it drops any draft whose anchor
+  is not in the map, after the agent has had its chance to validate
+  and re-anchor against ``diff.json``.
+
+The parsed hunk map is also serialised to ``diff.json`` in the sandbox
+by :func:`app.services.review.diff.parse_and_write_diff_json` so the
+review agent can read it directly via the deepagents backend's
+``read_file`` and self-validate its ``(file, line, side)`` anchors
+before emitting :class:`CodeCommentDraft` entries.
 
 The parser is pure (no I/O) and deterministic. The same diff always
 produces the same map. The algorithm walks the diff's line markers
@@ -194,7 +199,11 @@ def parse_hunk_map(unified_diff: str) -> HunkMap:
     """Walk a unified diff and return the :data:`HunkMap`.
 
     The map is the in-memory representation used by
-    :func:`filter_drafts` and :func:`make_verify_comment_line_tool`.
+    :func:`filter_drafts` (the server-side backstop in the review
+    workflow). The same data is also serialised to ``diff.json`` in
+    the sandbox by :func:`app.services.review.diff.parse_and_write_diff_json`
+    so the review agent can read it via ``read_file`` and
+    self-validate its ``(file, line, side)`` anchors.
 
     Algorithm (line-marker walker):
 

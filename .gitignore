@@ -11,6 +11,8 @@ wheels/
 # Environments / secrets
 .env
 .env.local
+.env.production
+
 .env.*.local
 **/sandbox.env
 **/*.pem

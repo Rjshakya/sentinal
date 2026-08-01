@@ -271,6 +271,33 @@ Open <http://localhost:3000>. The **Sign in with GitHub** button on
 `/about` will round-trip through WorkOS and land you on
 `/dashboard`.
 
+### Run the API in Docker (optional)
+
+If you'd rather skip the local Python toolchain, the backend (Postgres,
+Alembic migrations, FastAPI) runs end-to-end in Docker:
+
+```bash
+cp .env.example .env          # then fill in WORKOS_*, GITHUB_*, E2B_*, LLM_*
+docker compose up -d --build
+curl http://localhost:8000/api/health   # {"status":"ok"}
+```
+
+On first boot, the `migrate` compose service runs `alembic upgrade head`
+against the `db` service; the `api` service only starts after
+migrations finish. `DATABASE_URL` is rewritten by Compose to point at
+the `db` service; the rest of the env comes from the repo-root `.env`
+via `env_file`.
+
+The web app is not containerised — run it on the host with
+`pnpm --dir web dev` and point `VITE_API_URL` at
+`http://localhost:8000/api`.
+
+Re-run migrations manually:
+
+```bash
+docker compose run --rm migrate
+```
+
 ---
 
 ## Environment variables
@@ -302,13 +329,14 @@ A single `.env` at the repo root is loaded by `app.core.config.Settings`
 | `DAYTONA_API_KEY`                     | `""`                                        | Daytona API key (adapter kept for the day we swap back) |
 | `DAYTONA_TEMPLATE`                    | `""`                                        | Daytona image name |
 | **LLM (review + setup agents)**       |                                             | |
-| `LLM_PROVIDER`                        | `openai`                                    | `openai` / `anthropic` / `google` |
-| `LLM_MODEL`                           | `""`                                        | Model name passed to the chat model |
-| `LLM_BASE_URL`                        | `""`                                        | Base URL (e.g. `https://api.openai.com/v1`, or a proxy) |
-| `LLM_API_KEY`                         | `""`                                        | API key for the review/setup agent's chat model; falls back to `OPENAI_API_KEY` |
-| `CF_AI_GATEWAY_AUTH_TOKEN`            | `""`                                        | Cloudflare AI Gateway auth token (optional) |
-| `CF_ACCOUNT_ID`                       | `""`                                        | Cloudflare account id (optional) |
-| `OPENAI_API_KEY`                      | `""`                                        | OpenAI key; injected into the indexing sandbox and used as a fallback for `LLM_API_KEY` |
+| `LLM_MODEL`                           | `""`                                        | `provider:model` string (e.g. `openai:gpt-5.5`, `anthropic:claude-opus-4-6`, `google_genai:gemini-3.6-flash`) consumed by `init_chat_model`. Leave empty to disable review routes. |
+| `LLM_API_KEY`                         | `""`                                        | API key for the review/setup agent's chat model. Falls back to the provider's native env var (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`) when blank. |
+| `LLM_BASE_URL`                        | `""`                                        | Optional base URL for OpenAI-compatible proxies / gateways (Cloudflare AI Gateway, OpenCode Zen, Baseten, OpenRouter, Ollama, …). |
+| `LLM_DEFAULT_HEADERS`                 | `{}`                                        | Optional JSON-encoded dict of HTTP headers attached to every LLM request (gateway IDs, project tags). |
+| `LLM_MAX_RETRIES`                     | `3`                                         | Number of SDK retries on transient errors. |
+| `LLM_RATE_LIMIT_RPS`                  | `0.5`                                       | Client-side requests-per-second rate limit (via `InMemoryRateLimiter`). Set `0` to disable. |
+| `LLM_LOG_IO`                          | `false`                                     | Emit per-LLM-call metadata JSON log lines for the review agents. |
+| `OPENAI_API_KEY`                      | `""`                                        | OpenAI key; injected into the indexing sandbox and used as the env-var fallback for `LLM_MODEL=openai:…`. |
 | **GitHub App (repo access)**          |                                             | |
 | `GITHUB_APP_ID`                       | `""`                                        | GitHub App numeric id |
 | `GITHUB_APP_CLIENT_ID`                | `""`                                        | GitHub App OAuth client id |

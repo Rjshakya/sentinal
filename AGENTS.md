@@ -132,6 +132,17 @@ psycopg async, which fails with the default `ProactorEventLoop`.
     `/pipes` and `/github` routers.
 - `github.py` — `github_client_for(user_id)`: mints a GitHub access token
   via Pipes and returns a typed `githubkit.GitHub` client.
+- `llm.py` — `LLMConfig` (frozen, DBOS-serializable value object
+  bundling `model` / `api_key` / `base_url` / `headers` /
+  `max_retries` / `rate_limit_rps`) and `build_chat_model(config,
+  callbacks=...)` (a single-entry factory that calls
+  `langchain.chat_models.init_chat_model("provider:model", ...)`).
+  Provider dispatch is delegated to LangChain, so the factory
+  carries no per-provider branches. The review agent (orchestrator
+  + four subagents) is the sole consumer; the setup pipeline's
+  `LLMConfig` is plumbed but not yet invoked.
+- `llm_callbacks.py` — per-LLM-call JSON observability handler
+  (`LLMIOCallbackHandler` + `make_llm_io_handler`).
 - `logging.py` — `JsonFormatter` and `structured_log(...)`. The root
   logger is configured to emit JSON in `packages/api/main.py`.
 
@@ -154,22 +165,48 @@ psycopg async, which fails with the default `ProactorEventLoop`.
   - `setup_errors.py` — typed error variants for the setup pipeline.
 - `review/` — the durable review pipeline (the production target of
   the system).
-  - `workflow.py` — DBOS durable workflows. `review_workflow`
-    sequences idempotent, checkpointed steps (repo lookup, sandbox
-    connect, diff fetch, PR upsert, agent invocation, persistence)
-    and returns a ``Result[ReviewRunResult, ReviewPipelineError]``.
-    `post_review_to_github_workflow` is a separate durable workflow
-    for posting the review to GitHub, so it can be retried
-    independently.
+  - `workflow.py` — the top-level `review_workflow` DBOS orchestrator.
+    Sequences idempotent, checkpointed steps (repo lookup, sandbox
+    connect, diff fetch, PR upsert, agent invocation, persistence,
+    optional GitHub post) and returns a
+    ``ReviewRunResult``. The post-to-GitHub step is delegated to a
+    separate workflow (see `github/workflow.py` below).
+  - `workflow_types.py` — the six Pydantic models the workflow crosses:
+    `ReviewWorkflowInput`, `PostReviewInput`, `ReviewRunResult`,
+    `PostReviewResult`, `RepoSnapshot`, `ResolvedSandbox`.
+  - `_internal.py` — module-private helpers shared across the
+    pipeline: `_e2b_spec` and the `_SHOULD_RETRY_TRANSIENT` predicate
+    passed to every durable step.
   - `webhook.py` — GitHub ``pull_request`` ``opened`` / ``synchronize``
     adapter. Owns the verified-payload → durable-workflow handoff and
     computes the deterministic workflow id
     (`review:{repo_id}:{pr}:{head_sha[:7]}`).
-  - `steps/` — discrete I/O steps used by the workflows:
-    `resolve_repo`, `resolve_sandbox`, `fetch_diff`, `upsert_pr`,
-    `invoke_agent`, `persist_summary`, `persist_comments`.
+  - `steps/` — discrete I/O steps used by the workflow, one file per
+    step. Each file exposes a **pure** helper (no DBOS) and a
+    **DBOS-wrapped** variant (`*_tx` / `*_step`):
+    `resolve_repo` / `resolve_repo_tx`,
+    `resolve_sandbox` / `resolve_sandbox_step`, `fetch_diff_step`,
+    `parse_diff_step`, `upsert_pr` / `upsert_pull_request_tx`,
+    `invoke_review_agents_step` (legacy, kept as a revert path) +
+    `invoke_review_agent_step` (production orchestrator),
+    `persist_summary` / `persist_review_summary_tx`,
+    `persist_comments` / `persist_code_comments_tx`,
+    `stop_sandbox_step`.
   - `types.py` — `DeepAgentGraph` alias.
   - `errors.py` — typed error variants for the review pipeline.
+- `github/` — the GitHub post-pipeline.
+  - `post_review.py` — pure conversion (`convert_to_github_*`),
+    `post_review_to_github` (the REST call), the DB-update helpers
+    (`update_github_review_id`, `update_github_comment_ids`), and the
+    full orchestrator `post_review_and_update_db`. Same module as
+    before; left as-is because it's already structured with banner
+    comments.
+  - `workflow.py` — `post_review_to_github_workflow` (the durable
+    workflow) + the single `post_review_to_github_step` it wraps +
+    the `RetryableGitHubPostError` / `NonRetryableGitHubPostError`
+    internal variants DBOS uses for retry semantics.
+  - `steps/` — placeholder for sub-step helpers used by
+    `workflow.py`. Empty today.
 
 `src/app/models/`:
 
@@ -337,9 +374,11 @@ steps in order:
    has one orchestrator (the root deep-agent) and four `SubAgent`
    children registered in `assemble_review_subagents()`:
    `summarizer`, `security`, `correctness`, `style`. All four
-   subagents receive the `verify_comment_line` tool, which is bound
-   to the `HunkMap` and answers a single boolean question: "is this
-   anchor one that GitHub will accept?".
+   subagents share the `get_diff` tool. Comment-line validation
+   is prompt-driven: the three severity specialists read
+   `diff.json` (the parsed hunk map written alongside the diff)
+   and self-check / re-anchor each `(file, line, side)` anchor
+   before emitting a `CodeCommentDraft`.
 7. Invokes the agent (`@DBOS.step`). The orchestrator's loop is:
    read the diff and surrounding code → delegate to the
    `summarizer` first (its markdown output becomes
@@ -347,11 +386,11 @@ steps in order:
    severity-bucketed specialists (in parallel if appropriate) →
    collect + dedupe findings → pick the verdict from the severities
    present (any P1 → `REQUEST_CHANGES`, else any P2/P3 → `COMMENT`,
-   else `APPROVE`). The three specialists MUST call
-   `verify_comment_line(file, line, side)` before emitting each
-   `CodeCommentDraft`; the prompt tells them to drop the draft if
-   the tool returns `valid=false` rather than re-anchor to another
-   line.
+   else `APPROVE`). The three specialists MUST read `diff.json`
+   and confirm each draft's `from_line` is in
+   `files[file_name][side]`; if not, the prompt tells them to
+   re-anchor to the nearest in-bounds line in the **same hunk**
+   before emitting, or drop the comment if no such line exists.
 8. **Filters the agent's output** via `filter_drafts(review, hunk_map)`
    (one pure call, in the workflow body). Drops any draft whose
    anchor is not in the `HunkMap`. Drops are recorded as a single
@@ -377,36 +416,48 @@ the orchestrator. Every bullet in the summary is grounded in a
 self-critique pass that drops any ungrounded bullet before
 returning.
 
-#### Diff parsing and `verify_comment_line`
+#### Diff parsing and comment-line validation
 
 GitHub's review-comments API rejects (with HTTP 422) any inline
 comment whose `(file, line, side)` anchor does not appear in the
 PR's diff. The pipeline guards against this at three layers, in
 order:
 
-1. **Agent self-validation.** The `verify_comment_line(file, line, side)`
-   tool is bound to the `HunkMap` and exposed to the four
-   specialist subagents. The tool returns
-   `{"valid": true}` iff the anchor is in the map. The three
-   specialist prompts are written so the LLM calls the tool
-   before emitting each `CodeCommentDraft` and drops the draft
-   (does not re-anchor) if the answer is `false`.
-2. **Server-side filter.** `filter_drafts(review, hunk_map)` is
+1. **Agent self-validation (prompt-driven).** The three severity
+   specialist subagents read
+   `/home/user/tmp/{pr_number}/{head_sha}/diff.json` directly via
+   the deepagents backend's `read_file`. The file is the canonical
+   hunk map: `files[file_name].RIGHT` and `files[file_name].LEFT`
+   are sorted arrays of in-bounds line numbers, and `hunks[]`
+   carries per-hunk function context and `old_start` /
+   `old_count` / `new_start` / `new_count` ranges. For every
+   `CodeCommentDraft`, the agent confirms `from_line` is in
+   `files[file_name][side]`. If it is, the draft is emitted as-is.
+   If it is not, the agent re-anchors to the nearest in-bounds
+   line in the **same hunk** (the range of the matching entry in
+   `hunks[]`) and updates `from_line` / `to_line` to that single
+   line. If the same-hunk range has no other valid line, the
+   draft is dropped. Re-anchoring never crosses hunk boundaries:
+   the agent's reasoning was grounded in this hunk's surrounding
+   context.
+2. **Server-side backstop.** `filter_drafts(review, hunk_map)` is
    called once in the workflow, immediately after the agent
    returns, before any persist or post step. It is a pure
-   function and the only server-side line check; it catches
-   anything the agent missed.
+   function and the final server-side line check; it catches any
+   draft the agent failed to re-anchor (the agent can still be
+   notorious). Drops are logged as `review_comments_filtered`
+   with the dropped tuples and their reasons.
 3. **`< 1` guard.** `convert_to_github_comments` still rejects
    drafts with `from_line < 1` (or `to_line < 1`) as a final
    defence-in-depth.
 
 The `HunkMap` is computed once in `parse_diff_step` (a
 `@DBOS.step`), held in the workflow's local state, and passed
-into both the agent step (where it is bound into
-`verify_comment_line`) and `filter_drafts`. The
-`/home/user/tmp/{pr_number}/{head_sha}/diff.json` file is written
-to the sandbox so the agent can `read_file` it directly when it
-needs the full per-hunk metadata (function context, line counts).
+into `filter_drafts`. The
+`/home/user/tmp/{pr_number}/{head_sha}/diff.json` file is the
+JSON-serialised form of the same `HunkMap` (plus per-hunk
+metadata); it is written to the sandbox in the same step so the
+agent can `read_file` it directly during the review.
 
 ### 3.5 Migrations
 
@@ -645,6 +696,8 @@ values are set; the `/auth` router returns a 503 if it isn't.
 - Review pipeline (orchestrator + subagent factory + persistence) → `packages/api/src/app/services/review/pipeline.py`
 - Setup agent (single-shot deep-agent) → `packages/api/src/app/services/agent/setup.py`
 - WorkOS + GitHub plumbing → `packages/api/src/app/core/{workos,github,auth,middleware}.py`
+- LLM factory (`LLMConfig` + `build_chat_model` via `init_chat_model`) → `packages/api/src/app/core/llm.py`
+- LLM I/O observability callback handler → `packages/api/src/app/core/llm_callbacks.py`
 - App wiring (middleware order, router registration) → `packages/api/src/app/main.py`
 - Env loading → `packages/api/src/app/core/config.py`
 - Route tree → `web/src/routeTree.gen.ts` (generated)

@@ -55,7 +55,7 @@ async def callback(
         if sealed is None:
             raise RuntimeError("Expected sealed_session on AuthenticateResponse")
         # store the session in a cookie
-        response = RedirectResponse(url="http://localhost:3000/dashboard")
+        response = RedirectResponse(url=f"{settings.frontend_url}/dashboard")
         response.set_cookie(
             settings.session_cookie_name,
             sealed,

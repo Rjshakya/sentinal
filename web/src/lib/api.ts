@@ -112,6 +112,12 @@ export type UserRepo = {
   updated_at: string;
 };
 
+export type UserStats = {
+  prs_reviewed: number;
+  comments_issued: number;
+  bugs_caught: number;
+};
+
 export class ApiError extends Error {
   status: number;
   body: string;
@@ -144,6 +150,7 @@ export const apiClient = {
     request<void>(`/github/installation/${installationId}`, { method: "DELETE" }),
   repos: () => request<Repo[]>("/github/repos"),
   userRepos: () => request<UserRepo[]>("/users/repos"),
+  userStats: () => request<UserStats>("/users/stats"),
   setup: (repos: SetupRepo[]) =>
     request<SetupAck>("/ai/repo/setup", {
       method: "POST",

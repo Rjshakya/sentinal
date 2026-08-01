@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import cast
 
 from dbos import DBOS, WorkflowStatusString
 from fastapi import APIRouter, HTTPException, Path, Request, status
@@ -29,7 +28,6 @@ from sqlmodel import select
 
 from app.core.config import settings
 from app.core.db import async_session_maker
-from app.core.llm import LLMProviderStr
 from app.models.repo import Repo
 from app.schemas.setup import (
     SetupRequest,
@@ -149,10 +147,7 @@ async def start_setup_repos(
             repo_owner=r.owner,
             repo_name=r.name,
             installation_id=r.installation_id,
-            llm_provider=cast(LLMProviderStr, settings.llm_provider),
-            llm_base_url=settings.llm_base_url or None,
-            llm_api_key=settings.llm_api_key or settings.openai_api_key,
-            llm_model=settings.llm_model,
+            llm_config=settings.llm_config,
         )
 
         workflow_info = await DBOS.start_workflow_async(setup_workflow, workflow_input)

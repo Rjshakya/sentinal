@@ -1,4 +1,16 @@
-"""GitHub services module."""
+"""GitHub services module.
+
+Submodules:
+
+- :mod:`.post_review` — pure conversion + GitHub API posting + DB
+  updates. Module-private I/O helpers used by
+  :mod:`.workflow`.
+- :mod:`.workflow`    — DBOS durable workflow that wraps a single
+  :func:`post_review_to_github_step` and can be retried independently
+  of the main review workflow.
+- :mod:`.steps`       — placeholder for sub-step helpers used by
+  :mod:`.workflow`.
+"""
 
 from app.services.github.post_review import (
     GitHubAuthFailed,
@@ -15,6 +27,12 @@ from app.services.github.post_review import (
     update_github_comment_ids,
     update_github_review_id,
 )
+from app.services.github.workflow import (
+    NonRetryableGitHubPostError,
+    RetryableGitHubPostError,
+    post_review_to_github_step,
+    post_review_to_github_workflow,
+)
 
 __all__ = [
     "GitHubPosterError",
@@ -30,4 +48,8 @@ __all__ = [
     "update_github_review_id",
     "update_github_comment_ids",
     "post_review_and_update_db",
+    "RetryableGitHubPostError",
+    "NonRetryableGitHubPostError",
+    "post_review_to_github_step",
+    "post_review_to_github_workflow",
 ]

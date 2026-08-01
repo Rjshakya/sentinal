@@ -1,0 +1,48 @@
+# Build context is the monorepo root (context: . in docker-compose).
+# Kept lean so the build daemon doesn't ship .venv / web / .git etc.
+
+# Python
+.venv
+**/.venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.python-version
+
+# Tests / caches
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.pyright
+.coverage
+htmlcov
+.cache
+
+# Frontend — not needed by the API image
+web
+node_modules
+**/node_modules
+.pnpm-store
+
+# VCS / IDE
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+*.swp
+
+# Secrets — never bake env files into the image
+.env
+.env.*
+!.env.example
+
+# Build artefacts
+dist
+build
+**/*.egg-info
+
+# Docs (not needed in the image, kept in repo)
+README.md
+AGENTS.md

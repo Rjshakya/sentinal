@@ -4,6 +4,8 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import sentry_sdk
+
 # psycopg async mode does not work with Windows' default ProactorEventLoop.
 # Force the SelectorEventLoop before any DBOS/SQLAlchemy async imports run.
 # if sys.platform == "win32":
@@ -12,13 +14,14 @@ from contextlib import asynccontextmanager
 from dbos import DBOS, DBOSConfig
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sentry_sdk.integrations.logging import LoggingIntegration
 
 from app.core.config import settings
 from app.core.db import create_db_and_tables
 from app.core.logging import configure_structured_logging
 from app.core.middleware import AuthMiddleware
 from app.core.sandbox.e2b import build_e2b_template
-from app.routers import ai, auth, github, health, users, webhooks
+from app.routers import ai, auth, github, health, llm_configs, users, webhooks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +29,42 @@ logging.basicConfig(
 )
 
 configure_structured_logging()
+if settings.sentry_configured:
+    _sentry_log_level = getattr(
+        logging, settings.sentry_log_level.upper(), logging.INFO
+    )
+    if not isinstance(_sentry_log_level, int):
+        _sentry_log_level = logging.INFO
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.sentry_environment,
+        send_default_pii=settings.sentry_send_default_pii,
+        enable_logs=settings.sentry_enable_logs,
+        # Set traces_sample_rate to 1.0 to capture 100%
+        # of transactions for tracing.
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+        # Set profile_session_sample_rate to 1.0 to profile 100%
+        # of profile sessions.
+        profile_session_sample_rate=settings.sentry_profiles_sample_rate,
+        # Set profile_lifecycle to "trace" to automatically
+        # run the profiler on when there is an active transaction
+        profile_lifecycle="trace",
+        integrations=[
+            LoggingIntegration(
+                level=_sentry_log_level,
+                event_level=logging.ERROR,
+            ),
+        ],
+    )
+    logging.getLogger(__name__).info(
+        "sentry initialised: env=%s log_level=%s",
+        settings.sentry_environment,
+        settings.sentry_log_level,
+    )
+else:
+    logging.getLogger(__name__).info(
+        "sentry not configured (SENTRY_DSN empty); skipping init"
+    )
 
 
 def _dbos_config() -> DBOSConfig:
@@ -35,7 +74,7 @@ def _dbos_config() -> DBOSConfig:
     is stripped of the asyncpg driver suffix because DBOS creates its
     own SQLAlchemy engine.
     """
-    db_url = settings.database_url.replace("+asyncpg", "")
+    db_url = settings.dbos_database_url
     return {
         "name": "sentinel",
         "system_database_url": db_url,
@@ -80,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(github.router, prefix=settings.api_prefix)
     app.include_router(ai.router, prefix=settings.api_prefix)
     app.include_router(users.router, prefix=settings.api_prefix)
+    app.include_router(llm_configs.router, prefix=settings.api_prefix)
     app.include_router(webhooks.router, prefix=settings.api_prefix)
 
     return app
@@ -104,5 +144,5 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8000,
+        port=settings.port,
     )

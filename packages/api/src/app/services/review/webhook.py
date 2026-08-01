@@ -29,11 +29,13 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.db import async_session_maker
-from app.core.llm import LLMProviderStr
+from app.core.llm import LLMConfig
 from app.models.enums import PRStatus
 from app.models.installation import Installation
 from app.models.repo import Repo
-from app.services.review.workflow import ReviewWorkflowInput, review_workflow
+from app.services.llm_config import NoActiveLLMConfigError, resolve_active_llm_config
+from app.services.review.workflow import review_workflow
+from app.services.review.workflow_types import ReviewWorkflowInput
 
 log = logging.getLogger(__name__)
 
@@ -122,46 +124,37 @@ def extract_payload(payload: dict[str, Any]) -> PRReviewInput | None:
         return None
 
 
-def opencode_anthropic_models():
-    provider = "anthropic"
-    base_url = "https://opencode.ai/zen/go"
-    model = "minimax-m3"
-    api_key = settings.llm_api_key
-    return provider, base_url, api_key, model
+async def resolve_llm_config(user_id: str) -> LLMConfig:
+    """Return the :class:`LLMConfig` for the review workflow.
 
+    Resolution order:
 
-def _resolve_llm_config() -> tuple[LLMProviderStr, str | None, str, str]:
-    """Read the LLM configuration from :class:`Settings`.
+    1. The user's stored row in ``llm_configs`` (set via
+       ``POST /api/llm_configs``).
+    2. The global ``Settings.llm_config`` (admin escape hatch;
+       flagged as a follow-up to make this strict).
 
-    The fallback ``openai_api_key`` is applied here so callers can
-    treat the returned key as non-empty.
+    When neither is available, the user's row is missing and
+    ``Settings.llm_config`` is unconfigured, the workflow
+    fails earlier in :func:`handle_pull_request_opened` via
+    :attr:`Settings.llm_configured` — this function is only
+    called after that gate.
     """
-    # provider = settings.llm_provider
-    # base_url = settings.llm_base_url or None
-    # api_key = settings.llm_api_key or settings.openai_api_key
-    # model = settings.llm_model
-
-    provider = "openai"
-    base_url = (
-        f"https://api.cloudflare.com/client/v4/accounts/{settings.cf_account_id}/ai/v1"
-    )
-
-    api_key = settings.cf_ai_gateway_auth_token
-    # model = "@cf/moonshotai/kimi-k2.7-code"
-    model = "openai/gpt-5.1"
-
-    return opencode_anthropic_models()
-    return provider, base_url, api_key, model  # type: ignore[return-value]
+    try:
+        return await resolve_active_llm_config(user_id)
+    except NoActiveLLMConfigError:
+        log.info(
+            "review.webhook: no user llm config, falling back to settings: user_id=%s",
+            user_id,
+        )
+        return settings.llm_config
 
 
 def build_review_workflow_input(
     view: PRReviewInput,
     *,
     user_id: str,
-    llm_provider: LLMProviderStr,
-    llm_base_url: str | None,
-    llm_api_key: str,
-    llm_model: str,
+    llm_config: LLMConfig,
     github_installation_id: int | None = None,
     post_to_github: bool = False,
 ) -> ReviewWorkflowInput:
@@ -179,10 +172,7 @@ def build_review_workflow_input(
         title=view.title,
         body=view.body or "",
         status=view.status,
-        llm_baseurl=llm_base_url,
-        llm_api_key=llm_api_key,
-        llm_model=llm_model,
-        provider=llm_provider,
+        llm_config=llm_config,
         post_to_github=post_to_github,
         github_installation_id=github_installation_id,
     )
@@ -347,16 +337,13 @@ async def handle_pull_request_opened(
             skip_reason="review_not_configured",
         )
 
-    provider, base_url, api_key, model = _resolve_llm_config()
+    llm_config = await resolve_llm_config(user_id)
     post_to_github = installation_id is not None
 
     workflow_input = build_review_workflow_input(
         view,
         user_id=user_id,
-        llm_provider=provider,
-        llm_base_url=base_url,
-        llm_api_key=api_key,
-        llm_model=model,
+        llm_config=llm_config,
         github_installation_id=installation_id,
         post_to_github=post_to_github,
     )

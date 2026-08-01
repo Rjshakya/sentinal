@@ -17,25 +17,24 @@ Why a callback handler (and not a wrapper around ``agent.ainvoke``):
 Emitted events (per LLM call):
 
 - ``llm_call_started`` — emitted in ``on_chat_model_start``. Carries
-  the input messages (truncated), the per-call index, and the
-  correlation context. Emitted upfront so a hang or process kill
-  leaves a record of the request.
+  the input size (message count + total bytes), the per-call index,
+  and the correlation context. Emitted upfront so a hang or process
+  kill leaves a record of the request.
 - ``llm_call_completed`` — emitted in ``on_llm_end``. Carries the
-  LLM output (text + tool calls), usage metadata, and latency.
+  output size (bytes + tool call count), usage metadata, and latency.
 - ``llm_call_failed`` — emitted in ``on_llm_error``. Carries the
   error class and message.
 
-Emitted events (per tool invocation, nested under the parent LLM
-call):
+Emitted events (per tool invocation):
 
-- ``tool_call_started`` — emitted in ``on_tool_start``. Carries the
-  tool name and parsed input.
-- ``tool_call_completed`` — emitted in ``on_tool_end``. Carries the
-  truncated tool output.
+- ``tool_call_started`` / ``tool_call_completed`` — carry only the
+  tool name and the langchain run ids. No input/output content.
 
-Per-call state (input messages, monotonic index, in-flight tool
-invocations) is keyed on the langchain ``run_id`` so a single outer
-``ainvoke`` yields N ordered, correlatable log lines.
+The handler is **metadata-only**: input messages, output text, tool
+inputs, and tool outputs are all dropped. This is intentional — a
+multi-thousand-line PR review would produce log lines in the tens of
+megabytes if we kept the content. The handler exists to count, time,
+and correlate; it does not mirror the full conversation.
 
 The handler is **off by default** (gated on
 ``settings.llm_log_io_enabled``). When off, no handler is attached
@@ -47,22 +46,18 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.messages import BaseMessage
-from langchain_core.outputs import ChatGeneration, LLMResult
+from langchain_core.outputs import LLMResult
 
 from app.core.config import settings
 from app.core.logging import structured_log
 
 log = logging.getLogger(__name__)
-
-# Cap on per-field text content (chars). Diffs and code can run to
-# megabytes; we want a useful but bounded log line.
-_TRUNCATE_LIMIT: int = 8 * 1024
 
 
 # --------------------------------------------------------------------------- #
@@ -74,10 +69,10 @@ _TRUNCATE_LIMIT: int = 8 * 1024
 class Context:
     """Immutable correlation context for one agent invocation.
 
-    One :class:`Context` is built per agent (summary / security /
-    correctness / style) and shared across every LLM call and tool
-    invocation that agent makes. The fields show up on every emitted
-    log line, which is what makes a multi-agent log stream
+    One :class:`Context` is built per agent (orchestrator / summary /
+    security / correctness / style) and shared across every LLM call
+    and tool invocation that agent makes. The fields show up on every
+    emitted log line, which is what makes a multi-agent log stream
     greppable.
     """
 
@@ -105,8 +100,6 @@ class _CallState:
 
     index: int
     started_at: float
-    input_messages: list[list[BaseMessage]]
-    tool_invocations: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -138,14 +131,15 @@ class LLMIOCallbackHandler(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Record the LLM call's input and emit ``llm_call_started``."""
+        """Record the LLM call's input size and emit ``llm_call_started``."""
         self._counter += 1
-        started_at = time.monotonic()
         self._states[run_id] = _CallState(
             index=self._counter,
-            started_at=started_at,
-            input_messages=messages,
+            started_at=time.monotonic(),
         )
+
+        message_count = sum(len(group) for group in messages)
+        total_input_bytes = sum(_message_bytes(m) for group in messages for m in group)
 
         structured_log(
             "INFO",
@@ -157,7 +151,8 @@ class LLMIOCallbackHandler(BaseCallbackHandler):
                 "langchain_parent_run_id": (
                     str(parent_run_id) if parent_run_id is not None else None
                 ),
-                "input": [_serialize_message_group(group) for group in messages],
+                "message_count": message_count,
+                "total_input_bytes": total_input_bytes,
             },
         )
 
@@ -170,14 +165,14 @@ class LLMIOCallbackHandler(BaseCallbackHandler):
         tags: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Emit ``llm_call_completed`` with output, usage, and latency."""
+        """Emit ``llm_call_completed`` with output size, usage, and latency."""
         state = self._states.pop(run_id, None)
         if state is None:
             # Defensive: an end without a start (e.g. recovered run).
             return
 
         latency_ms = int((time.monotonic() - state.started_at) * 1000)
-        text, tool_calls, usage = _extract_output(response)
+        output_bytes, tool_call_count, usage = _extract_output_metrics(response)
 
         structured_log(
             "INFO",
@@ -187,9 +182,9 @@ class LLMIOCallbackHandler(BaseCallbackHandler):
                 "index": state.index,
                 "langchain_run_id": str(run_id),
                 "latency_ms": latency_ms,
-                "output": {"text": text, "tool_calls": tool_calls},
+                "output_bytes": output_bytes,
+                "tool_call_count": tool_call_count,
                 "usage": usage,
-                "tool_invocations": state.tool_invocations,
             },
         )
 
@@ -238,15 +233,8 @@ class LLMIOCallbackHandler(BaseCallbackHandler):
         inputs: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Record a tool invocation under its parent LLM call and emit ``tool_call_started``."""
+        """Emit ``tool_call_started`` with the tool name only."""
         tool_name = _tool_name(serialized, kwargs)
-        tool_input: Any = inputs if inputs is not None else input_str
-        invocation_index = self._record_tool_invocation(
-            parent_run_id=parent_run_id,
-            name=tool_name,
-            input_obj=tool_input,
-        )
-
         structured_log(
             "INFO",
             "tool_call_started",
@@ -257,7 +245,6 @@ class LLMIOCallbackHandler(BaseCallbackHandler):
                 "tool_parent_run_id": (
                     str(parent_run_id) if parent_run_id is not None else None
                 ),
-                "tool_input": _truncate_value(tool_input),
             },
         )
 
@@ -269,7 +256,7 @@ class LLMIOCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
-        """Emit ``tool_call_completed`` with the (truncated) tool output."""
+        """Emit ``tool_call_completed`` with no body (metadata-only)."""
         structured_log(
             "INFO",
             "tool_call_completed",
@@ -279,7 +266,6 @@ class LLMIOCallbackHandler(BaseCallbackHandler):
                 "tool_parent_run_id": (
                     str(parent_run_id) if parent_run_id is not None else None
                 ),
-                "tool_output": _truncate_value(output),
             },
         )
 
@@ -296,33 +282,6 @@ class LLMIOCallbackHandler(BaseCallbackHandler):
             "workflow_id": self._ctx.workflow_id,
             "model": self._ctx.model,
         }
-
-    def _record_tool_invocation(
-        self,
-        *,
-        parent_run_id: UUID | None,
-        name: str,
-        input_obj: Any,
-    ) -> int:
-        """Append a tool invocation record to the parent LLM call's state.
-
-        Tool invocations whose ``parent_run_id`` is not in
-        ``self._states`` (e.g. the deepagents runtime invokes some
-        tools outside of an LLM turn) are recorded as ``orphan: true``
-        so the log stream is still ordered correctly.
-        """
-        if parent_run_id is not None and parent_run_id in self._states:
-            state = self._states[parent_run_id]
-            state.tool_invocations.append(
-                {
-                    "name": name,
-                    "input": _truncate_value(input_obj),
-                    "orphan": False,
-                }
-            )
-            return len(state.tool_invocations)
-        # Orphan tool call (no active LLM parent). Still emit a record.
-        return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -368,105 +327,93 @@ def make_llm_io_handler(
 # --------------------------------------------------------------------------- #
 
 
-def _serialize_message_group(group: list[BaseMessage]) -> list[dict[str, Any]]:
-    """Project a list of input messages to a JSON-safe, truncated form."""
-    return [_serialize_message(m) for m in group]
+def _message_bytes(message: BaseMessage) -> int:
+    """Byte size of one message's content (UTF-8 encoded).
+
+    The content can be a plain string, a list of content parts (a mix
+    of strings and dicts in langchain's mixed-content shape), or
+    anything else (coerced to ``str``). Returns the encoded byte
+    length so the value is meaningful for both ASCII and multi-byte
+    text.
+    """
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return len(content.encode("utf-8", errors="replace"))
+    if isinstance(content, list):
+        total = 0
+        for part in content:
+            if isinstance(part, str):
+                total += len(part.encode("utf-8", errors="replace"))
+            else:
+                total += len(str(part).encode("utf-8", errors="replace"))
+        return total
+    return len(str(content).encode("utf-8", errors="replace"))
 
 
-def _serialize_message(message: BaseMessage) -> dict[str, Any]:
-    """Project one message to ``{role, content, name, tool_call_id, tool_calls}``."""
-    role = getattr(message, "type", None) or message.__class__.__name__
-    content_obj: Any = getattr(message, "content", "")
-    if isinstance(content_obj, str):
-        content: Any = _truncate_text(content_obj)
-    elif isinstance(content_obj, list):
-        content = [_truncate_value(part) for part in content_obj]
-    else:
-        content = _truncate_text(str(content_obj))
-    name = getattr(message, "name", None)
-    tool_call_id = getattr(message, "tool_call_id", None)
-    tool_calls = getattr(message, "tool_calls", None) or None
-    out: dict[str, Any] = {
-        "role": str(role),
-        "content": content,
-    }
-    if name is not None:
-        out["name"] = str(name)
-    if tool_call_id is not None:
-        out["tool_call_id"] = str(tool_call_id)
-    if tool_calls is not None:
-        out["tool_calls"] = [
-            {
-                "id": str(tc.get("id", "")),
-                "name": str(tc.get("name", "")),
-                "args": _truncate_value(tc.get("args", {})),
-            }
-            for tc in tool_calls
-        ]
-    return out
-
-
-def _extract_output(
+def _extract_output_metrics(
     response: LLMResult,
-) -> tuple[Any, list[dict[str, Any]], dict[str, Any] | None]:
-    """Pull ``(text, tool_calls, usage)`` out of an :class:`LLMResult`.
+) -> tuple[int, int, dict[str, Any] | None]:
+    """Pull ``(output_bytes, tool_call_count, usage)`` out of an LLMResult.
 
-    For chat models ``response.generations`` is
-    ``list[list[ChatGeneration]]`` and the first element's
-    ``.message`` is the :class:`BaseMessage` we want.
-    ``usage_metadata`` is provider-dependent; we return ``None``
-    rather than an empty dict when the provider didn't surface it.
+    For chat models the first generation is a ``ChatGeneration`` whose
+    ``.message`` is the AI message. ``output_bytes`` is the byte size
+    of the message content; ``tool_call_count`` is the number of tool
+    calls in the message; ``usage`` is the provider's usage metadata
+    (``None`` when not surfaced).
     """
     if not response.generations:
-        return "", [], None
+        return 0, 0, None
     first_group = response.generations[0]
     if not first_group:
-        return "", [], None
+        return 0, 0, None
     first = first_group[0]
-    message: BaseMessage | None = None
-    if isinstance(first, ChatGeneration):
-        message = first.message
-    elif hasattr(first, "text"):
-        text = getattr(first, "text", "")
-        return _truncate_text(text), [], _usage_from_llm_output(response.llm_output)
+    message: BaseMessage | None = getattr(first, "message", None)
     if message is None:
-        return "", [], _usage_from_llm_output(response.llm_output)
+        # Non-chat LLM path: ``Generation`` exposes ``text``.
+        text = getattr(first, "text", "")
+        if isinstance(text, str):
+            return (
+                len(text.encode("utf-8", errors="replace")),
+                0,
+                _usage_from_llm_output(response.llm_output),
+            )
+        return 0, 0, _usage_from_llm_output(response.llm_output)
 
-    text = _format_ai_content(message.content)
+    output_bytes = _message_bytes(message)
     raw_tool_calls: Any = getattr(message, "tool_calls", None) or []
-    tool_calls: list[dict[str, Any]] = [
-        {
-            "id": str(tc.get("id", "")),
-            "name": str(tc.get("name", "")),
-            "args": _truncate_value(tc.get("args", {})),
-        }
-        for tc in raw_tool_calls
-        if isinstance(tc, dict)
-    ]
+    tool_call_count = sum(1 for tc in raw_tool_calls if isinstance(tc, dict))
+
     usage: dict[str, Any] | None = None
     raw_usage = getattr(message, "usage_metadata", None)
     if raw_usage:
-        usage = {str(k): _as_jsonable(v) for k, v in raw_usage.items()}
+        usage = _coerce_usage(raw_usage)
     if usage is None:
         usage = _usage_from_llm_output(response.llm_output)
-    return text, tool_calls, usage
+    return output_bytes, tool_call_count, usage
 
 
-def _format_ai_content(content: Any) -> Any:
-    """Format the AIMessage content into a JSON-safe, truncated value."""
-    if isinstance(content, str):
-        return _truncate_text(content)
-    if isinstance(content, list):
-        return [_truncate_value(part) for part in content]
-    return _truncate_text(str(content))
+def _coerce_usage(raw: Any) -> dict[str, Any] | None:
+    """Project a usage-metadata object to a JSON-safe dict.
+
+    Returns ``None`` when the input is empty or not a mapping. Drops
+    non-scalar values; we only want the count fields, not arbitrary
+    nested structures.
+    """
+    if not isinstance(raw, dict) or not raw:
+        return None
+    out: dict[str, Any] = {}
+    for k, v in raw.items():
+        if v is None or isinstance(v, (bool, int, float, str)):
+            out[str(k)] = v
+    return out or None
 
 
 def _usage_from_llm_output(llm_output: dict[str, Any] | None) -> dict[str, Any] | None:
     """Best-effort usage extraction from the provider's ``llm_output`` dict.
 
-    The shape is provider-specific (token_usage, usage, etc.). We
-    only return the dict if it has at least one of the conventional
-    token-count keys; otherwise ``None``.
+    The shape is provider-specific (``token_usage`` / ``usage`` /
+    ``usage_metadata``). Returns ``None`` when no recognizable token
+    counts are present.
     """
     if not llm_output:
         return None
@@ -477,7 +424,7 @@ def _usage_from_llm_output(llm_output: dict[str, Any] | None) -> dict[str, Any] 
                 k in inner
                 for k in ("prompt_tokens", "completion_tokens", "total_tokens")
             ):
-                return {str(k): _as_jsonable(v) for k, v in inner.items()}
+                return _coerce_usage(inner)
     return None
 
 
@@ -489,7 +436,6 @@ def _tool_name(serialized: dict[str, Any], kwargs: dict[str, Any]) -> str:
     name = serialized.get("name")
     if isinstance(name, str) and name:
         return name
-    # Some langchain versions put the tool name under "id".
     ident = serialized.get("id")
     if isinstance(ident, list) and ident:
         last = ident[-1]
@@ -501,49 +447,6 @@ def _tool_name(serialized: dict[str, Any], kwargs: dict[str, Any]) -> str:
     if isinstance(kwargs_name, str) and kwargs_name:
         return kwargs_name
     return "unknown"
-
-
-def _truncate_value(value: Any) -> Any:
-    """Truncate a free-form value (str / dict / list) to a bounded form."""
-    if isinstance(value, str):
-        return _truncate_text(value)
-    if isinstance(value, list):
-        return [_truncate_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(k): _truncate_value(v) for k, v in value.items()}
-    return _as_jsonable(value)
-
-
-def _truncate_text(text: str) -> dict[str, Any]:
-    """Truncate a string to ``_TRUNCATE_LIMIT`` chars, preserving the original size."""
-    encoded = text.encode("utf-8", errors="replace")
-    original_bytes = len(encoded)
-    if original_bytes <= _TRUNCATE_LIMIT:
-        return {
-            "text": text,
-            "truncated": False,
-            "original_bytes": original_bytes,
-        }
-    truncated = encoded[:_TRUNCATE_LIMIT].decode("utf-8", errors="replace")
-    return {
-        "text": truncated,
-        "truncated": True,
-        "original_bytes": original_bytes,
-    }
-
-
-def _as_jsonable(value: Any) -> Any:
-    """Coerce a value into something ``json.dumps`` can handle.
-
-    Falls back to ``str(value)`` for anything unknown.
-    """
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, dict):
-        return {str(k): _as_jsonable(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_as_jsonable(item) for item in value]
-    return str(value)
 
 
 __all__ = ["LLMIOCallbackHandler", "make_llm_io_handler"]
