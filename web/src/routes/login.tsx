@@ -27,37 +27,32 @@ function LoginPage() {
   return (
     <main className="bg-background">
       <div className="flex min-h-dvh items-center justify-center p-6">
-        <Card className="w-full max-w-72 text-center bg-background ring-0 ">
-          <CardHeader className="items-center text-center mb-8 ">
-            <Link
-              to="/"
-              aria-label="Go home"
-              className="mx-auto flex size-10 items-center justify-center"
-            >
-              <BrandMark className="" />
+        <Card className="w-full max-w-72 text-center bg-background ring-0 gap-2 ">
+          <CardHeader className=" items-start text-start gap-10 mb-2 ">
+            <Link to="/" aria-label="Go home" className="w-full flex  items-start  ">
+              <BrandMark className="border bg-primary   p-3 " />
             </Link>
-            <div className="space-y-2">
-              <CardTitle className="text-xl">Sign in</CardTitle>
-              <CardDescription className="text-sm">Please sign in to your account</CardDescription>
+            <div className="space-y-1">
+              <CardTitle className=" text-sm tracking-tighter  ">Sign in</CardTitle>
+              <CardDescription className="text-xs ">Please sign in to continue</CardDescription>
             </div>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            <Button
+            {/*<Button
               size="lg"
               className="w-full"
               render={<a href={`${apiBaseUrl}/auth/login?provider=github`} />}
             >
               <IconBrandGithub />
               Sign in with GitHub
-            </Button>
+            </Button> */}
             <Button
               size="lg"
               variant="outline"
               className="w-full"
               render={<a href={`${apiBaseUrl}/auth/login?provider=google`} />}
             >
-              <IconBrandGoogle />
-              Sign in with Google
+              Google
             </Button>
           </CardContent>
         </Card>

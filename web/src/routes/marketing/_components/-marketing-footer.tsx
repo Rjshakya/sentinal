@@ -1,7 +1,6 @@
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { apiBaseUrl } from "@/lib/api";
 
 export function MarketingFooter() {
   return (
@@ -17,13 +16,6 @@ export function MarketingFooter() {
           </Button>
           <Button size="sm" variant="ghost" render={<a href="#why" />}>
             Why reviewpr
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            render={<a href={`${apiBaseUrl}/auth/login?provider=github`} />}
-          >
-            Sign in
           </Button>
         </div>
       </div>

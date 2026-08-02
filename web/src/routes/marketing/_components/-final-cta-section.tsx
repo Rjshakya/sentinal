@@ -1,6 +1,8 @@
 import { Button } from "@/components/ui/button";
 
 import { SectionHeading } from "./-section-heading";
+import { Link } from "@tanstack/react-router";
+import { IconArrowRight } from "@tabler/icons-react";
 
 export function FinalCtaSection() {
   return (
@@ -14,8 +16,9 @@ export function FinalCtaSection() {
           />
         </div>
         <div className="mt-8 flex justify-center">
-          <Button variant="secondary" size="lg">
+          <Button variant="secondary" size="lg" render={<Link to="/login" />}>
             Get started
+            <IconArrowRight />
           </Button>
         </div>
       </div>

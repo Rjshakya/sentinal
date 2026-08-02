@@ -15,7 +15,7 @@ function StepFrame({ src, children }: { src: string; children: ReactNode }) {
     <div className="relative aspect-square overflow-hidden bg-illustration p-4 shadow-sm ring-1 ring-border-illustration">
       <img src={src} alt="" className="absolute inset-0 h-full w-full object-cover" />
       <div className="absolute inset-0 flex items-center justify-center">
-        <div className="w-full scale-75">{children}</div>
+        <div className="w-full scale-75  ">{children}</div>
       </div>
     </div>
   );
@@ -23,7 +23,7 @@ function StepFrame({ src, children }: { src: string; children: ReactNode }) {
 
 function TerminalPanel() {
   return (
-    <div className="bg-background ring-1 ring-border">
+    <div className="bg-background ring-2 ring-ring/30  rounded-[12px]  drop-shadow-xl drop-shadow-accent/15  ">
       <div className="flex items-center justify-between border-b px-3 py-2">
         <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
           <IconCube className="size-3.5" />
@@ -51,14 +51,29 @@ function TerminalPanel() {
 }
 
 const agents = [
-  { icon: IconShield, name: "Security", pill: "P1", pillClass: "text-destructive ring-destructive/30" },
-  { icon: IconBug, name: "Correctness", pill: "P2", pillClass: "text-amber-600 ring-amber-600/30 dark:text-amber-500" },
-  { icon: IconSparkles, name: "Style", pill: "P3", pillClass: "text-muted-foreground ring-foreground/15" },
+  {
+    icon: IconShield,
+    name: "Security",
+    pill: "P1",
+    pillClass: "text-destructive ring-destructive/30",
+  },
+  {
+    icon: IconBug,
+    name: "Correctness",
+    pill: "P2",
+    pillClass: "text-amber-600 ring-amber-600/30 dark:text-amber-500",
+  },
+  {
+    icon: IconSparkles,
+    name: "Style",
+    pill: "P3",
+    pillClass: "text-muted-foreground ring-foreground/15",
+  },
 ];
 
 function AgentsPanel() {
   return (
-    <div className="bg-background ring-1 ring-border">
+    <div className="bg-background ring-2 ring-ring/30 rounded-[12px]  drop-shadow-xl drop-shadow-accent/15  ">
       <div className="border-b px-3 py-2 font-mono text-xs text-muted-foreground">
         review:acme-api:234:a1b2c3d
       </div>
@@ -70,7 +85,7 @@ function AgentsPanel() {
           <div className="space-y-0.5 p-3 font-mono text-[11px] leading-5">
             <p className="text-rose-600/80">- api_key = os.getenv(&quot;OPENAI_KEY&quot;)</p>
             <p className="text-emerald-600/80">+ api_key = load_secret(&quot;openai&quot;)</p>
-            <p className="text-muted-foreground">  max_retries = 3</p>
+            <p className="text-muted-foreground"> max_retries = 3</p>
             <p className="text-emerald-600/80">+ rate_limit_rps = 2</p>
           </div>
         </div>
@@ -84,7 +99,9 @@ function AgentsPanel() {
                 <Icon className="size-3.5 text-muted-foreground" />
                 {name}
               </div>
-              <span className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ring-1 ${pillClass}`}>
+              <span
+                className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ring-1 ${pillClass}`}
+              >
                 {pill}
               </span>
             </div>
@@ -96,8 +113,14 @@ function AgentsPanel() {
 }
 
 const summaryBullets = [
-  <>Token refresh now handles expiry — <span className="text-primary font-mono">src/auth.py:42</span></>,
-  <>Rate limits enforced per tenant — <span className="text-primary font-mono">src/github.py:88</span></>,
+  <>
+    Token refresh now handles expiry —{" "}
+    <span className="text-primary font-mono">src/auth.py:42</span>
+  </>,
+  <>
+    Rate limits enforced per tenant —{" "}
+    <span className="text-primary font-mono">src/github.py:88</span>
+  </>,
 ];
 
 const comments = [
@@ -123,7 +146,7 @@ const comments = [
 
 function ReviewPanel() {
   return (
-    <div className="bg-background ring-1 ring-border">
+    <div className="bg-background ring-2  ring-ring/30  rounded-[12px]  drop-shadow-xl drop-shadow-accent/15 ">
       <div className="flex items-center justify-between border-b px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-medium">
           <IconBrandGithub className="size-4" />
@@ -142,7 +165,9 @@ function ReviewPanel() {
         {comments.map(({ pill, pillClass, text, ref }) => (
           <div key={text} className="flex items-start justify-between gap-3">
             <div className="flex items-start gap-2">
-              <span className={`mt-0.5 rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ring-1 ${pillClass}`}>
+              <span
+                className={`mt-0.5 rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ring-1 ${pillClass}`}
+              >
                 {pill}
               </span>
               <p className="text-xs leading-5">{text}</p>
@@ -194,16 +219,11 @@ export function WorkflowSection() {
     <section id="how-it-works" className="px-5 py-20 lg:px-8">
       <div className="mx-auto max-w-6xl">
         <SectionHeading eyebrow="How reviewpr works" title="Clone. Review. Merge. Done." />
-        <div className="mt-16 flex flex-col gap-16">
-          {steps.map((step, index) => (
-            <div
-              key={step.number}
-              className="grid items-center gap-8 md:grid-cols-2 md:gap-12"
-            >
-              <div className={index % 2 === 1 ? "md:order-2" : ""}>
-                <StepFrame src={step.image}>{step.panel}</StepFrame>
-              </div>
-              <div className={index % 2 === 1 ? "md:order-1" : ""}>
+        <div className="mt-16 grid md:grid-cols-3 gap-4">
+          {steps.map((step) => (
+            <div key={step.number} className="flex flex-col gap-8 md:gap-12">
+              <StepFrame src={step.image}>{step.panel}</StepFrame>
+              <div>
                 <span className="font-mono text-xs font-semibold text-primary">{step.number}</span>
                 <h3 className="mt-4 font-heading text-xl font-semibold tracking-tight">
                   {step.title}

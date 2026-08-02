@@ -15,13 +15,44 @@ export const Route = createRootRoute({
       {
         charSet: "utf-8",
       },
+      { title: "ReviewPR — AI code reviewer" },
       {
-        name: "viewport",
-        content: "width=device-width, initial-scale=1",
+        name: "description",
+        content: "AI-powered PR reviews , Catch bugs before you regret",
+      },
+
+      // Open Graph
+      { property: "og:type", content: "website" },
+      { property: "og:site_name", content: "ReviewPR" },
+      {
+        property: "og:title",
+        content: "ReviewPR — AI code reviewer",
       },
       {
-        title: "reviewpr — AI-powered pull request reviews",
+        property: "og:description",
+        content: "AI-powered PR reviews , Catch bugs before you regret",
       },
+      { property: "og:image", content: "https://reviewpr.app/reviewpr-og.png" },
+      { property: "og:image:width", content: "1200" },
+      { property: "og:image:height", content: "630" },
+      { property: "og:url", content: "https://reviewpr.app" },
+
+      // Twitter
+      { name: "twitter:card", content: "summary_large_image" },
+      {
+        name: "twitter:title",
+        content: "ReviewPR — AI code reviewer",
+      },
+      {
+        name: "twitter:description",
+        content: "AI-powered PR reviews , Catch bugs before you regret",
+      },
+      { name: "twitter:image", content: "https://reviewpr.app/reviewpr-og.png" },
+      // { name: "twitter:site", content: "@reviewpr" }, // add once you have a handle
+
+      // Robots / theme
+      { name: "robots", content: "index, follow" },
+      { name: "theme-color", content: "#0a0a0a" },
     ],
     links: [
       {
@@ -33,6 +64,7 @@ export const Route = createRootRoute({
         type: "image/png",
         href: "/reviewpr-icon.png",
       },
+      { rel: "canonical", href: "https://reviewpr.app" },
     ],
   }),
   shellComponent: RootDocument,

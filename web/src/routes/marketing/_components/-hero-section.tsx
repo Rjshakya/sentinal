@@ -23,6 +23,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { BrandMark } from "@/components/brand-mark";
 
 const NAV_ITEMS = [
   { title: "Overview", icon: <IconLayoutDashboard className="size-4" />, active: true },
@@ -51,15 +52,13 @@ const STATS = [
 
 function DashboardPreview() {
   return (
-    <div className=" overflow-hidden border  bg-background  dark:bg-background scale-95  md:scale-90  ">
+    <div className=" overflow-hidden border ring-2 ring-ring/30  bg-background  dark:bg-background scale-95  md:scale-80 md:rounded-[12px] drop-shadow-xl drop-shadow-accent/15  ">
       <div className="grid origin-top-left lg:grid-cols-[auto_1fr]  ">
         {/* Sidebar */}
         <div className="hidden w-64 grid-rows-[auto_1fr_auto] p-4 lg:grid bg-sidebar ">
           {/* Brand */}
           <div className="flex cursor-pointer items-center gap-2 rounded-lg p-2 hover:bg-foreground/5">
-            <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <IconCommand className="size-4" />
-            </div>
+            <BrandMark className="p-3 bg-background " />
             <div className="grid flex-1 text-left text-sm leading-tight">
               <span className="truncate font-medium">AI Code Review</span>
               <span className="truncate text-xs text-muted-foreground">Dashboard</span>
