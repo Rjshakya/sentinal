@@ -219,7 +219,7 @@ export function WorkflowSection() {
     <section id="how-it-works" className="px-5 py-20 lg:px-8">
       <div className="mx-auto max-w-6xl">
         <SectionHeading eyebrow="How reviewpr works" title="Clone. Review. Merge. Done." />
-        <div className="mt-16 grid md:grid-cols-3 gap-4">
+        <div className="mt-16 grid grid-cols-1  md:grid-cols-3 gap-4">
           {steps.map((step) => (
             <div key={step.number} className="flex flex-col gap-8 md:gap-12">
               <StepFrame src={step.image}>{step.panel}</StepFrame>

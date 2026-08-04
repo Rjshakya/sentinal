@@ -12,6 +12,7 @@ const THEME_INIT_SCRIPT = `(function(){try{var stored=window.localStorage.getIte
 export const Route = createRootRoute({
   head: () => ({
     meta: [
+      { name: "viewport", content: "width=device-width, initial-scale=1" },
       {
         charSet: "utf-8",
       },
