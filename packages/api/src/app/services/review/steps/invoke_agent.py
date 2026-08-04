@@ -356,6 +356,7 @@ async def invoke_review_agents_step(
                 # subclasses, so anything else here is a programming bug.
                 # Re-raise as a non-retryable step error so DBOS marks the
                 # workflow as ERROR without retrying.
+
                 log.exception(
                     "review agents step saw unexpected exception type from "
                     "subagent wrapper: name=%s exc_type=%s",
