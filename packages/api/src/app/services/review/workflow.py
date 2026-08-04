@@ -184,6 +184,15 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
                     post_review_to_github_workflow, post_input
                 )
 
+        log.info(
+            "workflow: stopping workflow: workflow_id=%s "
+            "gh_repo_id=%s number=%s head_sha=%s",
+            DBOS.workflow_id,
+            input.gh_repo_id,
+            input.pr_number,
+            input.head_sha,
+        )
+
         return ReviewRunResult(
             pr_id=pr_id,
             commit_id=input.head_sha,
