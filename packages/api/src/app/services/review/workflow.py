@@ -199,6 +199,17 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             review=filtered_review,
             usages=usages,
         )
+
+    except Exception as exc:
+        log.info(
+            "exception occured in workflow pr_id:%s repo_id:%s head_sha:%s user_id:%s error:%s ",
+            input.pr_id,
+            input.gh_repo_id,
+            input.head_sha,
+            input.user_id,
+            exc,
+        )
+
     finally:
         await stop_sandbox_step(
             sandbox_id=sandbox.sandbox_id,
