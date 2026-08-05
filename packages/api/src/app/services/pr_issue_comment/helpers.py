@@ -254,7 +254,7 @@ def build_review_workflow_input(
     The inner :func:`app.services.review.workflow.review_workflow` only
     knows about :class:`ReviewWorkflowInput`; the trigger workflow
     builds one and dispatches it via
-    :func:`app.services.pr_issue_comment.steps.dispatch_review.dispatch_review_workflow_step`.
+    :func:`app.services.pr_issue_comment.steps.dispatch_review.run_review_workflow`.
 
     All PR-side fields (``gh_pr_id``, ``base_sha``, ``head_sha``,
     ``base_branch``, ``head_branch``, ``title``, ``body``, ``author``,

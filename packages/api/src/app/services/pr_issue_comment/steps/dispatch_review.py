@@ -1,10 +1,10 @@
-"""Step: dispatch the inner ``review_workflow`` for a comment trigger.
+"""Dispatch the inner ``review_workflow`` for a comment trigger.
 
 The trigger workflow is intentionally a thin orchestrator. After all
 the pre-work (validation, classification, ID resolution, head-SHA
 fetch, ack reaction, LLM resolution, input building) it hands the
 final :class:`ReviewWorkflowInput` off to
-:func:`dispatch_review_workflow_step`, which starts the inner
+:func:`run_review_workflow`, which starts the inner
 ``review_workflow`` with the deterministic
 ``review:{local_repo_id}:{pr_number}:{head_sha[:7]}`` workflow id.
 
@@ -12,6 +12,20 @@ The deterministic id is the idempotency key: a second comment on the
 same head SHA, or a ``pull_request opened`` + comment arriving for
 the same head SHA, dedupe to the same inner review workflow and
 the inner review returns the cached result.
+
+Note: this is **not** a :func:`@DBOS.step`. DBOS forbids starting a
+child workflow from inside a step (:meth:`DBOSContext.create_start_workflow_child`
+asserts the current context ``is_workflow()`` — ``# Not in a step``),
+so the function is called directly from the
+:func:`trigger_issue_comment_workflow` workflow body, exactly like
+:func:`app.services.review.workflow.review_workflow` starts
+:func:`app.services.github.workflow.post_review_to_github_workflow`.
+
+Replay safety: on crash-replay the workflow body re-executes this
+call, but DBOS records child-workflow starts keyed on the parent's
+function id, and the inner workflow id is deterministic via
+:class:`SetWorkflowID`, so a re-enqueue resolves to the already
+recorded child workflow instead of starting a second run.
 """
 
 from __future__ import annotations
@@ -27,25 +41,23 @@ from app.services.review.workflow_types import ReviewWorkflowInput
 log = logging.getLogger(__name__)
 
 
-@DBOS.step()
-async def dispatch_review_workflow_step(
+async def run_review_workflow(
     workflow_input: ReviewWorkflowInput,
     *,
     repo_id: str,
     pr_number: int,
     head_sha: str,
 ) -> str:
-    """Durable DBOS step: enqueue the inner ``review_workflow``.
+    """Enqueue the inner ``review_workflow`` and return its workflow id.
 
-    Wraps :func:`DBOS.start_workflow_async` with a
-    :class:`SetWorkflowID` so duplicate triggers on the same head
-    SHA are deduped. The step returns the inner workflow id (the
-    same one used as the idempotency key) so the trigger workflow
-    can record it in the :class:`TriggerRunResult`.
-
-    The step awaits the coroutine that ``start_workflow_async``
-    returns so DBOS can checkpoint the enqueue before the step
-    returns. The inner review runs in the background.
+    Called from the ``trigger_issue_comment_workflow`` body (not as a
+    DBOS step — starting a child workflow from a step is an
+    ``AssertionError`` in DBOS). Wraps
+    :func:`DBOS.start_workflow_async` with a :class:`SetWorkflowID` so
+    duplicate triggers on the same head SHA are deduped. The returned
+    id (the same one used as the idempotency key) is recorded in the
+    :class:`TriggerRunResult`. The inner review runs in the background;
+    this function does not wait for it to complete.
     """
     workflow_id = create_review_workflow_id(
         repo_id=repo_id,
@@ -54,7 +66,7 @@ async def dispatch_review_workflow_step(
     )
 
     log.info(
-        "pr_issue_comment.dispatch_review_workflow_step: starting "
+        "pr_issue_comment.run_review_workflow: starting "
         "review_workflow from issue comment: workflow_id=%s gh_repo_id=%s pr_number=%s "
         "head_sha=%s post_to_github=%s",
         workflow_id,
@@ -70,4 +82,4 @@ async def dispatch_review_workflow_step(
     return workflow_id
 
 
-__all__ = ["dispatch_review_workflow_step"]
+__all__ = ["run_review_workflow"]

@@ -25,6 +25,9 @@ Modules:
 - :mod:`.dispatch_review`     — start the inner ``review_workflow``
   via :func:`DBOS.start_workflow_async` with the deterministic
   ``review:{local_repo_id}:{pr_number}:{head_sha[:7]}`` workflow id.
+  Plain async helper, **not** a :func:`@DBOS.step`: DBOS forbids
+  starting a child workflow from inside a step, so it runs directly
+  in the trigger workflow's body.
 """
 
 from __future__ import annotations
@@ -33,9 +36,7 @@ from app.services.pr_issue_comment.steps.add_reaction import add_eyes_reaction_s
 from app.services.pr_issue_comment.steps.build_review_input import (
     build_review_input_step,
 )
-from app.services.pr_issue_comment.steps.dispatch_review import (
-    dispatch_review_workflow_step,
-)
+from app.services.pr_issue_comment.steps.dispatch_review import run_review_workflow
 from app.services.pr_issue_comment.steps.fetch_pr_state import fetch_pr_state_step
 from app.services.pr_issue_comment.steps.resolve_installation import (
     resolve_installation_step,
@@ -48,9 +49,9 @@ from app.services.pr_issue_comment.steps.resolve_repo_id import resolve_repo_id_
 __all__ = [
     "add_eyes_reaction_step",
     "build_review_input_step",
-    "dispatch_review_workflow_step",
     "fetch_pr_state_step",
     "resolve_installation_step",
     "resolve_llm_config_step",
     "resolve_repo_id_step",
+    "run_review_workflow",
 ]

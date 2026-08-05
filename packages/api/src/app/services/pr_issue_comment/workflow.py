@@ -13,7 +13,7 @@ GitHub webhooks for the same comment.
 
 Inner workflow id: ``review:{local_repo_id}:{pr_number}:{head_sha[:7]}``
 (computed by
-:func:`app.services.pr_issue_comment.steps.dispatch_review.dispatch_review_workflow_step`).
+:func:`app.services.pr_issue_comment.steps.dispatch_review.run_review_workflow`).
 Same head SHA across a ``pull_request opened`` and a comment
 trigger dedupes to a single review run.
 
@@ -50,12 +50,12 @@ from app.services.pr_issue_comment.helpers import (
 from app.services.pr_issue_comment.steps import (
     add_eyes_reaction_step,
     build_review_input_step,
-    dispatch_review_workflow_step,
     fetch_pr_state_step,
     resolve_installation_step,
     resolve_llm_config_step,
     resolve_repo_id_step,
 )
+from app.services.pr_issue_comment.steps.dispatch_review import run_review_workflow
 from app.services.pr_issue_comment.types import TriggerRunResult
 
 log = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ async def trigger_issue_comment_workflow(
         llm_config=llm_config,
     )
 
-    review_workflow_id = await dispatch_review_workflow_step(
+    review_workflow_id = await run_review_workflow(
         review_input,
         repo_id=repo_id,
         pr_number=trigger_input.pr_number,
