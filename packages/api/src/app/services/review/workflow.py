@@ -178,6 +178,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
                 pr_number=input.pr_number,
                 review=filtered_review,
             )
+
             post_workflow_id = f"post:{repo.id}:{input.pr_number}:{input.head_sha[:7]}"
             with SetWorkflowID(post_workflow_id):
                 await DBOS.start_workflow_async(
