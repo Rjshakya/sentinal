@@ -143,8 +143,8 @@ class TotalUsagesPerPR(TypedDict):
     """Per-run aggregated token usage, keyed by model name.
 
     The envelope is built by
-    :func:`app.services.review.steps.invoke_agent.invoke_review_agents_step`
-    while the four subagents fan out, then carried through the
+    :func:`app.services.review.steps.invoke_agent.combine_agent_outcomes`
+    while the four agent steps fan out, then carried through the
     workflow boundary to be persisted by
     :func:`app.services.review.steps.persist_usage.persist_review_usage_tx`.
     """

@@ -1,41 +1,49 @@
 """DBOS durable steps that actually run the review agents.
 
-This module owns the active parallel-fanout step, plus the small
-helpers used to wire the four review agents to the E2B sandbox.
+This module owns the four per-lane agent steps, plus the helpers
+used to wire each review agent to the E2B sandbox and the pure
+helper that combines their outcomes.
 
-- :func:`invoke_review_agents_step` (active, parallel) — runs the
-  four review agents (``summary`` / ``security`` / ``correctness`` /
-  ``style``) concurrently via :func:`asyncio.gather`, combines their
-  results, and aggregates per-model token usage into a
-  :class:`app.services.review.workflow_types.TotalUsagesPerPR`
-  envelope. Each subagent is wrapped in its own
-  :func:`invoke_<name>_agent` helper that translates any failure
-  into the per-subagent error class with a ``retryable`` flag.
-  Failures are aggregated into
-  :class:`app.services.review.errors.ReviewAgentsInvocationError`
-  and pushed to Sentry before being raised.
+Four parallel steps:
 
-Per-subagent wrappers:
-
-- :func:`invoke_summary_agent` — summarizer (markdown text).
-- :func:`invoke_security_agent` — security (pydantic
+- :func:`invoke_summary_agent_step` — summarizer (markdown text).
+- :func:`invoke_security_agent_step` — security (pydantic
   :class:`SecurityComments`).
-- :func:`invoke_correctness_agent` — correctness (pydantic
+- :func:`invoke_correctness_agent_step` — correctness (pydantic
   :class:`CorrectnessComments`).
-- :func:`invoke_style_agent` — style (pydantic
+- :func:`invoke_style_agent_step` — style (pydantic
   :class:`StyleComments`).
 
-Helpers:
+Each step reconnects to the shared E2B sandbox by id, builds its
+own chat model and deep-agent (with the shared ``get_diff`` tool),
+runs it via the :func:`invoke_<name>_agent` wrappers (which
+translate any failure into the per-lane error class with a
+``retryable`` flag), and returns ``(result, usage)``. Steps are
+started concurrently from the workflow body with
+``asyncio.gather(..., return_exceptions=True)`` — the documented
+DBOS parallel-steps pattern — and a transient failure (429 / 5xx /
+timeout) retries **that lane alone** (``max_attempts=3``,
+``backoff_rate=2``) instead of re-running all four agents.
 
-- :func:`_capture_review_agents_error_to_sentry` — pushes an
-  aggregate :class:`ReviewAgentsInvocationError` to Sentry with the
-  full run context as tags and extras.
+:func:`combine_agent_outcomes` then partitions the four results:
+
+- all four lanes failed → raises
+  :class:`app.services.review.errors.ReviewAgentsInvocationError`
+  (pushed to Sentry with the full run context before raising);
+- partial failure → failed lanes degrade to empty defaults (``""``
+  summary / empty comment lists) with a warning log and the review
+  completes with the successful lanes' output.
+
+The invoke steps never stop the sandbox: four concurrent steps
+share one sandbox, so only the workflow's ``finally``
+:func:`app.services.review.steps.stop_sandbox.stop_sandbox_step`
+stops it.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -43,8 +51,9 @@ import sentry_sdk
 from dbos import DBOS
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import UsageMetadata
+from langchain_e2b import AsyncE2BSandbox
 
-from app.core.llm import LLMConfig
+from app.core.llm import LLMConfig, build_chat_model
 from app.core.sandbox.e2b import E2BSandbox
 from app.services.agent.models import (
     CorrectnessComments,
@@ -56,9 +65,11 @@ from app.services.agent.models import (
 from app.services.review._internal import _SHOULD_RETRY_AGENT, _e2b_spec
 from app.services.review.agent import (
     assemble_user_prompt,
-    build_review_agents,
+    build_correctness_agent,
+    build_security_agent,
+    build_style_agent,
+    build_summary_agent,
     combine_review_results,
-    create_review_llm_models,
 )
 from app.services.review.errors import (
     AgentInvocationError,
@@ -72,6 +83,7 @@ from app.services.review.errors import (
     SummaryAgentInvocationError,
     is_llm_retry_error,
 )
+from app.services.review.tools import make_get_diff_tool
 from app.services.review.types import DeepAgentGraph
 from app.services.review.workflow_types import (
     InputTokenDetails,
@@ -87,13 +99,13 @@ log = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 
-def _summary_extractor(result: Any) -> str:
+def _summary_extractor(result: Any) -> SummaryResult:
     """Validate the summarizer's ``structured_response`` payload.
 
     Returns the markdown block from the ``summary`` field. Mirrors the
     structured extractors of the three severity specialists.
     """
-    return SummaryResult.model_validate(result["structured_response"]).summary
+    return SummaryResult.model_validate(result["structured_response"])
 
 
 def _security_extractor(result: Any) -> SecurityComments:
@@ -160,7 +172,7 @@ async def _call_with_error_wrapping(
 
 async def invoke_summary_agent(
     agent: DeepAgentGraph, prompt_payload: dict[str, Any]
-) -> tuple[str, dict[str, UsageMetadata]]:
+) -> tuple[SummaryResult, dict[str, UsageMetadata]]:
     """Run the summarizer subagent; on failure raise
     :class:`SummaryAgentInvocationError`."""
     return await _call_with_error_wrapping(
@@ -211,72 +223,22 @@ async def invoke_style_agent(
 
 
 # --------------------------------------------------------------------------- #
-# Parallel-fanout step (active)                                                  #
+# Shared step helpers                                                           #
 # --------------------------------------------------------------------------- #
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=2,
-    should_retry=_SHOULD_RETRY_AGENT,
-    backoff_rate=2,
-)
-async def invoke_review_agents_step(
+async def _connect_sandbox(
     *,
     sandbox_id: str,
     sandbox_name: str,
     repo_id: str,
-    repo_name: str,
     user_id: str,
-    pr_number: int,
-    head_sha: str,
-    llm_config: LLMConfig,
-) -> tuple[ReviewResult, TotalUsagesPerPR]:
-    """Durable step: run the four review agents in parallel and combine.
-
-    The fan-out:
-
-    1. Reconnects to the E2B sandbox (one connection for the step).
-    2. Builds the chat model and the four review agents (summary,
-       security, correctness, style) — all sharing the same
-       ``AsyncE2BSandbox`` backend and the same shared tool
-       (``get_diff``). Comment-line validation is prompt-driven: each
-       specialist reads ``diff.json`` (the hunk map written by
-       :func:`app.services.review.diff.parse_and_write_diff_json`) and
-       self-checks / re-anchors its draft anchors before emitting them.
-    3. Each subagent runs in its own :func:`invoke_<name>_agent`
-       wrapper. The wrapper translates any exception (LLM crash, rate
-       limit, or unparseable output) into the per-subagent error class
-       (``SummaryAgentInvocationError`` etc.) with a ``retryable``
-       flag set from :func:`is_llm_retry_error`.
-    4. ``asyncio.gather(..., return_exceptions=True)`` runs all four
-       wrappers concurrently. Failures are partitioned into
-       ``failed_agents``; successes are passed to
-       :func:`combine_review_results`.
-    5. When any subagent fails, the step raises
-       :class:`ReviewAgentsInvocationError` carrying the full run
-       context (user, repo, pr, head_sha, LLM provider/model/base URL,
-       workflow id, failed-agent list, succeeded-agent list, and the
-       UTC timestamp of the failure). The exception is also pushed to
-       Sentry before being raised, with the same fields attached as
-       tags and extras so production dashboards can attribute the
-       failure without cross-referencing logs.
-
-    The whole step is a single DBOS checkpoint: a crash mid-fan-out
-    resumes from the cached result, so transient failures don't re-run
-    the LLM. The sandbox is stopped in a ``finally`` so a parse /
-    combine failure does not leak the connection.
-
-    Raises:
-        SandboxConnectError: reconnect to E2B failed. Transient —
-            DBOS retries.
-        ReviewAgentsInvocationError: one or more subagents failed.
-            Retried by DBOS when any failing subagent has
-            ``retryable=True``; otherwise final.
-    """
+) -> E2BSandbox:
+    """Reconnect to the E2B sandbox by id; wrap failures as
+    :class:`SandboxConnectError` so the step's ``should_retry`` retries."""
     spec = _e2b_spec()
     try:
-        sandbox = await E2BSandbox.connect(
+        return await E2BSandbox.connect(
             sandbox_id=sandbox_id,
             sandbox_name=sandbox_name,
             repo_id=repo_id,
@@ -293,141 +255,397 @@ async def invoke_review_agents_step(
             cause=f"failed to reconnect sandbox for agents: {type(exc).__name__}: {exc}",
         ) from exc
 
-    try:
-        # create review models
 
-        review_models = create_review_llm_models(llm_config=llm_config)
+def _build_prompt_payload(
+    *,
+    repo_name: str,
+    repo_id: str,
+    user_id: str,
+    pr_number: int,
+) -> dict[str, Any]:
+    """Build the user message payload sent to every review agent."""
+    user_prompt = assemble_user_prompt(
+        repo_name=repo_name,
+        repo_id=repo_id,
+        user_id=user_id,
+        pr_number=pr_number,
+    )
+    return {"messages": [{"role": "user", "content": user_prompt}]}
 
-        (
-            summary_agent,
-            security_agent,
-            correctness_agent,
-            style_agent,
-        ) = build_review_agents(
-            sandbox=sandbox,
-            pr_number=pr_number,
-            head_sha=head_sha,
-            models=review_models,
-        )
 
-        user_prompt = assemble_user_prompt(
-            repo_name=repo_name,
-            repo_id=repo_id,
-            user_id=user_id,
-            pr_number=pr_number,
-        )
+# --------------------------------------------------------------------------- #
+# Per-lane agent steps (run in parallel from the workflow body)                #
+# --------------------------------------------------------------------------- #
 
-        prompt_payload = {"messages": [{"role": "user", "content": user_prompt}]}
 
-        log.info(
-            "invoking review agents (parallel): repo=%s user=%s pr_number=%s",
-            repo_name,
-            user_id,
-            pr_number,
-        )
+@DBOS.step(
+    retries_allowed=True,
+    max_attempts=3,
+    should_retry=_SHOULD_RETRY_AGENT,
+    backoff_rate=2,
+)
+async def invoke_summary_agent_step(
+    *,
+    sandbox_id: str,
+    sandbox_name: str,
+    repo_id: str,
+    repo_name: str,
+    user_id: str,
+    pr_number: int,
+    head_sha: str,
+    llm_config: LLMConfig,
+) -> tuple[str, dict[str, UsageMetadata]]:
+    """Durable step: run the summarizer lane and return ``(markdown, usage)``.
 
-        results = await asyncio.gather(
-            invoke_summary_agent(summary_agent, prompt_payload),
-            invoke_security_agent(security_agent, prompt_payload),
-            invoke_correctness_agent(correctness_agent, prompt_payload),
-            invoke_style_agent(style_agent, prompt_payload),
-            return_exceptions=True,
-        )
+    Reconnects to the E2B sandbox by id, builds the summarizer
+    deep-agent (own chat model + ``get_diff`` tool), and runs it via
+    :func:`invoke_summary_agent`. Transient failures retry this lane
+    alone. The sandbox is never stopped here — the workflow's
+    ``finally`` owns the stop.
+    """
+    sandbox = await _connect_sandbox(
+        sandbox_id=sandbox_id,
+        sandbox_name=sandbox_name,
+        repo_id=repo_id,
+        user_id=user_id,
+    )
+    model = build_chat_model(config=llm_config)
+    backend = AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
+    agent = build_summary_agent(
+        model=model,
+        backend=backend,
+        tools=[
+            make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha)
+        ],
+    )
+    prompt_payload = _build_prompt_payload(
+        repo_name=repo_name,
+        repo_id=repo_id,
+        user_id=user_id,
+        pr_number=pr_number,
+    )
 
-        summary_value, security_value, correctness_value, style_value = results
+    log.info(
+        "invoking summarizer agent step: repo=%s user=%s pr_number=%s",
+        repo_name,
+        user_id,
+        pr_number,
+    )
 
-        successes: dict[str, Any] = {}
-        failures: list[AgentInvocationError] = []
+    summary, usage = await invoke_summary_agent(agent, prompt_payload)
+    return summary.summary, usage
 
-        total_usages_per_pr = TotalUsagesPerPR(
-            pr_number=pr_number,
-            head_sha=head_sha,
-            repo_id=repo_id,
-            user_id=user_id,
-            usages={},
-        )
 
-        for agent_name, value in (
-            ("summarizer", summary_value),
-            ("security", security_value),
-            ("correctness", correctness_value),
-            ("style", style_value),
-        ):
-            if isinstance(value, AgentInvocationError):
-                failures.append(value)
-            elif isinstance(value, BaseException):
-                # Defensive: the wrappers only raise AgentInvocationError
-                # subclasses, so anything else here is a programming bug.
-                # Re-raise as a non-retryable step error so DBOS marks the
-                # workflow as ERROR without retrying.
+@DBOS.step(
+    retries_allowed=True,
+    max_attempts=3,
+    should_retry=_SHOULD_RETRY_AGENT,
+    backoff_rate=2,
+)
+async def invoke_security_agent_step(
+    *,
+    sandbox_id: str,
+    sandbox_name: str,
+    repo_id: str,
+    repo_name: str,
+    user_id: str,
+    pr_number: int,
+    head_sha: str,
+    llm_config: LLMConfig,
+) -> tuple[SecurityComments, dict[str, UsageMetadata]]:
+    """Durable step: run the security lane and return
+    ``(SecurityComments, usage)``. Same semantics as
+    :func:`invoke_summary_agent_step`.
+    """
+    sandbox = await _connect_sandbox(
+        sandbox_id=sandbox_id,
+        sandbox_name=sandbox_name,
+        repo_id=repo_id,
+        user_id=user_id,
+    )
+    model = build_chat_model(config=llm_config)
+    backend = AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
+    agent = build_security_agent(
+        model=model,
+        backend=backend,
+        tools=[
+            make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha)
+        ],
+    )
+    prompt_payload = _build_prompt_payload(
+        repo_name=repo_name,
+        repo_id=repo_id,
+        user_id=user_id,
+        pr_number=pr_number,
+    )
 
-                log.exception(
-                    "review agents step saw unexpected exception type from "
-                    "subagent wrapper: name=%s exc_type=%s",
-                    agent_name,
-                    type(value).__name__,
-                )
-                raise ReviewAgentCrashedError(
-                    cause=f"{type(value).__name__}: {value}"
-                ) from value
-            else:
-                agent_result, agent_usage = value
-                successes[agent_name] = agent_result
+    log.info(
+        "invoking security agent step: repo=%s user=%s pr_number=%s",
+        repo_name,
+        user_id,
+        pr_number,
+    )
+    return await invoke_security_agent(agent, prompt_payload)
 
-                for model_name, usage in agent_usage.items():
-                    bucket = total_usages_per_pr["usages"].setdefault(
-                        model_name,
-                        TotalUsages(
-                            input_tokens=0,
-                            output_tokens=0,
-                            total_tokens=0,
-                            input_token_details=InputTokenDetails(
-                                cache_read=0,
-                                cache_creation=0,
-                            ),
-                        ),
-                    )
-                    bucket["input_tokens"] += usage.get("input_tokens", 0)
-                    bucket["output_tokens"] += usage.get("output_tokens", 0)
-                    bucket["total_tokens"] += usage.get("total_tokens", 0)
-                    details = usage.get("input_token_details") or {}
-                    prev_cache_read = bucket["input_token_details"].get("cache_read")
-                    prev_cache_creation = bucket["input_token_details"].get(
-                        "cache_creation"
-                    )
-                    bucket["input_token_details"]["cache_read"] = (
-                        prev_cache_read if prev_cache_read is not None else 0
-                    ) + (details.get("cache_read") or 0)
-                    bucket["input_token_details"]["cache_creation"] = (
-                        prev_cache_creation if prev_cache_creation is not None else 0
-                    ) + (details.get("cache_creation") or 0)
 
-        if failures:
-            err = ReviewAgentsInvocationError(
-                user_id=user_id,
-                repo_id=repo_id,
-                pr_number=pr_number,
-                head_sha=head_sha,
-                llm_config=llm_config,
-                workflow_id=DBOS.workflow_id or "<no-workflow-id>",
-                failed_agents=failures,
-                succeeded_agents=list(successes.keys()),
-                occurred_at=datetime.now(timezone.utc),
+@DBOS.step(
+    retries_allowed=True,
+    max_attempts=3,
+    should_retry=_SHOULD_RETRY_AGENT,
+    backoff_rate=2,
+)
+async def invoke_correctness_agent_step(
+    *,
+    sandbox_id: str,
+    sandbox_name: str,
+    repo_id: str,
+    repo_name: str,
+    user_id: str,
+    pr_number: int,
+    head_sha: str,
+    llm_config: LLMConfig,
+) -> tuple[CorrectnessComments, dict[str, UsageMetadata]]:
+    """Durable step: run the correctness lane and return
+    ``(CorrectnessComments, usage)``. Same semantics as
+    :func:`invoke_summary_agent_step`.
+    """
+    sandbox = await _connect_sandbox(
+        sandbox_id=sandbox_id,
+        sandbox_name=sandbox_name,
+        repo_id=repo_id,
+        user_id=user_id,
+    )
+    model = build_chat_model(config=llm_config)
+    backend = AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
+    agent = build_correctness_agent(
+        model=model,
+        backend=backend,
+        tools=[
+            make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha)
+        ],
+    )
+    prompt_payload = _build_prompt_payload(
+        repo_name=repo_name,
+        repo_id=repo_id,
+        user_id=user_id,
+        pr_number=pr_number,
+    )
+
+    log.info(
+        "invoking correctness agent step: repo=%s user=%s pr_number=%s",
+        repo_name,
+        user_id,
+        pr_number,
+    )
+    return await invoke_correctness_agent(agent, prompt_payload)
+
+
+@DBOS.step(
+    retries_allowed=True,
+    max_attempts=3,
+    should_retry=_SHOULD_RETRY_AGENT,
+    backoff_rate=2,
+)
+async def invoke_style_agent_step(
+    *,
+    sandbox_id: str,
+    sandbox_name: str,
+    repo_id: str,
+    repo_name: str,
+    user_id: str,
+    pr_number: int,
+    head_sha: str,
+    llm_config: LLMConfig,
+) -> tuple[StyleComments, dict[str, UsageMetadata]]:
+    """Durable step: run the style lane and return ``(StyleComments, usage)``.
+
+    Same semantics as :func:`invoke_summary_agent_step`.
+    """
+    sandbox = await _connect_sandbox(
+        sandbox_id=sandbox_id,
+        sandbox_name=sandbox_name,
+        repo_id=repo_id,
+        user_id=user_id,
+    )
+    model = build_chat_model(config=llm_config)
+    backend = AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
+    agent = build_style_agent(
+        model=model,
+        backend=backend,
+        tools=[
+            make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha)
+        ],
+    )
+    prompt_payload = _build_prompt_payload(
+        repo_name=repo_name,
+        repo_id=repo_id,
+        user_id=user_id,
+        pr_number=pr_number,
+    )
+
+    log.info(
+        "invoking style agent step: repo=%s user=%s pr_number=%s",
+        repo_name,
+        user_id,
+        pr_number,
+    )
+    return await invoke_style_agent(agent, prompt_payload)
+
+
+# --------------------------------------------------------------------------- #
+# Outcome combination (pure)                                                   #
+# --------------------------------------------------------------------------- #
+
+AGENT_LANES: tuple[str, ...] = ("summarizer", "security", "correctness", "style")
+"""The four lane names, in the deterministic gather order."""
+
+# Defaults for failed lanes: an empty summary string and empty comment
+# lists. The summary column is non-null, so an empty string is valid;
+# the review body then carries no summary text for that run.
+_DEFAULT_SUMMARY: str = ""
+_DEFAULT_COMMENT_LANES: dict[
+    str, type[SecurityComments | CorrectnessComments | StyleComments]
+] = {
+    "security": SecurityComments,
+    "correctness": CorrectnessComments,
+    "style": StyleComments,
+}
+
+
+def combine_agent_outcomes(
+    results: Sequence[Any],
+    *,
+    pr_number: int,
+    head_sha: str,
+    repo_id: str,
+    user_id: str,
+    llm_config: LLMConfig,
+    workflow_id: str,
+) -> tuple[ReviewResult, TotalUsagesPerPR]:
+    """Partition the four gather results and combine them into a review.
+
+    ``results`` holds the four :func:`asyncio.gather` outcomes in the
+    deterministic order of :data:`AGENT_LANES` (the order the steps
+    were started in). Each entry is either ``(result, usage)`` from a
+    successful lane, a per-lane :class:`AgentInvocationError`, or —
+    defensively — any other ``BaseException``.
+
+    Behaviour:
+
+    - All four lanes failed → raises
+      :class:`ReviewAgentsInvocationError` (captured to Sentry first).
+      Each lane already exhausted its own step retries by now, so the
+      workflow is marked ERROR.
+    - Partial failure → failed lanes degrade to empty defaults
+      (``""`` summary / ``*Comments(List=[])``), a warning is logged
+      per failed lane (name, cause, retryable), and the review is
+      built from the successful lanes.
+    - Unexpected ``BaseException`` (programming bug) → raises
+      :class:`ReviewAgentCrashedError`.
+
+    Token usage is aggregated from the successful lanes only.
+    """
+    successes: dict[str, Any] = {}
+    failures: list[AgentInvocationError] = []
+
+    total_usages_per_pr = TotalUsagesPerPR(
+        pr_number=pr_number,
+        head_sha=head_sha,
+        repo_id=repo_id,
+        user_id=user_id,
+        usages={},
+    )
+
+    for agent_name, value in zip(AGENT_LANES, results):
+        if isinstance(value, AgentInvocationError):
+            failures.append(value)
+        elif isinstance(value, BaseException):
+            # Defensive: the wrappers only raise AgentInvocationError
+            # subclasses, so anything else here is a programming bug.
+            # Re-raise as a non-retryable error so DBOS marks the
+            # workflow as ERROR without retrying.
+            log.exception(
+                "review agents saw unexpected exception type from "
+                "subagent wrapper: name=%s exc_type=%s",
+                agent_name,
+                type(value).__name__,
             )
-            _capture_review_agents_error_to_sentry(err)
-            raise err
+            raise ReviewAgentCrashedError(
+                cause=f"{type(value).__name__}: {value}"
+            ) from value
+        else:
+            agent_result, agent_usage = value
+            successes[agent_name] = agent_result
 
-        return combine_review_results(
+            for model_name, usage in agent_usage.items():
+                bucket = total_usages_per_pr["usages"].setdefault(
+                    model_name,
+                    TotalUsages(
+                        input_tokens=0,
+                        output_tokens=0,
+                        total_tokens=0,
+                        input_token_details=InputTokenDetails(
+                            cache_read=0,
+                            cache_creation=0,
+                        ),
+                    ),
+                )
+                bucket["input_tokens"] += usage.get("input_tokens", 0)
+                bucket["output_tokens"] += usage.get("output_tokens", 0)
+                bucket["total_tokens"] += usage.get("total_tokens", 0)
+                details = usage.get("input_token_details") or {}
+                prev_cache_read = bucket["input_token_details"].get("cache_read")
+                prev_cache_creation = bucket["input_token_details"].get(
+                    "cache_creation"
+                )
+                bucket["input_token_details"]["cache_read"] = (
+                    prev_cache_read if prev_cache_read is not None else 0
+                ) + (details.get("cache_read") or 0)
+                bucket["input_token_details"]["cache_creation"] = (
+                    prev_cache_creation if prev_cache_creation is not None else 0
+                ) + (details.get("cache_creation") or 0)
+
+    if len(failures) == 4:
+        err = ReviewAgentsInvocationError(
+            user_id=user_id,
+            repo_id=repo_id,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            llm_config=llm_config,
+            workflow_id=workflow_id,
+            failed_agents=failures,
+            succeeded_agents=list(successes.keys()),
+            occurred_at=datetime.now(timezone.utc),
+        )
+        _capture_review_agents_error_to_sentry(err)
+        raise err
+
+    if failures:
+        for failed in failures:
+            log.warning(
+                "review agents partial failure: lane=%s retryable=%s cause=%r "
+                "pr_number=%s head_sha=%s",
+                failed.name,
+                failed.retryable,
+                failed.cause_exception,
+                pr_number,
+                head_sha[:7],
+            )
+        if "summarizer" not in successes:
+            successes["summarizer"] = _DEFAULT_SUMMARY
+        for lane, model_cls in _DEFAULT_COMMENT_LANES.items():
+            if lane not in successes:
+                successes[lane] = model_cls(List=[])
+
+    return (
+        combine_review_results(
             summary_markdown=successes["summarizer"],
             security=successes["security"],
             correctness=successes["correctness"],
             style=successes["style"],
-        ), total_usages_per_pr
-    finally:
-        try:
-            await sandbox.stop()
-        except Exception:
-            log.exception("failed to stop sandbox after agent invocation")
+        ),
+        total_usages_per_pr,
+    )
 
 
 def _capture_review_agents_error_to_sentry(
@@ -480,9 +698,14 @@ def _capture_review_agents_error_to_sentry(
 
 
 __all__ = [
+    "AGENT_LANES",
+    "combine_agent_outcomes",
     "invoke_correctness_agent",
-    "invoke_review_agents_step",
+    "invoke_correctness_agent_step",
     "invoke_security_agent",
+    "invoke_security_agent_step",
     "invoke_style_agent",
+    "invoke_style_agent_step",
     "invoke_summary_agent",
+    "invoke_summary_agent_step",
 ]

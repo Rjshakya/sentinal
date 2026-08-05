@@ -283,7 +283,8 @@ them on `SQLModel.metadata`.
   - `tools.py` — `make_get_diff_tool` (the shared sandbox `get_diff` tool).
   - `agent.py` — agent factories. Two parallel designs: the **active
     parallel** path (`build_review_agents` + `create_review_llm_models`,
-    consumed by `invoke_review_agents_step`) and the **orchestrator**
+    consumed by the per-lane `invoke_*_agent_step` steps) and the
+    **orchestrator**
     design (`build_review_subagents` + `build_orchestrator_agent`,
     SubAgent TypedDicts; present in the module but not yet wired into the
     workflow). Also `combine_review_results` and the pure
@@ -294,7 +295,8 @@ them on `SQLModel.metadata`.
     DBOS-wrapped variant: `resolve_repo`/`resolve_repo_tx`,
     `resolve_sandbox`/`resolve_sandbox_step`, `fetch_diff_step`,
     `parse_diff_step`, `upsert_pr`/`upsert_pull_request_tx`,
-    `invoke_agent` (the parallel fan-out), `persist_summary`/
+    `invoke_agent` (the four parallel agent steps + `combine_agent_outcomes`),
+    `persist_summary`/
     `persist_review_summary_tx`, `persist_comments`/
     `persist_code_comments_tx`, `persist_usage`/`persist_review_usage_tx`,
     `stop_sandbox_step`.
@@ -513,17 +515,25 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
    `diff.json` alongside it. The `HunkMap` is the source of truth for which
    `(file, line, side)` anchors GitHub will accept.
 5. `upsert_pull_request_tx` — insert/update the `PullRequest` row.
-6. `invoke_review_agents_step` — the **parallel four-agent fan-out**
-   (`@DBOS.step`, `retries_allowed=True`, `max_attempts=2`, retry predicate
-   `_SHOULD_RETRY_AGENT`): reconnects the sandbox, builds four chat models
-   + four deep-agents (`summarizer` / `security` / `correctness` / `style`)
-   sharing one `AsyncE2BSandbox` backend and the `get_diff` tool, runs them
-   concurrently via `asyncio.gather(return_exceptions=True)`, wraps each
-   failure in its per-agent error class with a `retryable` flag, aggregates
-   token usage per model, and raises `ReviewAgentsInvocationError` (pushed
-   to Sentry with run context) when any subagent failed. The step is a
-   single DBOS checkpoint; a crash mid-fan-out resumes from the cached
-   result.
+6. `invoke_summary_agent_step` / `invoke_security_agent_step` /
+   `invoke_correctness_agent_step` / `invoke_style_agent_step` — the
+   **four parallel agent steps**, started concurrently from the workflow
+   body via `asyncio.gather(return_exceptions=True)` (the documented DBOS
+   parallel-steps pattern; deterministic start order). Each
+   (`@DBOS.step`, `retries_allowed=True`, `max_attempts=3`,
+   `backoff_rate=2`, retry predicate `_SHOULD_RETRY_AGENT`) reconnects to
+   the shared E2B sandbox by id, builds its own chat model + deep-agent
+   (`summarizer` / `security` / `correctness` / `style`, each with the
+   `get_diff` tool), runs it, wraps failures in the per-lane error class
+   with a `retryable` flag, and returns `(result, usage)`. A transient
+   failure retries **that lane alone**; the invoke steps never stop the
+   sandbox (the workflow's `finally` owns the stop). `combine_agent_outcomes`
+   then partitions the four results: all four failed → raises
+   `ReviewAgentsInvocationError` (pushed to Sentry with run context);
+   partial → failed lanes degrade to empty defaults (`""` summary / empty
+   comment lists) with a warning log, and the review completes with the
+   successful lanes' output; token usage is aggregated per model from
+   successful lanes only.
 7. `filter_drafts(review, hunk_map)` — pure server-side backstop that drops
    any draft whose anchor is not in the `HunkMap`.
 8. `persist_review_summary_tx` + `persist_code_comments_tx` — one
@@ -533,7 +543,7 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
 10. `stop_sandbox_step` — always, in a `finally`.
 
 The summary in `review_summaries.summary` is the `summarizer` subagent's
-markdown output (extracted from its last AI message), and the verdict is
+markdown output (from its `SummaryResult` structured response), and the verdict is
 recomputed deterministically in code by `verdict_for()` from the merged
 severities (any P1 → `REQUEST_CHANGES`, else any P2/P3 → `COMMENT`, else
 `APPROVE`).
@@ -576,7 +586,7 @@ the PR's diff. Three layers guard this:
 The API emits all logs as JSON (`configure_structured_logging()` replaces
 the root formatter with `JsonFormatter`). Failures in the review path are
 logged via `structured_log` and pushed to Sentry when `SENTRY_DSN` is set:
-`invoke_review_agents_step` captures `ReviewAgentsInvocationError` with the
+`combine_agent_outcomes` captures `ReviewAgentsInvocationError` with the
 full run context (PR, SHAs, user, LLM provider/model, failed/succeeded
 agents, workflow id) as tags and extras. When `LLM_LOG_IO` is enabled, every
 LLM call from the review agents emits `llm_call_started` /

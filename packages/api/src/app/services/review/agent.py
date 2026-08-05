@@ -4,21 +4,23 @@ This module owns two parallel agent designs:
 
 - **Legacy (deprecated).** :func:`build_review_agents` returns four
   independent ``create_deep_agent`` instances (summary / security /
-  correctness / style). The workflow's old
-  :func:`app.services.review.steps.invoke_review_agents_step`
-  (plural) runs them in parallel via ``asyncio.gather`` and combines
-  the results with :func:`combine_review_results`. Kept as a
-  revert path; the new workflow calls the singular step instead.
+  correctness / style). The workflow's per-lane steps
+  (:func:`app.services.review.steps.invoke_agent.invoke_*_agent_step`)
+  run them in parallel and combine the results with
+  :func:`combine_review_results`. Kept as a revert path; the active
+  path builds each lane agent directly via the per-lane factories
+  below (:func:`build_summary_agent` etc.).
 
 - **New (production).** :func:`build_review_subagents` returns four
   ``SubAgent`` specs (TypedDicts); :func:`build_orchestrator_agent`
   returns one root deep-agent whose ``subagents=`` is the list from
-  the first call. The new step
-  :func:`app.services.review.steps.invoke_review_agent_step`
-  (singular) ``ainvoke``s the orchestrator once. The orchestrator
-  coordinates the four subagents, absorbs their failures, and emits a
-  single :class:`ReviewResult`. The verdict field is recomputed
-  deterministically in code from the merged comments.
+  the first call. The orchestrator would ``ainvoke`` the four
+  subagents once, absorb their failures, and emit a single
+  :class:`ReviewResult`. The verdict field is recomputed
+  deterministically in code from the merged comments. Not yet wired
+  into the workflow — the active path is the per-lane
+  ``invoke_*_agent_step`` steps in
+  :mod:`app.services.review.steps.invoke_agent`.
 
 Each chat model (one per subagent + the orchestrator) gets its own
 :func:`app.core.llm_callbacks.make_llm_io_handler` so the log
@@ -311,8 +313,8 @@ def build_review_agents(
 
     ``repo_id`` and ``repo_name`` are required for the handler's
     correlation context; ``workflow_id`` is optional and is filled in
-    by :func:`app.services.review.steps.invoke_review_agents_step`
-    from ``DBOS.workflow_id``.
+    by the per-lane steps in
+    :mod:`app.services.review.steps.invoke_agent`.
     """
     backend = _build_backend(sandbox)
     tools = _build_shared_tools(
@@ -343,10 +345,10 @@ def build_review_agents(
 # New design: orchestrator + subagents                                          #
 # --------------------------------------------------------------------------- #
 #
-# These factories back the new ``invoke_review_agent_step`` (singular).
-# They are deliberately separate from the legacy
-# ``build_review_agents`` above so the old step keeps working as a
-# revert path.
+# These factories back the orchestrator design (a single root deep-agent
+# coordinating the four subagents). They are not yet wired into the
+# workflow — the active path is the per-lane ``invoke_*_agent_step``
+# steps in :mod:`app.services.review.steps.invoke_agent`.
 
 
 def build_review_subagents(
@@ -455,9 +457,9 @@ def build_orchestrator_agent(
     its LLM is told in :data:`ORCHESTRATOR_SYSTEM_PROMPT` to assemble
     the four subagent outputs (three structured comment lists plus
     the summary markdown) into a single ``ReviewResult``. The verdict
-    field is overwritten in code by the workflow step
-    :func:`app.services.review.steps.invoke_review_agent_step`,
-    so whatever the LLM puts there is discarded.
+    field is overwritten in code by
+    :func:`combine_review_results` / :func:`verdict_for` wherever this
+    design is consumed, so whatever the LLM puts there is discarded.
 
     Failure handling: the orchestrator is told to absorb subagent
     failures (its tool result is an error message) by substituting

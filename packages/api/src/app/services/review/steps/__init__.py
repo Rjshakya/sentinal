@@ -15,7 +15,8 @@ Modules:
 - :mod:`.fetch_diff`          — write the unified diff into the sandbox.
 - :mod:`.parse_diff`          — parse the diff, write ``diff.json``.
 - :mod:`.upsert_pr`           — insert / update the :class:`PullRequest` row.
-- :mod:`.invoke_agent`        — run the review agents (parallel fan-out).
+- :mod:`.invoke_agent`        — run the four review agents as four
+  parallel durable steps; combine their outcomes.
 - :mod:`.persist_summary`     — insert the :class:`ReviewSummary` row.
 - :mod:`.persist_comments`    — insert the :class:`CodeComment` rows.
 - :mod:`.persist_usage`       — insert the :class:`ReviewUsage` row.
@@ -26,11 +27,15 @@ from __future__ import annotations
 
 from app.services.review.steps.fetch_diff import fetch_diff_step
 from app.services.review.steps.invoke_agent import (
+    combine_agent_outcomes,
     invoke_correctness_agent,
-    invoke_review_agents_step,
+    invoke_correctness_agent_step,
     invoke_security_agent,
+    invoke_security_agent_step,
     invoke_style_agent,
+    invoke_style_agent_step,
     invoke_summary_agent,
+    invoke_summary_agent_step,
 )
 from app.services.review.steps.parse_diff import parse_diff_step
 from app.services.review.steps.persist_comments import (
@@ -58,12 +63,16 @@ from app.services.review.steps.upsert_pr import (
 )
 
 __all__ = [
+    "combine_agent_outcomes",
     "fetch_diff_step",
     "invoke_correctness_agent",
-    "invoke_review_agents_step",
+    "invoke_correctness_agent_step",
     "invoke_security_agent",
+    "invoke_security_agent_step",
     "invoke_style_agent",
+    "invoke_style_agent_step",
     "invoke_summary_agent",
+    "invoke_summary_agent_step",
     "parse_diff_step",
     "persist_code_comments",
     "persist_code_comments_tx",

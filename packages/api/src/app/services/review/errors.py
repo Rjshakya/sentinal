@@ -259,13 +259,13 @@ SubagentInvocationError: TypeAlias = (
 
 
 class ReviewAgentsInvocationError(StepError):
-    """One or more subagents failed during parallel fan-out.
+    """All four agent lanes failed during the parallel fan-out.
 
     Raised from
-    :func:`app.services.review.steps.invoke_agent.invoke_review_agents_step`
-    after :func:`asyncio.gather` partitions successes from failures.
-    Each per-subagent error is preserved in :attr:`failed_agents`; the
-    aggregate carries the full run context (user, repo, pr, head_sha,
+    :func:`app.services.review.steps.invoke_agent.combine_agent_outcomes`
+    (from the workflow body) after each lane's own step retries are
+    exhausted. Each per-lane error is preserved in :attr:`failed_agents`;
+    the aggregate carries the full run context (user, repo, pr, head_sha,
     LLM provider/model/base URL, workflow id, and the UTC timestamp of
     the failure) so production dashboards have everything needed to
     attribute a failure without cross-referencing logs.

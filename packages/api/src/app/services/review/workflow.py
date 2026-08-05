@@ -32,6 +32,7 @@ Design notes:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from dbos import DBOS, SetWorkflowID
@@ -50,7 +51,13 @@ from app.services.review.steps import (
     stop_sandbox_step,
     upsert_pull_request_tx,
 )
-from app.services.review.steps.invoke_agent import invoke_review_agents_step
+from app.services.review.steps.invoke_agent import (
+    combine_agent_outcomes,
+    invoke_correctness_agent_step,
+    invoke_security_agent_step,
+    invoke_style_agent_step,
+    invoke_summary_agent_step,
+)
 from app.services.review.steps.persist_usage import sum_total_usages
 from app.services.review.workflow_types import (
     PostReviewInput,
@@ -125,18 +132,59 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             status=input.status,
         )
 
-        review_result = await invoke_review_agents_step(
-            sandbox_id=sandbox.sandbox_id,
-            sandbox_name=sandbox.sandbox_name,
-            repo_id=repo.id,
-            repo_name=repo.repo_name,
-            user_id=input.user_id,
-            pr_number=input.pr_number,
-            head_sha=input.head_sha,
-            llm_config=input.llm_config,
+        agent_results = await asyncio.gather(
+            invoke_summary_agent_step(
+                sandbox_id=sandbox.sandbox_id,
+                sandbox_name=sandbox.sandbox_name,
+                repo_id=repo.id,
+                repo_name=repo.repo_name,
+                user_id=input.user_id,
+                pr_number=input.pr_number,
+                head_sha=input.head_sha,
+                llm_config=input.llm_config,
+            ),
+            invoke_security_agent_step(
+                sandbox_id=sandbox.sandbox_id,
+                sandbox_name=sandbox.sandbox_name,
+                repo_id=repo.id,
+                repo_name=repo.repo_name,
+                user_id=input.user_id,
+                pr_number=input.pr_number,
+                head_sha=input.head_sha,
+                llm_config=input.llm_config,
+            ),
+            invoke_correctness_agent_step(
+                sandbox_id=sandbox.sandbox_id,
+                sandbox_name=sandbox.sandbox_name,
+                repo_id=repo.id,
+                repo_name=repo.repo_name,
+                user_id=input.user_id,
+                pr_number=input.pr_number,
+                head_sha=input.head_sha,
+                llm_config=input.llm_config,
+            ),
+            invoke_style_agent_step(
+                sandbox_id=sandbox.sandbox_id,
+                sandbox_name=sandbox.sandbox_name,
+                repo_id=repo.id,
+                repo_name=repo.repo_name,
+                user_id=input.user_id,
+                pr_number=input.pr_number,
+                head_sha=input.head_sha,
+                llm_config=input.llm_config,
+            ),
+            return_exceptions=True,
         )
 
-        review, usages = review_result
+        review, usages = combine_agent_outcomes(
+            agent_results,
+            pr_number=input.pr_number,
+            head_sha=input.head_sha,
+            repo_id=repo.id,
+            user_id=input.user_id,
+            llm_config=input.llm_config,
+            workflow_id=DBOS.workflow_id or "<no-workflow-id>",
+        )
 
         filtered_review = filter_drafts(review, hunk_map)
 
@@ -199,16 +247,6 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             commit_id=input.head_sha,
             review=filtered_review,
             usages=usages,
-        )
-
-    except Exception as exc:
-        log.info(
-            "exception occured in workflow pr_id:%s repo_id:%s head_sha:%s user_id:%s error:%s ",
-            input.pr_id,
-            input.gh_repo_id,
-            input.head_sha,
-            input.user_id,
-            exc,
         )
 
     finally:
