@@ -65,6 +65,15 @@ class StyleComments(BaseModel):
     )
 
 
+class SummaryResult(BaseModel):
+    """The PR summary the summarizer agent must return."""
+
+    summary: str = Field(
+        description="The PR review summary markdown block: title, intro, "
+        "highlights, files-changed table.",
+    )
+
+
 class ReviewResult(BaseModel):
     """The full review payload the agent must return."""
 

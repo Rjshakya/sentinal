@@ -136,17 +136,6 @@ class ReviewAgentRateLimitedError(TransientStepError):
         super().__init__(cause)
 
 
-class ReviewAgentReturnedNoStructuredResponseError(StepError):
-    """The agent finished but produced no ``structured_response`` payload."""
-
-    def __init__(self, message_kinds: tuple[str, ...]) -> None:
-        self.message_kinds = message_kinds
-        super().__init__(
-            "review agent returned no structured response "
-            f"(messages={list(message_kinds)})"
-        )
-
-
 # --------------------------------------------------------------------------- #
 # Per-subagent invocation errors (parallel fan-out)                            #
 # --------------------------------------------------------------------------- #
@@ -478,7 +467,6 @@ __all__ = [
     "RepoNotFoundError",
     "ReviewAgentCrashedError",
     "ReviewAgentRateLimitedError",
-    "ReviewAgentReturnedNoStructuredResponseError",
     "ReviewAgentsInvocationError",
     "SandboxConnectError",
     "SecurityAgentInvocationError",

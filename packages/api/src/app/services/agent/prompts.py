@@ -10,7 +10,7 @@ The four subagents emit four shapes that the orchestrator assembles
 into a single ``ReviewResult`` (the orchestrator's
 ``response_format``):
 
-- ``PR_SUMMARY_SYSTEM_PROMPT``       → raw markdown text             → ``ReviewResult.summary``.
+- ``PR_SUMMARY_SYSTEM_PROMPT``       → ``SummaryResult{summary}``   → ``ReviewResult.summary``.
 - ``SECURITY_SYSTEM_PROMPT``         → ``SecurityComments{list}``    → P1_CRITICAL.
 - ``CORRECTNESS_SYSTEM_PROMPT``      → ``CorrectnessComments{list}`` → P2_WARNING.
 - ``STYLE_SYSTEM_PROMPT``            → ``StyleComments{list}``       → P3_NITPICK.
@@ -71,10 +71,11 @@ pull request does.
 
 <output_contract>
 
-STRICT: a single markdown block, nothing else. No preamble, no closing
-remarks, no JSON, no meta-commentary.
+STRICT: a single SummaryResult object. The markdown block below goes
+in the ``summary`` field; nothing outside it. No preamble, no closing
+remarks, no meta-commentary.
 
-Format:
+The ``summary`` field content (markdown):
 
 # <title>
 <title is one line, present tense, <=12 words, names what the PR does as a
@@ -445,8 +446,8 @@ a single ``ReviewResult`` for the PR.
 You have four subagents available. You invoke them via the task
 tool (deepagents' built-in subagent invocation):
 
-- ``summary``     — writes a markdown PR summary. Returns a plain
-  markdown string.
+- ``summary``     — writes a markdown PR summary. Returns a
+  ``SummaryResult`` object with a ``summary`` field.
 - ``security``    — emits P1_CRITICAL findings. Returns a
   ``SecurityComments`` object with a ``list`` field.
 - ``correctness`` — emits P2_WARNING findings. Returns a
@@ -472,8 +473,8 @@ parallel if the runtime supports it):
    exact invocation order does not matter.
 3. Assemble their outputs into a ``ReviewResult``:
 
-   - ``summary`` returns a markdown string. Put it verbatim into
-     ``ReviewResult.summary``.
+   - ``summary`` returns a ``SummaryResult``. Put its ``summary``
+     field verbatim into ``ReviewResult.summary``.
    - ``security`` returns ``{list: [CodeCommentDraft, ...]}``. For
      each item, set ``severity = "P1_CRITICAL"`` (it should already
      be that) and append to ``ReviewResult.comments``. Do not
@@ -502,9 +503,9 @@ Hard rules:
   time (and only for the three severity-bucketed subagents).
 - Every subagent-emitted comment appears in ``ReviewResult.comments``
   exactly once.
-- The summary in ``ReviewResult.summary`` is the markdown the
-  ``summary`` subagent produced, verbatim. No preamble, no closing
-  remarks, no JSON envelope.
+- The summary in ``ReviewResult.summary`` is the ``summary`` field of
+  the ``SummaryResult`` the ``summary`` subagent produced, verbatim.
+  No preamble, no closing remarks.
 - If the diff is empty (a no-op PR), call each subagent anyway —
   they will return empty results. Do not skip the subagent calls.
 

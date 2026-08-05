@@ -51,6 +51,7 @@ from app.services.agent.models import (
     ReviewResult,
     SecurityComments,
     StyleComments,
+    SummaryResult,
 )
 from app.services.review._internal import _SHOULD_RETRY_AGENT, _e2b_spec
 from app.services.review.agent import (
@@ -58,7 +59,6 @@ from app.services.review.agent import (
     build_review_agents,
     combine_review_results,
     create_review_llm_models,
-    extract_last_ai_text,
 )
 from app.services.review.errors import (
     AgentInvocationError,
@@ -88,8 +88,12 @@ log = logging.getLogger(__name__)
 
 
 def _summary_extractor(result: Any) -> str:
-    """Return the last AI message's text from a summarizer ainvoke result."""
-    return extract_last_ai_text(result)
+    """Validate the summarizer's ``structured_response`` payload.
+
+    Returns the markdown block from the ``summary`` field. Mirrors the
+    structured extractors of the three severity specialists.
+    """
+    return SummaryResult.model_validate(result["structured_response"]).summary
 
 
 def _security_extractor(result: Any) -> SecurityComments:

@@ -38,7 +38,6 @@ from typing import TypedDict
 from deepagents import create_deep_agent
 from deepagents.middleware.subagents import SubAgent
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.tools import BaseTool
 from langchain_e2b import AsyncE2BSandbox
 
@@ -52,6 +51,7 @@ from app.services.agent.models import (
     ReviewVerdictStr,
     SecurityComments,
     StyleComments,
+    SummaryResult,
 )
 from app.services.agent.prompts import (
     CORRECTNESS_SYSTEM_PROMPT,
@@ -121,52 +121,6 @@ def combine_review_results(
 
 
 # --------------------------------------------------------------------------- #
-# Summary agent output extraction                                              #
-# --------------------------------------------------------------------------- #
-
-
-def extract_last_ai_text(result: object) -> str:
-    """Return the content of the last ``AIMessage`` in ``result['messages']``.
-
-    The summary agent does not use a ``response_format`` — its output
-    is a free-form markdown block emitted as the last AI message.
-    The other three agents do use ``response_format`` and their
-    payloads are read from ``result['structured_response']`` directly.
-
-    Raises:
-        ReviewAgentReturnedNoStructuredResponseError: ``result`` is
-            not a dict, has no ``messages`` list, has no ``AIMessage``
-            in it, or the last ``AIMessage`` has empty content.
-    """
-    # Imported here to keep the helper's import surface small.
-    from app.services.agent.helpers import extract_message_kinds
-    from app.services.review.errors import (
-        ReviewAgentReturnedNoStructuredResponseError,
-    )
-
-    if not isinstance(result, dict):
-        raise ReviewAgentReturnedNoStructuredResponseError(
-            message_kinds=extract_message_kinds(result),
-        )
-    messages = result.get("messages")
-    if not isinstance(messages, list) or not messages:
-        raise ReviewAgentReturnedNoStructuredResponseError(
-            message_kinds=extract_message_kinds(messages),
-        )
-    last: BaseMessage | None = messages[-1]
-    if not isinstance(last, AIMessage):
-        raise ReviewAgentReturnedNoStructuredResponseError(
-            message_kinds=extract_message_kinds(messages),
-        )
-    content = last.content
-    if not isinstance(content, str) or not content.strip():
-        raise ReviewAgentReturnedNoStructuredResponseError(
-            message_kinds=extract_message_kinds(messages),
-        )
-    return content
-
-
-# --------------------------------------------------------------------------- #
 # Shared tool + backend wiring                                                 #
 # --------------------------------------------------------------------------- #
 
@@ -221,15 +175,16 @@ def build_summary_agent(
 ) -> DeepAgentGraph:
     """Build the PR-summary deep-agent.
 
-    No ``response_format``: the agent emits a single markdown block
-    as its last AI message. The fan-out step extracts that text with
-    :func:`extract_last_ai_text` and passes it to
-    :func:`combine_review_results` as ``summary_markdown``.
+    ``response_format`` is :class:`SummaryResult` — the agent emits a
+    single ``summary`` markdown block as its structured response. The
+    fan-out step reads it from ``structured_response`` and passes it
+    to :func:`combine_review_results` as ``summary_markdown``.
     """
     return create_deep_agent(
         model=model,
         system_prompt=PR_SUMMARY_SYSTEM_PROMPT,
         backend=backend,
+        response_format=SummaryResult,
         tools=list(tools),
     )
 
@@ -423,11 +378,13 @@ def build_review_subagents(
         name="summary",
         description=(
             "Writes a markdown summary of what the PR does. Returns "
-            "a plain markdown string (no JSON envelope). Use this "
-            "subagent for the ReviewResult.summary field."
+            "a SummaryResult object with a single `summary` field "
+            "containing the markdown block. Use this subagent for "
+            "the ReviewResult.summary field."
         ),
         system_prompt=PR_SUMMARY_SYSTEM_PROMPT,
         model=model,
+        response_format=SummaryResult,
         tools=[
             make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
         ],
@@ -554,6 +511,5 @@ __all__: list[str] = [
     "build_style_agent",
     "build_summary_agent",
     "combine_review_results",
-    "extract_last_ai_text",
     "verdict_for",
 ]
