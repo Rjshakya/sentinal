@@ -71,9 +71,12 @@ pull request does.
 
 <output_contract>
 
-STRICT: a single SummaryResult object. The markdown block below goes
-in the ``summary`` field; nothing outside it. No preamble, no closing
-remarks, no meta-commentary.
+STRICT: your final message must be a single SummaryResult object,
+emitted through the output schema . The markdown block
+below is the content of its ``summary`` field; nothing outside it. No
+preamble, no closing remarks, no meta-commentary. Never reply with raw
+markdown text as your final message — the summary must be delivered as
+the SummaryResult object so the pipeline can read it.
 
 The ``summary`` field content (markdown):
 
@@ -114,25 +117,13 @@ of a table) only if every changed file is excluded per <prohibited>.>
      return Session(token=token, user_id=user_id)
 </diff_excerpt>
 <good_output>
-# Add TTL and suspicious-IP logging to session creation
-
-Extends session creation with an explicit token expiry and a security
-event hook for logins from flagged IPs. Touches only the session-creation
-path in the auth subsystem.
-
-## Highlights
-- Pass an explicit TTL to token generation instead of relying on the
-  default 
-- Log a security event when a session is created from a flagged IP
-  
-
-## Files Changed
-| File | Change |
-|---|---|
-| src/auth/session.py | Adds TTL parameter and suspicious-IP logging to `create_session` (session.py:42-44) |
+{
+  "summary": "# Add TTL and suspicious-IP logging to session creation\\n\\nExtends session creation with an explicit token expiry and a security event hook for logins from flagged IPs. Touches only the session-creation path in the auth subsystem.\\n\\n## Highlights\\n- Pass an explicit TTL to token generation instead of relying on the default TTL\\n- Log a security event when a session is created from a flagged IP\\n\\n## Files Changed\\n| File | Change |\\n|---|---|\\n| src/auth/session.py | Adds TTL parameter and suspicious-IP logging to `create_session` (session.py:42-44) |"
+}
 </good_output>
 
 <bad_output_and_why>
+Raw markdown with no SummaryResult envelope — violates the contract; the pipeline cannot read it.
 "Improve session security" — vague, no file:line, and evaluative ("improve").
 "Fix session bug" — invents a bug; the diff shows an addition, not a fix.
 </bad_output_and_why>
