@@ -40,8 +40,8 @@ _MODEL_MAX_RETRIES = 3
 _MODEL_BACKOFF_FACTOR = 2.0
 _MODEL_INITIAL_DELAY = 1.0
 
-_MODEL_CALL_RUN_LIMIT = 50
-_TOOL_CALL_RUN_LIMIT = 200
+_MODEL_CALL_RUN_LIMIT = 350
+_TOOL_CALL_RUN_LIMIT = 350
 
 
 def build_review_middleware() -> list[AgentMiddleware[Any, None, Any]]:
