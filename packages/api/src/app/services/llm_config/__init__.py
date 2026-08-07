@@ -2,7 +2,7 @@
 
 Public surface:
 
-- :func:`test_user_llm_config` — run a two-message connectivity
+- :func:`test_user_llm_config` — run a structured-output deep-agent
   probe against a candidate LLM config. **Never raises.** Returns
   a :class:`LLMTestResult` with exactly one of ``response`` /
   ``exception`` populated.
@@ -28,7 +28,9 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from deepagents import create_deep_agent
+from langchain.agents.structured_output import ToolStrategy
+from pydantic import BaseModel, Field
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -87,6 +89,15 @@ def _failure(message: str) -> LLMTestResult:
 # --------------------------------------------------------------------------- #
 
 
+class ProbeResult(BaseModel):
+    """Structured output schema for the LLM-config test probe."""
+
+    reply: str = Field(description="Agent's reply")
+
+
+# _PROBE_SYSTEM_PROMPT = "You are simple agent , reply with structured-output(json schema) model , give to you."
+
+
 async def test_user_llm_config(
     *,
     provider: str,
@@ -94,13 +105,19 @@ async def test_user_llm_config(
     base_url: str,
     api_key: str,
 ) -> LLMTestResult:
-    """Send a two-message probe and return the outcome without raising.
+    """Run a deep-agent structured-output probe; never raises.
 
-    The probe is a single ``ainvoke`` with one ``SystemMessage``
-    ("Reply with a single word.") and one ``HumanMessage``
-    ("hi"). The result is the assistant's reply text, or a
-    failure string if anything went wrong (auth, network, empty
-    body, model not found, etc.).
+    The probe runs a :func:`deepagents.create_deep_agent` instance
+    against the candidate config with ``response_format`` bound to
+    :class:`_ProbeResult` — the same structured-output path the
+    review agents use. The agent is invoked with a single user
+    message and instructed to emit the schema's ``reply='pong'``
+    without calling tools.
+
+    The outcome is the validated ``structured_response``, or a
+    failure string when anything went wrong (auth, network, empty
+    body, model not found, provider 4xx like forced-tool-choice
+    rejections, …).
 
     No callbacks are attached, so the probe produces no
     ``llm_call_started`` / ``llm_call_completed`` log lines and
@@ -118,39 +135,32 @@ async def test_user_llm_config(
         return _failure(f"invalid config: {type(exc).__name__}: {exc}")
 
     try:
-        chat = build_chat_model(config=config, callbacks=[])
-        response = await chat.ainvoke(
-            [
-                SystemMessage(content="Reply with in one sentence"),
-                HumanMessage(content="hi"),
-            ]
+        chat = build_chat_model(config=config)
+        agent = create_deep_agent(
+            model=chat,
+            response_format=ToolStrategy(ProbeResult),
+            system_prompt="give response in reply field of ProbeResult",
+        )
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": "Hi there"}]}
         )
     except Exception as exc:
         return _failure(f"{type(exc).__name__}: {exc}")
 
-    content = getattr(response, "content", None)
-    if isinstance(content, str):
-        text = content.strip()
-    elif isinstance(content, list):
-        # Mixed-content responses (e.g. tool calls + text). Take
-        # the first text part for the probe summary.
-        text = ""
-        for part in content:
-            if isinstance(part, str):
-                text = part.strip()
-                break
-            if isinstance(part, dict):
-                maybe = part.get("text")
-                if isinstance(maybe, str):
-                    text = maybe.strip()
-                    break
-    else:
-        text = str(content).strip() if content is not None else ""
+    structured = result.get("structured_response") if isinstance(result, dict) else None
 
-    if not text:
-        return _failure("empty response from provider")
+    print(result)
+    print(f"structured : {structured} ")
 
-    return _result(text)
+    if structured is None:
+        return _failure("provider returned no structured output")
+
+    try:
+        parsed = ProbeResult.model_validate(structured)
+    except Exception as exc:
+        return _failure(f"invalid structured output: {type(exc).__name__}: {exc}")
+
+    return _result(f"structured output OK (reply={parsed.reply!r})")
 
 
 # --------------------------------------------------------------------------- #

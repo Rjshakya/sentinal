@@ -47,21 +47,10 @@ class CodeCommentDraft(BaseModel):
     )
 
 
-class SecurityComments(BaseModel):
+class ReviewComments(BaseModel):
     List: list[CodeCommentDraft] = Field(
-        description="List of CodeCommentDraft , This Output is Expected From Security Agent"
-    )
-
-
-class CorrectnessComments(BaseModel):
-    List: list[CodeCommentDraft] = Field(
-        description="List of CodeCommentDraft , This Output is Expected From Correctness Agent"
-    )
-
-
-class StyleComments(BaseModel):
-    List: list[CodeCommentDraft] = Field(
-        description="List of CodeCommentDraft , This Output is Expected From Style Agent"
+        description="List of CodeCommentDraft with mixed severities, This "
+        "Output is Expected From The Comments Agent"
     )
 
 

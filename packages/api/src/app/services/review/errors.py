@@ -147,7 +147,7 @@ class AgentInvocationError(StepError):
     Raised from the ``invoke_<name>_agent`` wrappers in
     :mod:`app.services.review.steps.invoke_agent`. Each subclass
     hard-codes the value of :attr:`name` so the failure can be
-    attributed to a specific specialist.
+    attributed to a specific agent.
 
     The :attr:`retryable` flag mirrors DBOS retry semantics — when
     ``True``, the wrapping step's ``should_retry`` predicate should
@@ -156,8 +156,7 @@ class AgentInvocationError(StepError):
     timeout).
 
     Attributes:
-        name: The subagent's name (``"summarizer"``, ``"security"``,
-            ``"correctness"``, or ``"style"``).
+        name: The subagent's name (``"summarizer"`` or ``"comments"``).
         cause_exception: The original exception raised by the
             subagent's ``ainvoke`` call or its post-processing.
         retryable: ``True`` iff DBOS should retry the wrapping step.
@@ -201,8 +200,8 @@ class SummaryAgentInvocationError(AgentInvocationError):
         )
 
 
-class SecurityAgentInvocationError(AgentInvocationError):
-    """The ``security`` subagent failed."""
+class CommentsAgentInvocationError(AgentInvocationError):
+    """The ``comments`` subagent failed."""
 
     def __init__(
         self,
@@ -212,54 +211,21 @@ class SecurityAgentInvocationError(AgentInvocationError):
         details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
-            name="security", cause=cause, retryable=retryable, details=details
+            name="comments", cause=cause, retryable=retryable, details=details
         )
 
 
-class CorrectnessAgentInvocationError(AgentInvocationError):
-    """The ``correctness`` subagent failed."""
-
-    def __init__(
-        self,
-        *,
-        cause: BaseException,
-        retryable: bool,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(
-            name="correctness", cause=cause, retryable=retryable, details=details
-        )
-
-
-class StyleAgentInvocationError(AgentInvocationError):
-    """The ``style`` subagent failed."""
-
-    def __init__(
-        self,
-        *,
-        cause: BaseException,
-        retryable: bool,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(
-            name="style", cause=cause, retryable=retryable, details=details
-        )
-
-
-# Union of the four per-subagent error classes. Use this (or
+# Union of the two per-subagent error classes. Use this (or
 # ``type[SubagentInvocationError]``) when a callable accepts the class
 # itself — e.g. the per-subagent wrappers in
 # :mod:`app.services.review.steps.invoke_agent`.
 SubagentInvocationError: TypeAlias = (
-    SummaryAgentInvocationError
-    | SecurityAgentInvocationError
-    | CorrectnessAgentInvocationError
-    | StyleAgentInvocationError
+    SummaryAgentInvocationError | CommentsAgentInvocationError
 )
 
 
 class ReviewAgentsInvocationError(StepError):
-    """All four agent lanes failed during the parallel fan-out.
+    """All agent lanes failed during the parallel fan-out.
 
     Raised from
     :func:`app.services.review.steps.invoke_agent.combine_agent_outcomes`
@@ -461,7 +427,7 @@ def extract_retry_after_seconds(exc: BaseException) -> float | None:
 
 __all__ = [
     "AgentInvocationError",
-    "CorrectnessAgentInvocationError",
+    "CommentsAgentInvocationError",
     "DiffUnavailableError",
     "NoActiveSandboxError",
     "RepoNotFoundError",
@@ -469,9 +435,7 @@ __all__ = [
     "ReviewAgentRateLimitedError",
     "ReviewAgentsInvocationError",
     "SandboxConnectError",
-    "SecurityAgentInvocationError",
     "StepError",
-    "StyleAgentInvocationError",
     "SubagentInvocationError",
     "SummaryAgentInvocationError",
     "TransientStepError",

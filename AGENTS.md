@@ -250,11 +250,11 @@ them on `SQLModel.metadata`.
 `src/app/services/`:
 
 - `agent/` — the review-agent schemas + prompts + setup pipeline.
-  - `models.py` — `CodeCommentDraft`, `SecurityComments`,
-    `CorrectnessComments`, `StyleComments`, `ReviewResult`.
-  - `prompts.py` — `PR_SUMMARY_SYSTEM_PROMPT`, `SECURITY_SYSTEM_PROMPT`,
-    `CORRECTNESS_SYSTEM_PROMPT`, `STYLE_SYSTEM_PROMPT`,
-    `ORCHESTRATOR_SYSTEM_PROMPT`.
+  - `models.py` — `CodeCommentDraft`, `ReviewComments` (mixed severities),
+    `SummaryResult`, `ReviewResult`.
+  - `prompts.py` — `PR_SUMMARY_SYSTEM_PROMPT` (summarizer agent) and
+    `REVIEW_COMMENTS_SYSTEM_PROMPT` (the merged security/correctness/style
+    rubric assigning P1_CRITICAL / P2_WARNING / P3_NITPICK).
   - `helpers.py` — small prompt/result helpers (`extract_message_kinds`).
   - `setup_workflow/` — the durable per-repo setup workflow:
     `ensure_repo_and_sandbox_step` → `mint_installation_token_step` →
@@ -281,21 +281,27 @@ them on `SQLModel.metadata`.
   - `hunk_map.py` — the `HunkMap` type (`files[file_name][RIGHT|LEFT]` line
     sets) and the pure `filter_drafts(review, hunk_map)` backstop.
   - `tools.py` — `make_get_diff_tool` (the shared sandbox `get_diff` tool).
-  - `agent.py` — agent factories. Two parallel designs: the **active
-    parallel** path (`build_review_agents` + `create_review_llm_models`,
-    consumed by the per-lane `invoke_*_agent_step` steps) and the
-    **orchestrator**
-    design (`build_review_subagents` + `build_orchestrator_agent`,
-    SubAgent TypedDicts; present in the module but not yet wired into the
-    workflow). Also `combine_review_results` and the pure
+  - `agent.py` — agent factories for the **two parallel agents**
+    (`build_summary_agent` + `build_comments_agent`, both taking a
+    `middleware=build_review_middleware()` stack; plus
+    `create_review_llm_models`, `build_review_agents`, and the pure
+    `combine_review_results` (severity-sorted P1→P2→P3) +
     `verdict_for(comments)` rule (any P1 → REQUEST_CHANGES; else any
-    P2/P3 → COMMENT; else APPROVE).
+    P2/P3 → COMMENT; else APPROVE). Structured output is `response_format`
+    (schema bound as a forced tool); for OpenAI-compatible endpoints
+    that reject forced tool choice (DeepSeek → HTTP 400 on
+    `tool_choice="required"`), `_uses_text_json_output` drops the schema
+    and appends a strict JSON output contract to the prompt instead.
+  - `middleware.py` — `build_review_middleware()`: the shared built-in
+    agent middleware stack (`ModelRetryMiddleware` max 3 retries, 2x
+    backoff, `on_failure="error"`; `ModelCallLimitMiddleware` run cap 50;
+    `ToolCallLimitMiddleware` run cap 200) wired into both review agents.
   - `errors.py` — typed error variants for the pipeline.
   - `steps/` — one file per I/O boundary, each exposing a pure helper and a
     DBOS-wrapped variant: `resolve_repo`/`resolve_repo_tx`,
     `resolve_sandbox`/`resolve_sandbox_step`, `fetch_diff_step`,
     `parse_diff_step`, `upsert_pr`/`upsert_pull_request_tx`,
-    `invoke_agent` (the four parallel agent steps + `combine_agent_outcomes`),
+    `invoke_agent` (the two parallel agent steps + `combine_agent_outcomes`),
     `persist_summary`/
     `persist_review_summary_tx`, `persist_comments`/
     `persist_code_comments_tx`, `persist_usage`/`persist_review_usage_tx`,
@@ -325,7 +331,10 @@ them on `SQLModel.metadata`.
     errors complete the workflow with `posted=False`.
   - `steps/` — placeholder for future sub-step helpers.
 - `llm_config/` — plain async service (no DBOS workflow):
-  `test_user_llm_config` (never raises), `upsert_user_llm_config` (probe
+  `test_user_llm_config` (never raises; runs a `create_deep_agent`
+  probe with a `response_format` pydantic schema — the same
+  structured-output path the review agents use — and validates the
+  `structured_response`), `upsert_user_llm_config` (probe
   then upsert), `list_user_llm_configs`,
   `resolve_active_llm_config(user_id)` (used by the review webhook; raises
   `NoActiveLLMConfigError` when the user has no row).
@@ -515,20 +524,20 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
    `diff.json` alongside it. The `HunkMap` is the source of truth for which
    `(file, line, side)` anchors GitHub will accept.
 5. `upsert_pull_request_tx` — insert/update the `PullRequest` row.
-6. `invoke_summary_agent_step` / `invoke_security_agent_step` /
-   `invoke_correctness_agent_step` / `invoke_style_agent_step` — the
-   **four parallel agent steps**, started concurrently from the workflow
+6. `invoke_summary_agent_step` / `invoke_comments_agent_step` — the
+   **two parallel agent steps**, started concurrently from the workflow
    body via `asyncio.gather(return_exceptions=True)` (the documented DBOS
    parallel-steps pattern; deterministic start order). Each
    (`@DBOS.step`, `retries_allowed=True`, `max_attempts=3`,
    `backoff_rate=2`, retry predicate `_SHOULD_RETRY_AGENT`) reconnects to
    the shared E2B sandbox by id, builds its own chat model + deep-agent
-   (`summarizer` / `security` / `correctness` / `style`, each with the
-   `get_diff` tool), runs it, wraps failures in the per-lane error class
+   (`summarizer` / `comments`, each with the `get_diff` tool and the
+   `build_review_middleware()` stack), runs it, wraps failures in the
+   per-lane error class
    with a `retryable` flag, and returns `(result, usage)`. A transient
    failure retries **that lane alone**; the invoke steps never stop the
    sandbox (the workflow's `finally` owns the stop). `combine_agent_outcomes`
-   then partitions the four results: all four failed → raises
+   then partitions the two results: both failed → raises
    `ReviewAgentsInvocationError` (pushed to Sentry with run context);
    partial → failed lanes degrade to empty defaults (`""` summary / empty
    comment lists) with a warning log, and the review completes with the
@@ -542,7 +551,7 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
    counts (success path; `review_status=SUCCESS`).
 10. `stop_sandbox_step` — always, in a `finally`.
 
-The summary in `review_summaries.summary` is the `summarizer` subagent's
+The summary in `review_summaries.summary` is the `summarizer` agent's
 markdown output (from its `SummaryResult` structured response), and the verdict is
 recomputed deterministically in code by `verdict_for()` from the merged
 severities (any P1 → `REQUEST_CHANGES`, else any P2/P3 → `COMMENT`, else
@@ -559,7 +568,7 @@ main workflow completes regardless of the post outcome.
 rejects (422) any inline comment whose `(file, line, side)` anchor is not in
 the PR's diff. Three layers guard this:
 
-1. **Agent self-validation (prompt-driven).** Each severity specialist
+1. **Agent self-validation (prompt-driven).** The comments agent
    reads `/home/user/tmp/{pr_number}/{head_sha}/diff.json` (the JSON
    hunk map written by `parse_diff_step`) and confirms every draft's
    `from_line` is in `files[file_name][side]`; if not, it re-anchors to the

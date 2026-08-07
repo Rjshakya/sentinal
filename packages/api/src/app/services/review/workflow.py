@@ -53,9 +53,7 @@ from app.services.review.steps import (
 )
 from app.services.review.steps.invoke_agent import (
     combine_agent_outcomes,
-    invoke_correctness_agent_step,
-    invoke_security_agent_step,
-    invoke_style_agent_step,
+    invoke_comments_agent_step,
     invoke_summary_agent_step,
 )
 from app.services.review.steps.persist_usage import sum_total_usages
@@ -143,27 +141,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
                 head_sha=input.head_sha,
                 llm_config=input.llm_config,
             ),
-            invoke_security_agent_step(
-                sandbox_id=sandbox.sandbox_id,
-                sandbox_name=sandbox.sandbox_name,
-                repo_id=repo.id,
-                repo_name=repo.repo_name,
-                user_id=input.user_id,
-                pr_number=input.pr_number,
-                head_sha=input.head_sha,
-                llm_config=input.llm_config,
-            ),
-            invoke_correctness_agent_step(
-                sandbox_id=sandbox.sandbox_id,
-                sandbox_name=sandbox.sandbox_name,
-                repo_id=repo.id,
-                repo_name=repo.repo_name,
-                user_id=input.user_id,
-                pr_number=input.pr_number,
-                head_sha=input.head_sha,
-                llm_config=input.llm_config,
-            ),
-            invoke_style_agent_step(
+            invoke_comments_agent_step(
                 sandbox_id=sandbox.sandbox_id,
                 sandbox_name=sandbox.sandbox_name,
                 repo_id=repo.id,

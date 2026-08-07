@@ -22,6 +22,7 @@ dependencies = [
     "langchain-e2b>=0.0.5",
     "dbos>=2.27.0",
     "sentry-sdk>=2.66.1",
+    "langchain-deepseek>=1.1.0",
 ]
 
 [build-system]

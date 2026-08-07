@@ -1,48 +1,46 @@
 """DBOS durable steps that actually run the review agents.
 
-This module owns the four per-lane agent steps, plus the helpers
-used to wire each review agent to the E2B sandbox and the pure
-helper that combines their outcomes.
+This module owns the two per-agent steps, plus the helpers used to
+wire each review agent to the E2B sandbox and the pure helper that
+combines their outcomes.
 
-Four parallel steps:
+Two parallel steps:
 
 - :func:`invoke_summary_agent_step` — summarizer (markdown text).
-- :func:`invoke_security_agent_step` — security (pydantic
-  :class:`SecurityComments`).
-- :func:`invoke_correctness_agent_step` — correctness (pydantic
-  :class:`CorrectnessComments`).
-- :func:`invoke_style_agent_step` — style (pydantic
-  :class:`StyleComments`).
+- :func:`invoke_comments_agent_step` — comments (pydantic
+  :class:`ReviewComments` with mixed severities).
 
 Each step reconnects to the shared E2B sandbox by id, builds its
 own chat model and deep-agent (with the shared ``get_diff`` tool),
 runs it via the :func:`invoke_<name>_agent` wrappers (which
-translate any failure into the per-lane error class with a
+translate any failure into the per-agent error class with a
 ``retryable`` flag), and returns ``(result, usage)``. Steps are
 started concurrently from the workflow body with
 ``asyncio.gather(..., return_exceptions=True)`` — the documented
 DBOS parallel-steps pattern — and a transient failure (429 / 5xx /
 timeout) retries **that lane alone** (``max_attempts=3``,
-``backoff_rate=2``) instead of re-running all four agents.
+``backoff_rate=2``) instead of re-running both agents.
 
-:func:`combine_agent_outcomes` then partitions the four results:
+:func:`combine_agent_outcomes` then partitions the two results:
 
-- all four lanes failed → raises
+- both lanes failed → raises
   :class:`app.services.review.errors.ReviewAgentsInvocationError`
   (pushed to Sentry with the full run context before raising);
-- partial failure → failed lanes degrade to empty defaults (``""``
-  summary / empty comment lists) with a warning log and the review
-  completes with the successful lanes' output.
+- partial failure → failed lane degrades to an empty default (``""``
+  summary / ``ReviewComments(List=[])``) with a warning log and the
+  review completes with the successful lane's output.
 
-The invoke steps never stop the sandbox: four concurrent steps
-share one sandbox, so only the workflow's ``finally``
+The invoke steps never stop the sandbox: two concurrent steps share
+one sandbox, so only the workflow's ``finally``
 :func:`app.services.review.steps.stop_sandbox.stop_sandbox_step`
 stops it.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -52,37 +50,33 @@ from dbos import DBOS
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import UsageMetadata
 from langchain_e2b import AsyncE2BSandbox
+from pydantic import BaseModel
 
 from app.core.llm import LLMConfig, build_chat_model
 from app.core.sandbox.e2b import E2BSandbox
 from app.services.agent.models import (
-    CorrectnessComments,
+    ReviewComments,
     ReviewResult,
-    SecurityComments,
-    StyleComments,
     SummaryResult,
 )
 from app.services.review._internal import _SHOULD_RETRY_AGENT, _e2b_spec
 from app.services.review.agent import (
     assemble_user_prompt,
-    build_correctness_agent,
-    build_security_agent,
-    build_style_agent,
+    build_comments_agent,
     build_summary_agent,
     combine_review_results,
 )
 from app.services.review.errors import (
     AgentInvocationError,
-    CorrectnessAgentInvocationError,
+    CommentsAgentInvocationError,
     ReviewAgentCrashedError,
     ReviewAgentsInvocationError,
     SandboxConnectError,
-    SecurityAgentInvocationError,
-    StyleAgentInvocationError,
     SubagentInvocationError,
     SummaryAgentInvocationError,
     is_llm_retry_error,
 )
+from app.services.review.middleware import build_review_middleware
 from app.services.review.tools import make_get_diff_tool
 from app.services.review.types import DeepAgentGraph
 from app.services.review.workflow_types import (
@@ -98,29 +92,97 @@ log = logging.getLogger(__name__)
 # Per-subagent wrappers                                                         #
 # --------------------------------------------------------------------------- #
 
+_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+"""Matches a fenced code block that may carry a ``json`` language tag."""
+
+
+def _last_ai_text(result: Any) -> str:
+    """Return the text content of the last AI message in the run result."""
+    if not isinstance(result, dict):
+        return ""
+    messages = result.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for message in reversed(messages):
+        if getattr(message, "type", None) != "ai":
+            continue
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            if parts:
+                return "".join(parts)
+    return ""
+
+
+def _parse_json_text(text: str) -> dict[str, Any]:
+    """Parse the first JSON object out of free-form model text.
+
+    Tries, in order: the whole trimmed message, a fenced ```json
+    block, and the substring between the first ``{`` and the last
+    ``}``. Raises ``ValueError`` when nothing parses.
+    """
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("agent returned an empty final message")
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    fence = _FENCED_JSON_RE.search(stripped)
+    if fence is not None:
+        try:
+            return json.loads(fence.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+    start, end = stripped.find("{"), stripped.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(stripped[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+    raise ValueError(f"could not parse JSON from agent output: {stripped[:200]!r}")
+
+
+def _extract_structured(result: Any, model_cls: type[BaseModel]) -> Any:
+    """Extract and validate the lane's structured payload.
+
+    Preferred source is the runtime's ``structured_response`` (the
+    schema tool call). When the agent ends with plain text instead —
+    or when ``response_format`` was dropped for an endpoint that
+    rejects forced tool choice — the last AI message is parsed as
+    JSON and validated against ``model_cls``.
+    """
+    if isinstance(result, dict) and result.get("structured_response") is not None:
+        return model_cls.model_validate(result["structured_response"])
+    data = _parse_json_text(_last_ai_text(result))
+    if "List" not in data and "list" in data:
+        # The comment models' field is `List` (capital L); models
+        # occasionally emit lowercase `list` despite the contract.
+        data = dict(data)
+        data["List"] = data.pop("list")
+    return model_cls.model_validate(data)
+
 
 def _summary_extractor(result: Any) -> SummaryResult:
-    """Validate the summarizer's ``structured_response`` payload.
+    """Validate the summarizer's structured payload.
 
-    Returns the markdown block from the ``summary`` field. Mirrors the
-    structured extractors of the three severity specialists.
+    Accepts the runtime's ``structured_response`` (a
+    :class:`SummaryResult`) or, when the model ended with text, JSON
+    parsed from the final message. Mirrors the structured extractor
+    of the comments agent.
     """
-    return SummaryResult.model_validate(result["structured_response"])
+    return _extract_structured(result, SummaryResult)
 
 
-def _security_extractor(result: Any) -> SecurityComments:
-    """Validate the security subagent's ``structured_response`` payload."""
-    return SecurityComments.model_validate(result["structured_response"])
-
-
-def _correctness_extractor(result: Any) -> CorrectnessComments:
-    """Validate the correctness subagent's ``structured_response`` payload."""
-    return CorrectnessComments.model_validate(result["structured_response"])
-
-
-def _style_extractor(result: Any) -> StyleComments:
-    """Validate the style subagent's ``structured_response`` payload."""
-    return StyleComments.model_validate(result["structured_response"])
+def _comments_extractor(result: Any) -> ReviewComments:
+    """Validate the comments agent's structured payload."""
+    return _extract_structured(result, ReviewComments)
 
 
 async def _call_with_error_wrapping(
@@ -183,42 +245,16 @@ async def invoke_summary_agent(
     )
 
 
-async def invoke_security_agent(
-    agent: Any, prompt_payload: dict[str, Any]
-) -> tuple[SecurityComments, dict[str, UsageMetadata]]:
-    """Run the security subagent; on failure raise
-    :class:`SecurityAgentInvocationError`."""
+async def invoke_comments_agent(
+    agent: DeepAgentGraph, prompt_payload: dict[str, Any]
+) -> tuple[ReviewComments, dict[str, UsageMetadata]]:
+    """Run the comments subagent; on failure raise
+    :class:`CommentsAgentInvocationError`."""
     return await _call_with_error_wrapping(
         agent=agent,
         prompt_payload=prompt_payload,
-        error_cls=SecurityAgentInvocationError,
-        result_extractor=_security_extractor,
-    )
-
-
-async def invoke_correctness_agent(
-    agent: Any, prompt_payload: dict[str, Any]
-) -> tuple[CorrectnessComments, dict[str, UsageMetadata]]:
-    """Run the correctness subagent; on failure raise
-    :class:`CorrectnessAgentInvocationError`."""
-    return await _call_with_error_wrapping(
-        agent=agent,
-        prompt_payload=prompt_payload,
-        error_cls=CorrectnessAgentInvocationError,
-        result_extractor=_correctness_extractor,
-    )
-
-
-async def invoke_style_agent(
-    agent: Any, prompt_payload: dict[str, Any]
-) -> tuple[StyleComments, dict[str, UsageMetadata]]:
-    """Run the style subagent; on failure raise
-    :class:`StyleAgentInvocationError`."""
-    return await _call_with_error_wrapping(
-        agent=agent,
-        prompt_payload=prompt_payload,
-        error_cls=StyleAgentInvocationError,
-        result_extractor=_style_extractor,
+        error_cls=CommentsAgentInvocationError,
+        result_extractor=_comments_extractor,
     )
 
 
@@ -309,15 +345,21 @@ async def invoke_summary_agent_step(
         repo_id=repo_id,
         user_id=user_id,
     )
+
     model = build_chat_model(config=llm_config)
     backend = AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
+
+    middleware = build_review_middleware()
+
     agent = build_summary_agent(
         model=model,
         backend=backend,
         tools=[
             make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha)
         ],
+        middleware=middleware,
     )
+
     prompt_payload = _build_prompt_payload(
         repo_name=repo_name,
         repo_id=repo_id,
@@ -342,7 +384,7 @@ async def invoke_summary_agent_step(
     should_retry=_SHOULD_RETRY_AGENT,
     backoff_rate=2,
 )
-async def invoke_security_agent_step(
+async def invoke_comments_agent_step(
     *,
     sandbox_id: str,
     sandbox_name: str,
@@ -352,26 +394,44 @@ async def invoke_security_agent_step(
     pr_number: int,
     head_sha: str,
     llm_config: LLMConfig,
-) -> tuple[SecurityComments, dict[str, UsageMetadata]]:
-    """Durable step: run the security lane and return
-    ``(SecurityComments, usage)``. Same semantics as
+) -> tuple[ReviewComments, dict[str, UsageMetadata]]:
+    """Durable step: run the comments lane and return
+    ``(ReviewComments, usage)``. Same semantics as
     :func:`invoke_summary_agent_step`.
     """
+
+    # Sandbox
+
     sandbox = await _connect_sandbox(
         sandbox_id=sandbox_id,
         sandbox_name=sandbox_name,
         repo_id=repo_id,
         user_id=user_id,
     )
+
+    # Chat Model
+
     model = build_chat_model(config=llm_config)
+
+    # Sandbox Backed
+
     backend = AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
-    agent = build_security_agent(
+
+    # Deep Agent
+
+    middleware = build_review_middleware()
+
+    agent = build_comments_agent(
         model=model,
         backend=backend,
         tools=[
             make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha)
         ],
+        middleware=middleware,
     )
+
+    # Prompt
+
     prompt_payload = _build_prompt_payload(
         repo_name=repo_name,
         repo_id=repo_id,
@@ -380,136 +440,29 @@ async def invoke_security_agent_step(
     )
 
     log.info(
-        "invoking security agent step: repo=%s user=%s pr_number=%s",
+        "invoking comments agent step: repo=%s user=%s pr_number=%s",
         repo_name,
         user_id,
         pr_number,
     )
-    return await invoke_security_agent(agent, prompt_payload)
 
+    # Invoke Agent
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=_SHOULD_RETRY_AGENT,
-    backoff_rate=2,
-)
-async def invoke_correctness_agent_step(
-    *,
-    sandbox_id: str,
-    sandbox_name: str,
-    repo_id: str,
-    repo_name: str,
-    user_id: str,
-    pr_number: int,
-    head_sha: str,
-    llm_config: LLMConfig,
-) -> tuple[CorrectnessComments, dict[str, UsageMetadata]]:
-    """Durable step: run the correctness lane and return
-    ``(CorrectnessComments, usage)``. Same semantics as
-    :func:`invoke_summary_agent_step`.
-    """
-    sandbox = await _connect_sandbox(
-        sandbox_id=sandbox_id,
-        sandbox_name=sandbox_name,
-        repo_id=repo_id,
-        user_id=user_id,
-    )
-    model = build_chat_model(config=llm_config)
-    backend = AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
-    agent = build_correctness_agent(
-        model=model,
-        backend=backend,
-        tools=[
-            make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha)
-        ],
-    )
-    prompt_payload = _build_prompt_payload(
-        repo_name=repo_name,
-        repo_id=repo_id,
-        user_id=user_id,
-        pr_number=pr_number,
-    )
-
-    log.info(
-        "invoking correctness agent step: repo=%s user=%s pr_number=%s",
-        repo_name,
-        user_id,
-        pr_number,
-    )
-    return await invoke_correctness_agent(agent, prompt_payload)
-
-
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=_SHOULD_RETRY_AGENT,
-    backoff_rate=2,
-)
-async def invoke_style_agent_step(
-    *,
-    sandbox_id: str,
-    sandbox_name: str,
-    repo_id: str,
-    repo_name: str,
-    user_id: str,
-    pr_number: int,
-    head_sha: str,
-    llm_config: LLMConfig,
-) -> tuple[StyleComments, dict[str, UsageMetadata]]:
-    """Durable step: run the style lane and return ``(StyleComments, usage)``.
-
-    Same semantics as :func:`invoke_summary_agent_step`.
-    """
-    sandbox = await _connect_sandbox(
-        sandbox_id=sandbox_id,
-        sandbox_name=sandbox_name,
-        repo_id=repo_id,
-        user_id=user_id,
-    )
-    model = build_chat_model(config=llm_config)
-    backend = AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
-    agent = build_style_agent(
-        model=model,
-        backend=backend,
-        tools=[
-            make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha)
-        ],
-    )
-    prompt_payload = _build_prompt_payload(
-        repo_name=repo_name,
-        repo_id=repo_id,
-        user_id=user_id,
-        pr_number=pr_number,
-    )
-
-    log.info(
-        "invoking style agent step: repo=%s user=%s pr_number=%s",
-        repo_name,
-        user_id,
-        pr_number,
-    )
-    return await invoke_style_agent(agent, prompt_payload)
+    return await invoke_comments_agent(agent, prompt_payload)
 
 
 # --------------------------------------------------------------------------- #
 # Outcome combination (pure)                                                   #
 # --------------------------------------------------------------------------- #
 
-AGENT_LANES: tuple[str, ...] = ("summarizer", "security", "correctness", "style")
-"""The four lane names, in the deterministic gather order."""
+AGENT_LANES: tuple[str, ...] = ("summarizer", "comments")
+"""The two lane names, in the deterministic gather order."""
 
-# Defaults for failed lanes: an empty summary string and empty comment
-# lists. The summary column is non-null, so an empty string is valid;
-# the review body then carries no summary text for that run.
+# Defaults for failed lanes: an empty summary string and an empty
+# comment list. The summary column is non-null, so an empty string is
+# valid; the review body then carries no summary text for that run.
 _DEFAULT_SUMMARY: str = ""
-_DEFAULT_COMMENT_LANES: dict[
-    str, type[SecurityComments | CorrectnessComments | StyleComments]
-] = {
-    "security": SecurityComments,
-    "correctness": CorrectnessComments,
-    "style": StyleComments,
-}
+_DEFAULT_COMMENTS_MODEL: type[ReviewComments] = ReviewComments
 
 
 def combine_agent_outcomes(
@@ -522,9 +475,9 @@ def combine_agent_outcomes(
     llm_config: LLMConfig,
     workflow_id: str,
 ) -> tuple[ReviewResult, TotalUsagesPerPR]:
-    """Partition the four gather results and combine them into a review.
+    """Partition the two gather results and combine them into a review.
 
-    ``results`` holds the four :func:`asyncio.gather` outcomes in the
+    ``results`` holds the two :func:`asyncio.gather` outcomes in the
     deterministic order of :data:`AGENT_LANES` (the order the steps
     were started in). Each entry is either ``(result, usage)`` from a
     successful lane, a per-lane :class:`AgentInvocationError`, or —
@@ -532,14 +485,14 @@ def combine_agent_outcomes(
 
     Behaviour:
 
-    - All four lanes failed → raises
+    - Both lanes failed → raises
       :class:`ReviewAgentsInvocationError` (captured to Sentry first).
       Each lane already exhausted its own step retries by now, so the
       workflow is marked ERROR.
-    - Partial failure → failed lanes degrade to empty defaults
-      (``""`` summary / ``*Comments(List=[])``), a warning is logged
-      per failed lane (name, cause, retryable), and the review is
-      built from the successful lanes.
+    - Partial failure → failed lane degrades to an empty default
+      (``""`` summary / ``ReviewComments(List=[])``), a warning is
+      logged for the failed lane (name, cause, retryable), and the
+      review is built from the successful lane.
     - Unexpected ``BaseException`` (programming bug) → raises
       :class:`ReviewAgentCrashedError`.
 
@@ -605,7 +558,17 @@ def combine_agent_outcomes(
                     prev_cache_creation if prev_cache_creation is not None else 0
                 ) + (details.get("cache_creation") or 0)
 
-    if len(failures) == 4:
+    if len(failures) == len(AGENT_LANES):
+        for failed in failures:
+            log.error(
+                "review agents total failure: lane=%s retryable=%s cause=%r "
+                "pr_number=%s head_sha=%s",
+                failed.name,
+                failed.retryable,
+                failed.cause_exception,
+                pr_number,
+                head_sha[:7],
+            )
         err = ReviewAgentsInvocationError(
             user_id=user_id,
             repo_id=repo_id,
@@ -633,16 +596,13 @@ def combine_agent_outcomes(
             )
         if "summarizer" not in successes:
             successes["summarizer"] = _DEFAULT_SUMMARY
-        for lane, model_cls in _DEFAULT_COMMENT_LANES.items():
-            if lane not in successes:
-                successes[lane] = model_cls(List=[])
+        if "comments" not in successes:
+            successes["comments"] = _DEFAULT_COMMENTS_MODEL(List=[])
 
     return (
         combine_review_results(
             summary_markdown=successes["summarizer"],
-            security=successes["security"],
-            correctness=successes["correctness"],
-            style=successes["style"],
+            comments=successes["comments"],
         ),
         total_usages_per_pr,
     )
@@ -700,12 +660,8 @@ def _capture_review_agents_error_to_sentry(
 __all__ = [
     "AGENT_LANES",
     "combine_agent_outcomes",
-    "invoke_correctness_agent",
-    "invoke_correctness_agent_step",
-    "invoke_security_agent",
-    "invoke_security_agent_step",
-    "invoke_style_agent",
-    "invoke_style_agent_step",
+    "invoke_comments_agent",
+    "invoke_comments_agent_step",
     "invoke_summary_agent",
     "invoke_summary_agent_step",
 ]
