@@ -102,6 +102,7 @@ async def ensure_repo_and_sandbox_step(
             github_repo_id=input.github_repo_id,
             repo_name=input.repo_name,
             repo_owner=input.repo_owner,
+            default_branch=input.default_branch,
         )
 
         spec: E2BSandboxSpec = cast(E2BSandboxSpec, build_default_spec("e2b"))
@@ -183,12 +184,15 @@ async def _upsert_repo(
     github_repo_id: int,
     repo_name: str,
     repo_owner: str,
+    default_branch: str | None,
 ) -> Repo:
     """Insert-or-fetch the :class:`Repo` row keyed on ``github_repo_id``.
 
     Select-then-insert, idempotent on retry. ``Repo.id`` is a UUID
     assigned by :func:`uuidToStr` on first insert; on subsequent
-    calls the existing row is returned unchanged.
+    calls the existing row is returned unchanged. ``default_branch``
+    is only applied on insert — the router skips repos that already
+    have a row, and the retry path never re-inserts a committed row.
     """
     stmt = select(Repo).where(Repo.github_repo_id == github_repo_id)
     existing = (await session.exec(stmt)).first()
@@ -202,6 +206,7 @@ async def _upsert_repo(
         repo_name=repo_name,
         repo_owner=repo_owner,
         clone_url=f"https://github.com/{repo_owner}/{repo_name}.git",
+        default_branch=default_branch,
     )
     session.add(repo)
     await session.flush()

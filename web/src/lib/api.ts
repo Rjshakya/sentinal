@@ -51,6 +51,7 @@ export type SetupRepo = {
   owner: string;
   name: string;
   installation_id: string;
+  default_branch: string;
 };
 
 export type SetupEcosystem = "node" | "python" | "rust" | "go" | "ruby" | "mixed" | "none";

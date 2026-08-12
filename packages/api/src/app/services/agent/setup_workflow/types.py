@@ -40,6 +40,7 @@ class SetupWorkflowInput(BaseModel):
     repo_name: str
     installation_id: str  # local Installation.id (UUID)
     llm_config: LLMConfig
+    default_branch: Optional[str] = None
 
 
 class RepoContext(BaseModel):

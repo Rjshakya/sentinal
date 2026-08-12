@@ -64,6 +64,7 @@ function ConnectedView() {
         owner: r.owner,
         name: r.name,
         installation_id: r.installation_id,
+        default_branch: r.default_branch,
       }));
   }, [repos, selected]);
 

@@ -66,6 +66,11 @@ class SetupRepo(BaseModel):
         description="Local Installation.id (UUID) used to mint the "
         "install token for the clone.",
     )
+    default_branch: Optional[str] = Field(
+        default=None,
+        description="The repo's default branch, as reported by "
+        "GitHub at list time. Persisted on the Repo row.",
+    )
 
 
 class SetupRequest(BaseModel):

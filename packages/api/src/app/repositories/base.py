@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Generic, Type, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +13,7 @@ C = TypeVar("C")
 
 
 class Repository(Generic[T]):
-    def __init__(self, model: Type[T], session: AsyncSession) -> None:
+    def __init__(self, model: type[T], session: AsyncSession) -> None:
         self._model = model
         self._session = session
 
@@ -84,5 +84,5 @@ class Repository(Generic[T]):
         return (result.rowcount or 0) > 0
 
 
-def make_repo(model: Type[T], session: AsyncSession) -> Repository[T]:
+def make_repo(model: type[T], session: AsyncSession) -> Repository[T]:
     return Repository(model, session)

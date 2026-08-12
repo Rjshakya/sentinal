@@ -29,6 +29,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/api/ai",
         "/api/users",
         "/api/llm_config",
+        "/api/indexing",
     )
 
     BYPASS_PREFIXES: tuple[str, ...] = ("/api/github/setup",)

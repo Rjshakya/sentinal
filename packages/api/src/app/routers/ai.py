@@ -149,6 +149,7 @@ async def start_setup_repos(
             repo_name=r.name,
             installation_id=r.installation_id,
             llm_config=settings.llm_config,
+            default_branch=r.default_branch,
         )
 
         workflow_info = await DBOS.start_workflow_async(setup_workflow, workflow_input)
