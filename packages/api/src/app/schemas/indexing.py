@@ -33,12 +33,31 @@ from app.models.indexing import IndexRun, IndexRunState
 class IndexRunTriggerIn(BaseModel):
     """Body of ``POST /api/indexing/repo``.
 
-    ``repo_url`` is the only required field; ``default_branch`` is
-    optional and falls back to the remote default. ``user_id`` is
-    never accepted on the wire — the router reads it from the
-    sealed session cookie via ``AuthMiddleware``.
+    ``repo_owner`` and ``repo_name`` are required — the dashboard
+    sends them from the matching :class:`Repo` row (it already has
+    them on every entry of :func:`useRepos`). The router forwards
+    them straight into :class:`app.services.indexing.types.IndexWorkflowInput`
+    so the workflow and its steps read them as first-class
+    identifiers without re-parsing ``repo_url``.
+
+    ``user_id`` is never accepted on the wire — the router reads it
+    from the sealed session cookie via ``AuthMiddleware``.
     """
 
+    repo_owner: str = Field(
+        min_length=1,
+        description=(
+            "GitHub repo owner (org or user). Supplied by the "
+            "dashboard from the matching :class:`Repo` row."
+        ),
+    )
+    repo_name: str = Field(
+        min_length=1,
+        description=(
+            "GitHub repo name. Supplied by the dashboard from the "
+            "matching :class:`Repo` row."
+        ),
+    )
     repo_url: str = Field(
         min_length=1,
         max_length=1024,

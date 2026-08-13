@@ -24,21 +24,52 @@ __all__ = [
 class IndexWorkflowInput(BaseModel):
     """Everything the workflow needs to index one arbitrary repo.
 
-    ``repo_url`` is the only required field: the owner/name pair is
-    derived from it by :func:`app.services.indexing.helpers.parse_repo_url`.
+    The client (``POST /indexing/repo``) supplies ``repo_owner`` and
+    ``repo_name`` as the canonical identifiers — the workflow and its
+    steps read them directly and never re-parse them off
+    ``repo_url``. ``repo_url`` stays on the input for the audit row
+    in ``index_runs`` and for downstream display;
     ``default_branch`` pins the clone when known; ``user_id`` scopes
     sandbox metadata.
+
+    ``local_repo_id`` is the local :class:`app.models.repo.Repo.id`
+    (UUID). Every dispatch site resolves it from the user's already
+    installed :class:`Repo` row before starting the workflow; the
+    workflow passes it to the terminal mirror steps so the parent
+    row's ``is_indexed`` flag and ``indexed_run_id`` back-reference
+    stay in sync with the :class:`IndexRun` lifecycle.
     """
 
     model_config = ConfigDict(frozen=True)
 
     user_id: str
+    repo_owner: str = Field(
+        description=(
+            "GitHub repo owner (org or user). First-class identifier; "
+            "supplied by the client and not re-parsed from ``repo_url``."
+        ),
+    )
+    repo_name: str = Field(
+        description=(
+            "GitHub repo name. First-class identifier; supplied by the "
+            "client and not re-parsed from ``repo_url``."
+        ),
+    )
     repo_url: str = Field(
         description="Cloneable repo URL (https / ssh / owner:repo).",
     )
     default_branch: str | None = Field(
         default=None,
         description="Branch to check out; when None the remote default is used.",
+    )
+    local_repo_id: str = Field(
+        description=(
+            "Local Repo.id (UUID), resolved by every dispatch site "
+            "before starting the workflow. Used by the terminal mirror "
+            "steps (:func:`mark_repo_indexed_success_step` / "
+            ":func:`mark_repo_indexed_error_step`) to flip the parent "
+            "row's ``is_indexed`` flag and ``indexed_run_id`` back-reference."
+        ),
     )
 
 

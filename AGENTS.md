@@ -237,6 +237,16 @@ them on `SQLModel.metadata`.
   /ai/repo/setup/{workflow_id}` returns DBOS status plus the typed error
   name/message on terminal error; cross-user reads return 404 (the id
   encodes the owner).
+- `indexing.py` — indexing-pipeline routes:
+  - `POST /indexing/repo` (202): accepts `{repo_owner, repo_name, repo_url,
+    default_branch?}`. The client supplies `repo_owner` + `repo_name`
+    as canonical identifiers (it already has them on the `Repo` row),
+    so the handler trusts them and skips URL parsing. Verifies the
+    repo is in the user's `repos` table (`404` otherwise) and dispatches
+    `indexRepo` under the deterministic id `index:{owner}:{repo}`.
+  - `GET /indexing/{workflow_id}` — return the `IndexRun` row for the
+    workflow id; `404` on cross-user reads.
+  - `GET /indexing` — list the user's runs, paginated newest-first.
 - `users.py` — user-scoped reads: `GET /users/repos` (indexed `repos` rows)
   and `GET /users/stats` (`prs_reviewed`, `comments_issued`,
   `bugs_caught` = P1 comment count, all joined through `pull_requests` so
@@ -368,6 +378,8 @@ repos
 ├── url               str?          (html_url)
 ├── private           bool
 ├── default_branch    str?
+├── is_indexed        bool?         (mirror; flipped by indexing workflow terminal steps)
+├── indexed_run_id    str?          (back-pointer to the latest IndexRun; server-side only)
 └── created_at / updated_at
 
 installations
@@ -499,7 +511,28 @@ everything else → 202 with a log line.
 `repos` + `sandboxes` rows) → `mint_installation_token_step` (GitHub
 installation token, passed into the sandbox as `GITHUB_TOKEN` for the
 clone) → `git_clone_step` → `stop_setup_sandbox_step` in `finally`. The
-router's GET endpoint polls DBOS status.
+router's GET endpoint polls DBOS status. When `index_after_setup=True`
+and `Settings.indexing_configured` is true, the workflow fires off
+`app.services.indexing.workflow.indexRepo` with the deterministic id
+`index:{owner}:{repo}` and passes `local_repo_id=ctx.repo_id` so the
+indexing run can flip the parent `repos.is_indexed` mirror.
+
+**Indexing pipeline.** `POST /indexing/repo` (202) and the setup
+auto-dispatch both start `indexRepo` under the deterministic id
+`index:{owner}:{repo}` (so duplicate dispatches dedupe; the in-sandbox
+`mode="overwrite"` write is a safe full rewrite). The terminal
+`SUCCESS` / `ERROR` paths each call a best-effort mirror step from
+:mod:`app.services.indexing.steps.update_repo`:
+`mark_repo_indexed_success_step` flips `repos.is_indexed = true` +
+sets `repos.indexed_run_id = <run_id>`; `mark_repo_indexed_error_step`
+flips `is_indexed = false` while keeping `indexed_run_id` back-pointed
+to the failed run for the dashboard's debugging surface area. The
+public `/github/repos` endpoint reads `Repo.is_indexed` alongside
+`Repo.github_repo_id` in one indexed `SELECT` and coerces
+`None → False` at the boundary so the response shape is a strict
+`bool`; the frontend `Repo` type carries `is_indexed: boolean` and
+the dashboard's "Index" button only renders when
+`is_configured && !is_indexed`.
 
 **Review pipeline.** Two triggers dispatch `review_workflow`:
 
@@ -694,6 +727,11 @@ corresponding route file does not exist yet.
   (`setup:{user_id}:{gh_repo_id}`, `review:{repo_id}:{pr}:{head_sha[:7]}`,
   `post:{…}`, `trigger_issue_comment:{comment_id}`) so duplicate deliveries
   dedupe and restarts are safe.
+- **Workflow inputs declare canonical identifiers explicitly.**
+  `IndexWorkflowInput.repo_owner` and `IndexWorkflowInput.repo_name` are
+  client-supplied, Pydantic-validated, and read directly by the workflow
+  and its steps — the panel no longer re-parses them off `repo_url`.
+  The same convention applies to `SetupWorkflowInput`.
 - **LLM configuration is a frozen value object** (`LLMConfig`) resolved
   per-user at review time (`resolve_active_llm_config`, falling back to
   `settings.llm_config`), consumed only through `build_chat_model`.

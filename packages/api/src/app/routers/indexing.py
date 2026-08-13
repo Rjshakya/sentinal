@@ -2,11 +2,13 @@
 
 Three endpoints, all protected by :class:`AuthMiddleware`:
 
-- ``POST /api/indexing/repo`` — dispatch :func:`indexRepo` for a repo
-  URL. Returns ``202 Accepted`` with the deterministic workflow id
-  and the initial ``STARTING`` state. Requires the repo to be in the
-  user's installed repos (joined via the ``repos`` table); ``404`` if
-  not installed.
+- ``POST /api/indexing/repo`` — dispatch :func:`indexRepo` for a repo.
+  Returns ``202 Accepted`` with the deterministic workflow id
+  and the initial ``STARTING`` state. The request body carries the
+  canonical identifiers (``repo_owner`` + ``repo_name``) supplied by
+  the dashboard, plus ``repo_url`` for the audit row and the
+  ``repos``-table membership check; ``404`` if the repo is not
+  installed for the user.
 - ``GET /api/indexing/{workflow_id}`` — return the matching
   :class:`IndexRun` row (state, counts, error, timestamps). ``404``
   on cross-user reads.
@@ -38,10 +40,7 @@ from app.schemas.indexing import (
     IndexRunTriggerOut,
     to_index_run_out,
 )
-from app.services.indexing.helpers import (
-    index_workflow_id,
-    parse_repo_url,
-)
+from app.services.indexing.helpers import index_workflow_id
 from app.services.indexing.types import IndexWorkflowInput
 from app.services.indexing.workflow import indexRepo
 
@@ -55,15 +54,18 @@ router = APIRouter(prefix="/indexing", tags=["indexing"])
 # --------------------------------------------------------------------------- #
 
 
-async def _is_repo_installed(*, user_id: str, owner: str, repo: str) -> bool:
-    """Return ``True`` when the user has a row in ``repos`` for ``owner/repo``.
+async def _resolve_local_repo_id(
+    *, user_id: str, owner: str, repo: str
+) -> str | None:
+    """Return the local :class:`Repo.id` (UUID) for this ``owner/repo``, or ``None``.
 
     Rows in the ``repos`` table are populated by the GitHub
     ``installation_repositories`` webhook events, so this is the
-    canonical "is this repo installed for this user" check. A
-    non-installed repo makes the POST ineligible (404) — once private
-    indexing lands, this same gate becomes the authorisation check
-    for cloning.
+    canonical "is this repo installed for this user" check AND the
+    source for the ``local_repo_id`` the workflow passes to its
+    mirror steps. A non-installed repo makes the POST ineligible
+    (404) — once private indexing lands, this same gate becomes the
+    authorisation check for cloning.
     """
     async with async_session_maker() as session:
         repo_row = await Repository(Repo, session).find_by_fields(
@@ -71,7 +73,7 @@ async def _is_repo_installed(*, user_id: str, owner: str, repo: str) -> bool:
             repo_owner=owner,
             repo_name=repo,
         )
-        return repo_row is not None
+        return repo_row.id if repo_row is not None else None
 
 
 async def _list_user_runs(
@@ -121,26 +123,24 @@ async def trigger_index_run(
     body: IndexRunTriggerIn,
     request: Request,
 ) -> IndexRunTriggerOut:
-    """Dispatch :func:`indexRepo` for ``body.repo_url``.
+    """Dispatch :func:`indexRepo` for ``body.repo_owner/body.repo_name``.
 
-    Verifies the repo is installed for the calling user. The dispatch
-    uses the deterministic workflow id
+    The client supplies the canonical identifiers; this handler does
+    not re-parse them off ``repo_url``. The dispatch uses the
+    deterministic workflow id
     :func:`app.services.indexing.helpers.index_workflow_id`, so a
     second POST for the same ``owner/repo`` reuses the in-flight
     workflow (or returns its cached result if it has already
     completed).
     """
-    try:
-        owner, repo_name = parse_repo_url(body.repo_url)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"invalid repo_url: {exc}",
-        ) from exc
-
     user_id: str = request.state.user_id
+    owner: str = body.repo_owner
+    repo_name: str = body.repo_name
 
-    if not await _is_repo_installed(user_id=user_id, owner=owner, repo=repo_name):
+    local_repo_id: str | None = await _resolve_local_repo_id(
+        user_id=user_id, owner=owner, repo=repo_name
+    )
+    if local_repo_id is None:
         raise HTTPException(
             status_code=404,
             detail="repo is not installed for this user",
@@ -152,8 +152,11 @@ async def trigger_index_run(
             indexRepo,
             IndexWorkflowInput(
                 user_id=user_id,
+                repo_owner=owner,
+                repo_name=repo_name,
                 repo_url=body.repo_url,
                 default_branch=body.default_branch,
+                local_repo_id=local_repo_id,
             ),
         )
 
@@ -225,8 +228,8 @@ async def list_index_runs(
 
 
 __all__ = [
-    "_is_repo_installed",
     "_list_user_runs",
+    "_resolve_local_repo_id",
     "get_index_run",
     "list_index_runs",
     "router",

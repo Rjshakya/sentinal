@@ -44,6 +44,7 @@ export type Repo = {
   installation_id: string;
   github_installation_id: number;
   is_configured: boolean;
+  is_indexed: boolean;
 };
 
 export type SetupRepo = {
@@ -74,6 +75,17 @@ export type RepoSetupResult = {
 
 export type SetupAck = {
   results: RepoSetupResult[];
+};
+
+export type IndexRepoTriggerIn = {
+  repo_owner: string;
+  repo_name: string;
+  repo_url: string;
+  default_branch?: string | null;
+};
+
+export type IndexRepoTriggerOut = {
+  workflow_id: string;
 };
 
 export type LlmConfig = {
@@ -192,6 +204,12 @@ export const apiClient = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repos }),
+    }),
+  indexRepo: (payload: IndexRepoTriggerIn) =>
+    request<IndexRepoTriggerOut>("/indexing/repo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     }),
   codeSearch: (payload: CodeSearchRequest) =>
     request<CodeSearchResponse>("/ai/code/search", {

@@ -28,6 +28,13 @@ def parse_repo_url(repo_url: str) -> tuple[str, str]:
     Anything that does not resolve to exactly two path segments raises
     :class:`InvalidRepoUrlError`.
 
+    Note: the indexing pipeline no longer calls this in production.
+    The router (``POST /indexing/repo``) and the workflow both
+    consume ``IndexWorkflowInput.repo_owner`` + ``IndexWorkflowInput.repo_name``
+    (client-supplied, Pydantic-validated). This helper remains as a
+    pure utility for tests and one-off URL parsing outside the
+    workflow path.
+
     Raises:
         InvalidRepoUrlError: the URL cannot be parsed. Final — the
             caller passes it straight through to the workflow result.

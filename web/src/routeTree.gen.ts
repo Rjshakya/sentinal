@@ -15,6 +15,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard/index'
 import { Route as DashboardRepositoriesRouteRouteImport } from './routes/dashboard/repositories/route'
 import { Route as DashboardSettingsRouteRouteImport } from './routes/dashboard/settings/route'
+import { Route as DashboardSearchOwnerNameRouteRouteImport } from './routes/dashboard/search/$owner/$name/route'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -47,6 +48,12 @@ const DashboardSettingsRouteRoute = DashboardSettingsRouteRouteImport.update({
   path: '/settings',
   getParentRoute: () => DashboardRouteRoute,
 } as any)
+const DashboardSearchOwnerNameRouteRoute =
+  DashboardSearchOwnerNameRouteRouteImport.update({
+    id: '/search/$owner/$name',
+    path: '/search/$owner/$name',
+    getParentRoute: () => DashboardRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -55,6 +62,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/repositories': typeof DashboardRepositoriesRouteRoute
   '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard/': typeof DashboardIndexRoute
+  '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -62,6 +70,7 @@ export interface FileRoutesByTo {
   '/dashboard/repositories': typeof DashboardRepositoriesRouteRoute
   '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard': typeof DashboardIndexRoute
+  '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -71,6 +80,7 @@ export interface FileRoutesById {
   '/dashboard/repositories': typeof DashboardRepositoriesRouteRoute
   '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard/': typeof DashboardIndexRoute
+  '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -81,6 +91,7 @@ export interface FileRouteTypes {
     | '/dashboard/repositories'
     | '/dashboard/settings'
     | '/dashboard/'
+    | '/dashboard/search/$owner/$name'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -88,6 +99,7 @@ export interface FileRouteTypes {
     | '/dashboard/repositories'
     | '/dashboard/settings'
     | '/dashboard'
+    | '/dashboard/search/$owner/$name'
   id:
     | '__root__'
     | '/'
@@ -96,6 +108,7 @@ export interface FileRouteTypes {
     | '/dashboard/repositories'
     | '/dashboard/settings'
     | '/dashboard/'
+    | '/dashboard/search/$owner/$name'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -148,6 +161,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardSettingsRouteRouteImport
       parentRoute: typeof DashboardRouteRoute
     }
+    '/dashboard/search/$owner/$name': {
+      id: '/dashboard/search/$owner/$name'
+      path: '/search/$owner/$name'
+      fullPath: '/dashboard/search/$owner/$name'
+      preLoaderRoute: typeof DashboardSearchOwnerNameRouteRouteImport
+      parentRoute: typeof DashboardRouteRoute
+    }
   }
 }
 
@@ -155,12 +175,14 @@ interface DashboardRouteRouteChildren {
   DashboardRepositoriesRouteRoute: typeof DashboardRepositoriesRouteRoute
   DashboardSettingsRouteRoute: typeof DashboardSettingsRouteRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
+  DashboardSearchOwnerNameRouteRoute: typeof DashboardSearchOwnerNameRouteRoute
 }
 
 const DashboardRouteRouteChildren: DashboardRouteRouteChildren = {
   DashboardRepositoriesRouteRoute: DashboardRepositoriesRouteRoute,
   DashboardSettingsRouteRoute: DashboardSettingsRouteRoute,
   DashboardIndexRoute: DashboardIndexRoute,
+  DashboardSearchOwnerNameRouteRoute: DashboardSearchOwnerNameRouteRoute,
 }
 
 const DashboardRouteRouteWithChildren = DashboardRouteRoute._addFileChildren(

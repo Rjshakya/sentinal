@@ -34,7 +34,7 @@ async def stopIndexerSandbox(*, ctx: IndexContext) -> None:
         )
         return
     try:
-        await sandbox.stop()
+        await sandbox.kill()
     except Exception:
         log.exception(
             "stop_index_sandbox: kill failed: sandbox_id=%s",

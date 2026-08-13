@@ -1,11 +1,11 @@
 """DBOS durable workflow for the indexing pipeline.
 
 Straight-line sequence of typed :func:`@DBOS.step` calls — the same
-shape as :func:`app.services.agent.setup_workflow.setup_workflow`.
-Each step raises an :class:`IndexingError` subclass on failure; DBOS
-retries transient variants and short-circuits on final ones. The
-workflow re-raises any caught :class:`IndexingError` so DBOS records
-the typed error on the result.
+shape as :func:`app.services.indexing.workflow.indexRepo`'s setup
+counterpart. Each step raises an :class:`IndexingError` subclass on
+failure; DBOS retries transient variants and short-circuits on final
+ones. The workflow re-raises any caught :class:`IndexingError` so DBOS
+records the typed error on the result.
 
 Sandbox lifecycle: created in the first step, killed in ``finally``.
 The :class:`IndexContext` carries the durable ``sandbox_id``; every
@@ -18,6 +18,14 @@ dashboard can poll progress without depending on DBOS's own
 workflow-state table. A failure to update the row never breaks the
 workflow itself — the DBOS workflow state is the source of truth for
 execution.
+
+Repo mirror: the terminal ``SUCCESS`` / ``ERROR`` paths also call
+:func:`mark_repo_indexed_success_step` / :func:`mark_repo_indexed_error_step`
+from :mod:`app.services.indexing.steps.update_repo` to flip the
+parent :class:`app.models.repo.Repo` row's ``is_indexed`` flag and
+populate ``indexed_run_id``. These let the repo list endpoint and
+dashboard show ``is_indexed = true | false`` without scanning
+``index_runs``.
 
 Idempotency: dispatch with the deterministic id
 :func:`app.services.indexing.helpers.index_workflow_id` —
@@ -33,7 +41,6 @@ from dbos import DBOS
 
 from app.core.config import settings
 from app.services.indexing.errors import IndexingError, NoChunksError
-from app.services.indexing.helpers import parse_repo_url
 from app.services.indexing.steps import (
     create_index_run_step,
     ensureIndexSandbox,
@@ -41,6 +48,8 @@ from app.services.indexing.steps import (
     mark_index_run_error_step,
     mark_index_run_running_step,
     mark_index_run_success_step,
+    mark_repo_indexed_error_step,
+    mark_repo_indexed_success_step,
     runIndexPipeline,
     stopIndexerSandbox,
     uploadScriptsToSandbox,
@@ -66,10 +75,16 @@ async def indexRepo(input: IndexWorkflowInput) -> IndexRunResult:
     2. **RUNNING** — sandbox is created; the row flips to ``RUNNING``
        and :attr:`IndexRun.sandbox_id` is populated (best-effort).
     3. clone → upload scripts → combined chunking + ingestion.
-    4. **SUCCESS** — row flips to ``SUCCESS`` with chunk + file
-       counts (best-effort).
-    5. **ERROR** — typed :class:`IndexingError` is caught; row flips
-       to ``ERROR`` with the class name + message (best-effort).
+    4. **SUCCESS** — ``index_runs`` row flips to ``SUCCESS`` with
+       chunk + file counts (best-effort); the parent
+       :class:`app.models.repo.Repo` row flips to
+       ``is_indexed = true`` with ``indexed_run_id`` back-pointed to
+       this :class:`IndexRun` (best-effort).
+    5. **ERROR** — typed :class:`IndexingError` is caught;
+       ``index_runs`` row flips to ``ERROR`` with the class name +
+       message (best-effort); the parent :class:`Repo` row flips to
+       ``is_indexed = false`` with ``indexed_run_id`` back-pointed to
+       the failed run (best-effort).
 
     The sandbox is killed in ``finally`` regardless of the outcome.
     """
@@ -77,15 +92,10 @@ async def indexRepo(input: IndexWorkflowInput) -> IndexRunResult:
     run_id: str | None = None
 
     try:
-        owner, repo = parse_repo_url(input.repo_url)
-    except IndexingError:
-        owner, repo = "", ""
-
-    try:
         run_id = await create_index_run_step(
             user_id=input.user_id,
-            repo_owner=owner,
-            repo_name=repo,
+            repo_owner=input.repo_owner,
+            repo_name=input.repo_name,
             repo_url=input.repo_url,
             default_branch=input.default_branch,
             s3_bucket=settings.index_s3_bucket or None,
@@ -114,6 +124,15 @@ async def indexRepo(input: IndexWorkflowInput) -> IndexRunResult:
             file_count=file_count,
         )
 
+        # Repo mirror: mark the parent Repo row as successfully indexed
+        # so the /github/repos endpoint (and the dashboard's
+        # ``is_indexed`` flag) reflects the latest run without needing
+        # to scan ``index_runs``.
+        await mark_repo_indexed_success_step(
+            repo_id=input.local_repo_id,
+            run_id=run_id,
+        )
+
         return IndexRunResult(
             repo_owner=ctx.repo_owner,
             repo_name=ctx.repo_name,
@@ -132,6 +151,13 @@ async def indexRepo(input: IndexWorkflowInput) -> IndexRunResult:
             run_id=run_id,
             error_name=type(exc).__name__,
             error_message=str(exc),
+        )
+        # Repo mirror: keep ``indexed_run_id`` back-pointed to the
+        # last failed run (useful for the dashboard's debugging
+        # surface area) while flipping ``is_indexed`` back to False.
+        await mark_repo_indexed_error_step(
+            repo_id=input.local_repo_id,
+            run_id=run_id,
         )
         raise
     finally:

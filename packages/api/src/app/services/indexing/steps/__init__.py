@@ -19,6 +19,13 @@ Lifecycle-mirror steps (best-effort, never fail the workflow):
 - :func:`mark_index_run_success_step`
 - :func:`mark_index_run_error_step`
 
+Repo mirror steps (best-effort, flip :attr:`Repo.is_indexed` on the
+parent row so the repo list endpoint + dashboard don't have to scan
+``index_runs``):
+
+- :func:`mark_repo_indexed_success_step`
+- :func:`mark_repo_indexed_error_step`
+
 DBOS keys step registration on ``__name__``. The camelCase names
 above do not collide with the setup pipeline's snake_case
 ``git_clone_step`` / ``prepare_scripts_step``.
@@ -53,6 +60,10 @@ from app.services.indexing.steps.run_index import (
     runIndexPipeline,
 )
 from app.services.indexing.steps.stop_sandbox import stopIndexerSandbox
+from app.services.indexing.steps.update_repo import (
+    mark_repo_indexed_error_step,
+    mark_repo_indexed_success_step,
+)
 
 __all__ = [
     "INDEX_RUN_TIMEOUT_S",
@@ -68,6 +79,8 @@ __all__ = [
     "mark_index_run_error_step",
     "mark_index_run_running_step",
     "mark_index_run_success_step",
+    "mark_repo_indexed_error_step",
+    "mark_repo_indexed_success_step",
     "resolve_index_env",
     "runIndexPipeline",
     "stopIndexerSandbox",

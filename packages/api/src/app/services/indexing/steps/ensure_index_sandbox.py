@@ -2,9 +2,10 @@
 
 Creates a fresh E2B sandbox from the dedicated
 ``INDEX_SANDBOX_TEMPLATE_NAME`` template (which bakes in
-``lancedb`` + ``openai`` + ``tree-sitter-language-pack``). Parses
-``owner/repo`` from the URL and returns the :class:`IndexContext`
-every later step reconnects through.
+``lancedb`` + ``openai`` + ``tree-sitter-language-pack``). Reads
+``owner/repo`` off :class:`IndexWorkflowInput` (client-supplied,
+Pydantic-validated — non-empty) and returns the
+:class:`IndexContext` every later step reconnects through.
 
 The dataset URI is computed up front so a config error fails fast
 here instead of after the clone. The host never opens LanceDB — the
@@ -26,10 +27,7 @@ from app.services.indexing.errors import (
     IndexSandboxCreateError,
     _should_retry_index,
 )
-from app.services.indexing.helpers import (
-    build_table_uri,
-    parse_repo_url,
-)
+from app.services.indexing.helpers import build_table_uri
 from app.services.indexing.types import IndexContext, IndexWorkflowInput
 from app.utils.util import repo_path, scripts_path
 
@@ -82,7 +80,9 @@ async def ensureIndexSandbox(
 
     Order of operations is deliberate:
 
-    1. Parse ``owner/repo`` from the URL — final :class:`InvalidRepoUrlError`.
+    1. Read ``owner/repo`` from :class:`IndexWorkflowInput`
+       (Pydantic-validated to be non-empty at the HTTP boundary;
+       guaranteed ``str`` here).
     2. Gate on :attr:`Settings.indexing_configured` — final
        :class:`IndexingConfigError`.
     3. Create the E2B sandbox on the indexing template — wrapped in
@@ -93,7 +93,8 @@ async def ensureIndexSandbox(
         :class:`IndexContext` carrying every id and path the rest of
         the workflow needs. Frozen so DBOS can serialize it.
     """
-    owner, repo = parse_repo_url(input.repo_url)
+    owner: str = input.repo_owner
+    repo: str = input.repo_name
 
     if not settings.indexing_configured:
         raise IndexingConfigError()

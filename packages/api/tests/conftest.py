@@ -21,7 +21,7 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from app.core.config import settings
-from app.services.indexing.helpers import index_workflow_id, parse_repo_url
+from app.services.indexing.helpers import index_workflow_id
 from app.services.indexing.types import IndexWorkflowInput
 from app.services.indexing.workflow import indexRepo
 
@@ -117,8 +117,7 @@ async def run_index_workflow(
 ) -> tuple[str, WorkflowStatus]:
     """Dispatch ``indexRepo`` under its deterministic id; wait for a terminal state."""
     if workflow_id is None:
-        owner, repo = parse_repo_url(input.repo_url)
-        workflow_id = index_workflow_id(owner, repo)
+        workflow_id = index_workflow_id(input.repo_owner, input.repo_name)
     with SetWorkflowID(workflow_id):
         handle = await DBOS.start_workflow_async(indexRepo, input)
     loop = asyncio.get_running_loop()
