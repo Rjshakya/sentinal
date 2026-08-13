@@ -1,5 +1,6 @@
 import { ActionsCard } from "@/routes/dashboard/_components/-actions-card";
 import { GreetingCard } from "@/routes/dashboard/_components/-greeting-card";
+import { IndexedReposCard } from "@/routes/dashboard/_components/-indexed-repos-card";
 import { StatCard } from "@/routes/dashboard/_components/-stat-card";
 import { protectPage } from "@/lib/auth";
 import { useInstallation } from "@/lib/installation";
@@ -42,6 +43,7 @@ function DashboardOverview() {
           icon={<IconAlertTriangle className="text-muted-foreground size-4" />}
         />
       </div>
+      <IndexedReposCard />
       <ActionsCard />
       <InstallResultToast />
     </div>

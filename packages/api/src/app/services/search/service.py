@@ -14,18 +14,18 @@ The flow:
    ``(user_id, repo_owner, repo_name)``. Missing → 404
    :class:`SearchRepoNotFoundError`; ``is_indexed=False`` → 400
    :class:`SearchNotIndexedError`.
-3. Instantiate the OpenAI embedding function on the host. The
-   in-sandbox ingestion step registered the same function with the
-   dataset via the ``CodeChunks`` ``VectorField`` /
-   ``SourceField`` definitions; LanceDB looks up the function by name
-   at query time, so the host only needs to instantiate it with the
-   same model name so it knows how to embed the query.
-4. ``lancedb.connect(uri, storage_options=...)`` then
-   ``db.open_table("context")`` (the table name is constant; every
-   repo's dataset has a single ``"context"`` table — see
+3. ``lancedb.connect_async(uri, storage_options=...)`` then
+   ``await db.open_table("context")`` (the table name is constant;
+   every repo's dataset has a single ``"context"`` table — see
    :mod:`app.services.indexing.scripts.ingestion`).
-5. ``table.search(query, query_type="hybrid").limit(limit).to_list()``.
-6. Project every row to a :class:`CodeSearchResultOut`.
+4. ``await table.search(query, query_type="hybrid")`` then
+   ``await q.limit(limit).to_list()``. The query-time embedding
+   function is reconstructed by LanceDB from the dataset's metadata
+   (the in-sandbox ingestion script stored it with the ``CodeChunks``
+   schema), so the host needs no embedding setup of its own; the
+   embedding call — including LanceDB's retry backoff — runs on the
+   library's dedicated executor thread, never on the event loop.
+5. Project every row to a :class:`CodeSearchResultOut`.
 
 Every LanceDB call is wrapped in a try/except that re-raises as
 :class:`SearchTableError` (-> 502) so the router can map a single
@@ -35,26 +35,16 @@ HTTP status regardless of the underlying cause.
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 import lancedb
-from lancedb.embeddings import (
-    EmbeddingFunction,
-    get_registry,
-)
-from lancedb.query import LanceQueryBuilder
-from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
+from lancedb.rerankers import RRFReranker
 
 from app.core.config import settings
-from app.core.db import async_session_maker
-from app.models.indexing import IndexRun, IndexRunState
-from app.models.repo import Repo
 from app.services.search.errors import (
     SearchConfigError,
     SearchError,
-    SearchNotIndexedError,
-    SearchRepoNotFoundError,
     SearchTableError,
 )
 from app.services.search.helpers import build_table_uri, parse_node_types
@@ -64,10 +54,11 @@ from app.services.search.types import (
     CodeSearchResultOut,
 )
 
+os.environ["OPENAI_API_KEY"] = settings.openai_api_key
+
 log = logging.getLogger(__name__)
 
 INDEX_TABLE_NAME: str = "context"
-EMBEDDING_MODEL_NAME: str = "text-embedding-3-large"
 
 
 def _check_config() -> None:
@@ -92,20 +83,6 @@ def _storage_options() -> dict[str, str]:
     }
 
 
-def _register_embedding_function() -> EmbeddingFunction:
-    """Re-instantiate the OpenAI embedding function on the host.
-
-    The dataset was built inside the indexing sandbox with the
-    ``openai`` registry's ``text-embedding-3-large`` model. LanceDB
-    persists the function name with the schema; when the host opens
-    the table and calls ``search(query, query_type="hybrid")``,
-    LanceDB looks the function up by name in its process-local
-    registry, so this call is what makes the hybrid path work
-    end-to-end from the API process.
-    """
-    return get_registry().get("openai").create(name=EMBEDDING_MODEL_NAME)
-
-
 def _table_uri(*, owner: str, repo: str) -> str:
     """S3 URI of the repo's LanceDB dataset."""
     return build_table_uri(
@@ -114,70 +91,6 @@ def _table_uri(*, owner: str, repo: str) -> str:
         owner=owner,
         repo=repo,
     )
-
-
-async def _resolve_repo_row(
-    session: AsyncSession,
-    *,
-    user_id: str,
-    owner: str,
-    repo: str,
-) -> Repo:
-    """Return the :class:`Repo` row or raise the right :class:`SearchError`.
-
-    Two distinct outcomes:
-
-    - No row for this user + owner + name → :class:`SearchRepoNotFoundError`.
-    - Row exists but no successful :class:`IndexRun` → :class:`SearchNotIndexedError`.
-
-    The caller distinguishes these by HTTP status (404 vs 400). A
-    successful ``IndexRun`` (state ``SUCCESS``) is the source of truth
-    for "this repo's LanceDB dataset exists at the S3 URI" — the
-    in-sandbox ingestion script writes the dataset on the success
-    path, so a missing or non-terminal run means the dataset is
-    either absent or stale.
-    """
-    stmt = select(Repo).where(
-        Repo.user_id == user_id,
-        Repo.repo_owner == owner,
-        Repo.repo_name == repo,
-        Repo.is_indexed == True,
-    )
-    row: Repo | None = (await session.exec(stmt)).first()
-    if row is None:
-        raise SearchRepoNotFoundError(user_id=user_id, owner=owner, repo=repo)
-
-    indexed_stmt = (
-        select(IndexRun.id)
-        .where(
-            IndexRun.user_id == user_id,
-            IndexRun.repo_owner == owner,
-            IndexRun.repo_name == repo,
-            IndexRun.state == IndexRunState.SUCCESS,
-        )
-        .limit(1)
-    )
-    has_indexed_run = (await session.exec(indexed_stmt)).first() is not None
-    if not has_indexed_run:
-        raise SearchNotIndexedError(owner=owner, repo=repo)
-
-    return row
-
-
-def _build_query(
-    *,
-    table: lancedb.table.Table,  # type: ignore[name-defined]
-    query: str,
-    limit: int,
-) -> LanceQueryBuilder:
-    """Build the LanceDB query for the host-side hybrid search.
-
-    The embedding function is instantiated at module call time
-    (see :func:`_register_embedding_function`); passing
-    ``query_type="hybrid"`` lets LanceDB combine the FTS index over
-    ``content`` with the embedding-based vector search.
-    """
-    return table.search(query, query_type="hybrid").limit(limit)
 
 
 def _row_to_result(row: dict) -> CodeSearchResultOut:
@@ -214,35 +127,29 @@ async def run_search(*, user_id: str, request: CodeSearchRequest) -> CodeSearchR
     """
     _check_config()
 
-    async with async_session_maker() as session:
-        repo_row = await _resolve_repo_row(
-            session,
-            user_id=user_id,
-            owner=request.owner,
-            repo=request.repo,
-        )
-        repo_row_id = repo_row.id
-
     started = time.perf_counter()
-    _register_embedding_function()
 
     try:
-        db = lancedb.connect(
+        db = await lancedb.connect_async(
             _table_uri(owner=request.owner, repo=request.repo),
             storage_options=_storage_options(),
         )
-        table = db.open_table(INDEX_TABLE_NAME)
-        rows = _build_query(
-            table=table, query=request.query, limit=request.limit
-        ).to_list()
+        table = await db.open_table(INDEX_TABLE_NAME)
+        reranker = RRFReranker()
+
+        q = await table.search(
+            request.query,
+            query_type="hybrid",
+        )
+
+        rows = await q.rerank(reranker=reranker).limit(request.limit).to_list()
     except SearchError:
         raise
     except Exception as exc:
         log.warning(
-            "search: lancedb failed owner=%s repo=%s repo_id=%s cause=%s: %s",
+            "search: lancedb failed owner=%s repo=%s  cause=%s: %s",
             request.owner,
             request.repo,
-            repo_row_id,
             type(exc).__name__,
             exc,
         )
@@ -252,11 +159,10 @@ async def run_search(*, user_id: str, request: CodeSearchRequest) -> CodeSearchR
     elapsed_ms = (time.perf_counter() - started) * 1000.0
 
     log.info(
-        "search: ok owner=%s repo=%s repo_id=%s query_len=%d limit=%d "
+        "search: ok owner=%s repo=%s  query_len=%d limit=%d "
         "result_count=%d elapsed_ms=%.1f",
         request.owner,
         request.repo,
-        repo_row_id,
         len(request.query),
         request.limit,
         len(results),

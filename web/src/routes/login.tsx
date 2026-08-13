@@ -1,16 +1,15 @@
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
-import { IconBrandGithub, IconBrandGoogle } from "@tabler/icons-react";
 
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ApiError, apiBaseUrl, apiClient } from "@/lib/api";
+import { ApiError, apiBaseUrl, apiClient, type Session } from "@/lib/api";
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
   ssr: false,
   beforeLoad: async () => {
-    let session: Awaited<ReturnType<typeof apiClient.session>> | null = null;
+    let session: Session | null = null;
     try {
       session = await apiClient.session();
     } catch (error) {

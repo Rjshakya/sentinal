@@ -40,7 +40,7 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 
 @router.post(
-    "",
+    "/",
     status_code=status.HTTP_200_OK,
     response_model=CodeSearchResponse,
 )

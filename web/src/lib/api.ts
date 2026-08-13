@@ -124,27 +124,27 @@ export type LlmConfigPayload = {
 };
 
 export type CodeSearchRequest = {
-  repo_id: string;
-  repo_name: string;
+  owner: string;
+  repo: string;
   query: string;
   limit?: number;
 };
 
 export type CodeSearchResult = {
-  id?: string | number;
-  file_name?: string;
-  start_line?: number;
-  end_line?: number;
-  content?: string;
-  node_types?: string | string[] | null;
-  language?: string | null;
-  _relevance_score?: number;
+  file_name: string;
+  language: string;
+  start_line: number;
+  end_line: number;
+  node_types: string[];
+  content: string;
+  _relevance_score: number;
 };
 
 export type CodeSearchResponse = {
-  repo_name?: string;
-  query?: string;
-  results?: CodeSearchResult[];
+  owner: string;
+  repo: string;
+  query: string;
+  results: CodeSearchResult[];
 };
 
 export type UserRepo = {
@@ -156,6 +156,7 @@ export type UserRepo = {
   url: string | null;
   private: boolean;
   default_branch: string | null;
+  is_indexed: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -212,7 +213,7 @@ export const apiClient = {
       body: JSON.stringify(payload),
     }),
   codeSearch: (payload: CodeSearchRequest) =>
-    request<CodeSearchResponse>("/ai/code/search", {
+    request<CodeSearchResponse>("/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
