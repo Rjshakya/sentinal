@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from deepagents import create_deep_agent
-from langchain.agents.structured_output import ToolStrategy
+from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
 from pydantic import BaseModel, Field
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -136,10 +136,12 @@ async def test_user_llm_config(
 
     try:
         chat = build_chat_model(config=config)
+
         agent = create_deep_agent(
             model=chat,
-            response_format=ToolStrategy(ProbeResult),
-            system_prompt="give response in reply field of ProbeResult",
+            response_format=ProviderStrategy(ProbeResult),
+            system_prompt=""" Respond ONLY with a json object matching this schema: '
+    '{"reply": "<string>"}. No other text.""",
         )
         result = await agent.ainvoke(
             {"messages": [{"role": "user", "content": "Hi there"}]}

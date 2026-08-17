@@ -41,9 +41,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Sequence
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
+from typing import Any
 
 import sentry_sdk
 from dbos import DBOS
@@ -578,7 +578,7 @@ def combine_agent_outcomes(
             workflow_id=workflow_id,
             failed_agents=failures,
             succeeded_agents=list(successes.keys()),
-            occurred_at=datetime.now(timezone.utc),
+            occurred_at=datetime.now(UTC),
         )
         _capture_review_agents_error_to_sentry(err)
         raise err

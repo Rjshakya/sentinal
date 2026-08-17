@@ -66,6 +66,7 @@ async def resolve_repo_tx(gh_repo_id: int) -> RepoSnapshot:
         id=repo.id,
         repo_name=repo.repo_name,
         repo_owner=repo.repo_owner,
+        default_branch=repo.default_branch,
     )
 
 

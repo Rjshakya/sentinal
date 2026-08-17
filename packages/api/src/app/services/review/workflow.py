@@ -49,6 +49,7 @@ from app.services.review.steps import (
     resolve_repo_tx,
     resolve_sandbox_step,
     stop_sandbox_step,
+    update_repo_step,
     upsert_pull_request_tx,
 )
 from app.services.review.steps.invoke_agent import (
@@ -88,6 +89,15 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
     sandbox = await resolve_sandbox_step(user_id=input.user_id, repo_id=repo.id)
 
     try:
+        await update_repo_step(
+            sandbox_id=sandbox.sandbox_id,
+            sandbox_name=sandbox.sandbox_name,
+            repo_id=repo.id,
+            repo_name=repo.repo_name,
+            user_id=input.user_id,
+            default_branch=repo.default_branch,
+        )
+
         await fetch_diff_step(
             sandbox_id=sandbox.sandbox_id,
             sandbox_name=sandbox.sandbox_name,

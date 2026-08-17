@@ -21,6 +21,7 @@ Modules:
 - :mod:`.persist_comments`    — insert the :class:`CodeComment` rows.
 - :mod:`.persist_usage`       — insert the :class:`ReviewUsage` row.
 - :mod:`.stop_sandbox`        — best-effort sandbox stop.
+- :mod:`.update_repo`         — refresh the sandbox repo to the default branch.
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ from app.services.review.steps.resolve_sandbox import (
     resolve_sandbox_step,
 )
 from app.services.review.steps.stop_sandbox import stop_sandbox_step
+from app.services.review.steps.update_repo import update_repo, update_repo_step
 from app.services.review.steps.upsert_pr import (
     upsert_pull_request,
     upsert_pull_request_tx,
@@ -78,6 +80,8 @@ __all__ = [
     "resolve_sandbox_step",
     "stop_sandbox_step",
     "sum_total_usages",
+    "update_repo",
+    "update_repo_step",
     "upsert_pull_request",
     "upsert_pull_request_tx",
 ]

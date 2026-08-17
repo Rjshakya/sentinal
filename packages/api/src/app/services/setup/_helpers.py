@@ -12,7 +12,6 @@ from app.services.setup.errors import (
     GitCloneTransientError,
 )
 
-
 __all__ = [
     "build_authenticated_clone_url",
     "check_git_clone_result",
@@ -20,9 +19,7 @@ __all__ = [
 ]
 
 
-def build_authenticated_clone_url(
-    *, install_token: str, owner: str, name: str
-) -> str:
+def build_authenticated_clone_url(*, install_token: str, owner: str, name: str) -> str:
     """Build the authenticated HTTPS clone URL.
 
     GitHub's recommended way to authenticate ``git`` operations from

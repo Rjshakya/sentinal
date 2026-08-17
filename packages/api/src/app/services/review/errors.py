@@ -114,6 +114,16 @@ class DiffUnavailableError(StepError):
         super().__init__(f"diff unavailable ({base_sha}...{head_sha}): {cause}")
 
 
+class RepoUpdateError(StepError):
+    """The sandbox repo could not be refreshed to the default branch."""
+
+    def __init__(self, *, repo_id: str, branch: str, cause: str) -> None:
+        self.repo_id = repo_id
+        self.branch = branch
+        self.cause = cause
+        super().__init__(f"repo update failed (branch={branch!r}): {cause}")
+
+
 class ReviewAgentCrashedError(StepError):
     """The review agent raised an unexpected, non-transient exception."""
 
@@ -431,6 +441,7 @@ __all__ = [
     "DiffUnavailableError",
     "NoActiveSandboxError",
     "RepoNotFoundError",
+    "RepoUpdateError",
     "ReviewAgentCrashedError",
     "ReviewAgentRateLimitedError",
     "ReviewAgentsInvocationError",

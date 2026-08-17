@@ -49,8 +49,8 @@ class CodeCommentDraft(BaseModel):
 
 class ReviewComments(BaseModel):
     List: list[CodeCommentDraft] = Field(
-        description="List of CodeCommentDraft with mixed severities, This "
-        "Output is Expected From The Comments Agent"
+        description="All inline comments the agent wants to post, mixed "
+        "severities. Empty list is valid — it means 'looks good, no findings'.",
     )
 
 

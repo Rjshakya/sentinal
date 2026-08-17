@@ -97,6 +97,7 @@ class RepoSnapshot(BaseModel):
     id: str
     repo_name: str
     repo_owner: str
+    default_branch: str | None = None
 
 
 class ResolvedSandbox(BaseModel):

@@ -221,12 +221,18 @@ def build_chat_model(
     if (
         provider == "openai"
         and config.model_id
-        and config.model_id.startswith(("gpt-5.6"))
+        and config.model_id.startswith("gpt-5.6")
     ):
         extra = {
             "use_responses_api": True,
             "output_version": "responses/v1",
         }
+
+    if config.model_id.startswith("deepseek"):
+        extra["extra_body"] = {"response_format": {"type": "json_object"}}
+
+    # if config.model_id.startswith("deepseek"):
+    #     extra["extra_body"] = {"thinking": {"type": "disabled"}}
 
     return init_chat_model(
         model=config.model,
