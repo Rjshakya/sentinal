@@ -275,6 +275,49 @@ them on `SQLModel.metadata`.
   `index_after_setup` is true (router sets it from
   `Settings.indexing_configured`), the workflow fires off `indexRepo`
   fire-and-forget as its final step.
+- `indexing/` — the full-indexing pipeline: tree-sitter chunking in
+  the sandbox, LanceDB ingest + S3 persistence inside the same
+  sandbox.
+  - `workflow.py` — `indexRepo` (id `index:{owner}:{repo}`): index
+    run row → sandbox create → authenticated clone URL → shallow
+    clone → upload scripts → combined chunking + ingestion
+    (`mode="overwrite"` full rewrite) → success/error mirrors; sandbox
+    killed in `finally`. Lifecycle mirror rows live in `index_runs`.
+  - `helpers.py` — pure helpers (`build_table_uri`, `index_workflow_id`,
+    `parse_index_summary`); `types.py` — frozen workflow input/context;
+    `errors.py` — the `IndexingError` hierarchy + `_should_retry_index`.
+  - `steps/` — `ensureIndexSandbox`, `getRepoUrl` (installation token
+    → authenticated clone URL), `gitCloneToSandbox`,
+    `uploadScriptsToSandbox`, `runIndexPipeline` (`run_index.py`),
+    `index_run_steps.py` (best-effort `index_runs` mirror),
+    `update_repo.py` (best-effort `repos.is_indexed` mirror),
+    `stop_sandbox.py` (finally).
+  - `scripts/` — in-sandbox files uploaded as bytes (never imported
+    on the host): `chunking.py` (tree-sitter generator), `ingestion.py`
+    (LanceDB writer).
+  - `incremental/` — the incremental-indexing pipeline, triggered by
+    GitHub `push` webhooks on the default branch.
+    - `webhook.py` — `handle_push_event` (the push adapter): default
+      branch check → aggregate changed files across all commits →
+      resolve user/repo → gate on `is_indexed` + indexing config →
+      dispatch `incrementalIndexRepo`. Every skip path returns a
+      `PushWebhookAck` with a `skip_reason`.
+    - `workflow.py` — `incrementalIndexRepo` (id
+      `index:{owner}:{repo}:{head_sha[:7]}`): host-side delete of the
+      `removed + modified` chunks → (only when files remain) a fresh
+      index sandbox → clone → upload scripts → append-only in-sandbox
+      ingest. Success mirrors keep `is_indexed = true`; **errors never
+      flip `is_indexed`** (the dataset still exists).
+    - `steps/` — `delete_stale_chunks.py` (host-side
+      `lancedb.connect_async` + `table.delete`, no sandbox),
+      `ensure_sandbox.py` (fresh E2B sandbox per run),
+      `upload_scripts.py` (uploads shared `chunking.py` +
+      incremental `incremental_ingestion.py`),
+      `run_incremental_ingest.py` (the append command).
+    - `scripts/incremental_ingestion.py` — in-sandbox append-only
+      LanceDB writer for the explicit file list + FTS rebuild.
+    - `helpers.py` — pure `push_skip_reason`, `extract_push_files`,
+      `incremental_workflow_id`, `build_delete_predicates`.
 - `review/` — the durable review pipeline.
   - `workflow.py` — the top-level `review_workflow` DBOS orchestrator (see
     §3.5).
@@ -507,6 +550,8 @@ toggle `suspended_at`; `installation_repositories.added` → upsert one
 `removed` → delete rows; `pull_request.opened` → `handle_pull_request_opened`
 (dispatches `review_workflow`); `issue_comment.created` →
 `handle_issue_comment_created` (dispatches `trigger_issue_comment_workflow`);
+`push` → `handle_push_event` (dispatches the incremental indexing
+workflow for default-branch pushes — see the indexing pipeline below);
 everything else → 202 with a log line.
 
 **Setup pipeline.** `POST /ai/repo/setup` (202) dispatches one
@@ -537,6 +582,33 @@ public `/github/repos` endpoint reads `Repo.is_indexed` alongside
 `bool`; the frontend `Repo` type carries `is_indexed: boolean` and
 the dashboard's "Index" button only renders when
 `is_configured && !is_indexed`.
+
+**Incremental indexing pipeline.** GitHub `push` deliveries on the
+repo's default branch dispatch `incrementalIndexRepo` under the
+deterministic id `index:{owner}:{repo}:{head_sha[:7]}` (duplicate
+deliveries of the same head SHA dedupe; distinct commits get distinct
+runs). The adapter (`app.services.indexing.incremental.webhook`)
+aggregates `added` / `removed` / `modified` across **all** commits in
+the payload, skips when the repo has never completed a full index
+(`is_indexed` falsy — the full index owns the bootstrap), and skips
+`deleted` / `created` / non-default-branch pushes. The workflow then:
+
+1. `deleteStaleChunksStep` — host-side LanceDB delete of the
+   `removed + modified` files' chunks (no sandbox; `table.delete`
+   with `file_name IN (...)` predicates chunked at 100 names).
+2. When `added + modified` is non-empty — a **fresh** index sandbox,
+   authenticated clone URL → shallow clone → upload scripts →
+   `incremental_ingestion.py` appends chunks for the explicit file
+   list (never `mode="overwrite"`) and rebuilds the FTS index
+   (`create_fts_index(replace=True)`).
+3. `SUCCESS` mirrors keep `is_indexed = true` with
+   `indexed_run_id` back-pointed; **`ERROR` mirrors never flip
+   `is_indexed`** — the dataset still exists and remains searchable,
+   only a few files are stale until the next successful push.
+
+Both the full and incremental runs record one row in `index_runs`
+(each `workflow_id` is unique), so the dashboard lists them
+indistinguishably.
 
 **Review pipeline.** Two triggers dispatch `review_workflow`:
 
@@ -728,7 +800,9 @@ corresponding route file does not exist yet.
   dispatch; workflows checkpoint every I/O step, and transient errors are
   retried per-step via `should_retry` predicates.
 - **Workflow ids are deterministic and encode the domain**
-  (`setup:{user_id}:{gh_repo_id}`, `review:{repo_id}:{pr}:{head_sha[:7]}`,
+  (`setup:{user_id}:{gh_repo_id}`, `index:{owner}:{repo}` for full
+  indexing, `index:{owner}:{repo}:{head_sha[:7]}` for incremental
+  indexing, `review:{repo_id}:{pr}:{head_sha[:7]}`,
   `post:{…}`, `trigger_issue_comment:{comment_id}`) so duplicate deliveries
   dedupe and restarts are safe.
 - **Workflow inputs declare canonical identifiers explicitly.**
@@ -808,6 +882,7 @@ corresponding route file does not exist yet.
 - Comment-trigger workflow → `packages/api/src/app/services/pr_issue_comment/`
 - GitHub post workflow → `packages/api/src/app/services/github/`
 - Setup workflow → `packages/api/src/app/services/setup/`
+- Indexing pipeline (full + incremental) → `packages/api/src/app/services/indexing/`
 - Per-user LLM config service + routes → `packages/api/src/app/services/llm_config/`, `packages/api/src/app/routers/llm_configs.py`
 - Webhook receiver → `packages/api/src/app/routers/webhooks.py`
 - Route tree → `web/src/routeTree.gen.ts` (generated)

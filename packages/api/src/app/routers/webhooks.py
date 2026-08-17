@@ -24,6 +24,11 @@ Verifies the ``X-Hub-Signature-256`` HMAC against
   :func:`app.services.pr_issue_comment.handle_issue_comment_created`,
   which dispatches a durable DBOS workflow that classifies the
   comment and (on match) dispatches the inner review workflow.
+- ``push`` -> delegate to
+  :func:`app.services.indexing.incremental.handle_push_event`, which
+  dispatches the incremental indexing workflow for default-branch
+  pushes (reconciles the repo's LanceDB dataset with the changed
+  files).
 - anything else -> 202 with a log line.
 
 The handler sits outside AuthMiddleware's protected prefixes: GitHub
@@ -48,6 +53,7 @@ from app.core.config import settings
 from app.core.db import async_session_maker
 from app.models.installation import Installation
 from app.models.repo import Repo
+from app.services.indexing.incremental import handle_push_event
 from app.services.pr_issue_comment import handle_issue_comment_created
 from app.services.review import webhook as review_webhook
 from app.utils.util import uuidToStr
@@ -78,23 +84,6 @@ def _verify_signature(secret: str, body: bytes, signature_header: str | None) ->
     provided = signature_header[len(SIGNATURE_PREFIX) :]
     expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(provided, expected)
-
-
-# --------------------------------------------------------------------------- #
-# summarizers                                                                  #
-# --------------------------------------------------------------------------- #
-
-
-def _summarize_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
-    repo = payload.get("repository") or {}
-    owner = (repo.get("owner") or {}).get("login")
-    name = repo.get("name")
-    pr = payload.get("pull_request") or {}
-    return {
-        "repository": f"{owner}/{name}" if owner and name else None,
-        "number": pr.get("number"),
-        "sender": (payload.get("sender") or {}).get("login"),
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -199,8 +188,7 @@ async def _handle_installation_deleted(payload: dict[str, Any]) -> Response:
         await session.commit()
 
     log.info(
-        "github_webhook: installation.deleted dropped %d row(s) "
-        "(github_installation_id=%s)",
+        "github_webhook: installation.deleted dropped (github_installation_id=%s)",
         gh_installation_id,
     )
     return Response(status_code=202)
@@ -422,6 +410,11 @@ async def github_webhook(
                 action,
                 delivery,
             )
+        return Response(status_code=202)
+
+    if event == "push":
+        ack = await handle_push_event(payload, delivery)
+        log.info("github_webhook: push handled: %s", ack.model_dump_json())
         return Response(status_code=202)
 
     log.info(
