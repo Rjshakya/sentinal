@@ -44,6 +44,7 @@ from app.services.indexing.errors import IndexingError, NoChunksError
 from app.services.indexing.steps import (
     create_index_run_step,
     ensureIndexSandbox,
+    getRepoUrl,
     gitCloneToSandbox,
     mark_index_run_error_step,
     mark_index_run_running_step,
@@ -74,13 +75,16 @@ async def indexRepo(input: IndexWorkflowInput) -> IndexRunResult:
        failure).
     2. **RUNNING** — sandbox is created; the row flips to ``RUNNING``
        and :attr:`IndexRun.sandbox_id` is populated (best-effort).
-    3. clone → upload scripts → combined chunking + ingestion.
-    4. **SUCCESS** — ``index_runs`` row flips to ``SUCCESS`` with
+    3. :func:`getRepoUrl` — resolve the authenticated clone URL from
+       the repo's installation (installation lookup + token mint;
+       private-repo support).
+    4. clone → upload scripts → combined chunking + ingestion.
+    5. **SUCCESS** — ``index_runs`` row flips to ``SUCCESS`` with
        chunk + file counts (best-effort); the parent
        :class:`app.models.repo.Repo` row flips to
        ``is_indexed = true`` with ``indexed_run_id`` back-pointed to
        this :class:`IndexRun` (best-effort).
-    5. **ERROR** — typed :class:`IndexingError` is caught;
+    6. **ERROR** — typed :class:`IndexingError` is caught;
        ``index_runs`` row flips to ``ERROR`` with the class name +
        message (best-effort); the parent :class:`Repo` row flips to
        ``is_indexed = false`` with ``indexed_run_id`` back-pointed to
@@ -108,7 +112,16 @@ async def indexRepo(input: IndexWorkflowInput) -> IndexRunResult:
             sandbox_id=ctx.sandbox_id,
         )
 
-        await gitCloneToSandbox(ctx=ctx)
+        # Private-repo support: resolve an authenticated clone URL
+        # (installation lookup + token mint). Fails hard with a typed
+        # error when the repo's installation row is missing.
+        clone_url = await getRepoUrl(
+            user_id=input.user_id,
+            repo_owner=ctx.repo_owner,
+            repo_name=ctx.repo_name,
+        )
+
+        await gitCloneToSandbox(ctx=ctx, clone_url=clone_url)
         await uploadScriptsToSandbox(ctx=ctx)
 
         chunk_count, file_count = await runIndexPipeline(ctx=ctx)

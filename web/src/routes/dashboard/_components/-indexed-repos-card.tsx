@@ -42,8 +42,8 @@ export function IndexedReposCard() {
             Run a semantic search over the code Sentinel has indexed.
           </CardDescription>
         </CardHeader>
-        <Card className="bg-accent dark:bg-card">
-          <CardContent className=" p-2 ">
+        <Card className="bg-accent dark:bg-card py-0  ">
+          <CardContent className=" p-0 ">
             {indexed.length === 0 ? (
               <p className="text-muted-foreground text-xs">
                 No indexed repositories yet. Configure and index a repository from the Repositories
@@ -55,7 +55,10 @@ export function IndexedReposCard() {
                   const href = "/dashboard/search/$owner/$name" as const;
                   const params = { owner: repo.repo_owner, name: repo.repo_name } as const;
                   return (
-                    <li key={repo.id} className="flex items-center justify-between gap-3 p-2">
+                    <li
+                      key={repo.id}
+                      className="flex items-center justify-between gap-3 p-4 hover:bg-background/50   dark:hover:bg-background/40 transition-colors ease-in-out duration-300  "
+                    >
                       <div className="min-w-0 flex-1 space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="truncate font-medium">

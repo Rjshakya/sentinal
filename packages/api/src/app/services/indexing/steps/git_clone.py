@@ -37,12 +37,18 @@ CLONE_TIMEOUT_S: float = 300.0
 """Upper bound on the wall-clock duration of a single ``git clone``."""
 
 
-def build_clone_command(ctx: IndexContext) -> str:
-    """Build the shell command for the sandbox (pure, testable)."""
+def build_clone_command(ctx: IndexContext, *, clone_url: str | None = None) -> str:
+    """Build the shell command for the sandbox (pure, testable).
+
+    ``clone_url`` overrides :attr:`IndexContext.repo_url` — the
+    authenticated URL resolved by :func:`getRepoUrl` (private-repo
+    support). Falls back to the plain ``repo_url`` from the input
+    when no override is given.
+    """
     parts = ["git", "clone", "--depth", "1"]
     if ctx.default_branch:
         parts += ["--single-branch", "--branch", ctx.default_branch]
-    parts += [ctx.repo_url, ctx.repo_name]
+    parts += [clone_url or ctx.repo_url, ctx.repo_name]
     return " ".join(shlex.quote(part) for part in parts)
 
 
@@ -63,12 +69,18 @@ def check_git_clone(result: CommandResult) -> None:
     max_attempts=3,
     should_retry=_should_retry_index,
 )
-async def gitCloneToSandbox(*, ctx: IndexContext) -> None:
+async def gitCloneToSandbox(
+    *,
+    ctx: IndexContext,
+    clone_url: str | None = None,
+) -> None:
     """Shallow-clone ``ctx.repo_url`` into the sandbox workspace.
 
-    Reconnects to the sandbox by id. Reconnect failures and runner
-    dropouts raise transient errors (DBOS retries); a real ``git``
-    failure (bad URL, auth, missing repo) is final.
+    ``clone_url`` overrides ``ctx.repo_url`` — the authenticated URL
+    resolved by :func:`getRepoUrl` for private repos. Reconnects to
+    the sandbox by id. Reconnect failures and runner dropouts raise
+    transient errors (DBOS retries); a real ``git`` failure (bad URL,
+    auth, missing repo) is final.
     """
     try:
         sandbox: E2BSandbox = await connect_index_sandbox(ctx)
@@ -77,7 +89,7 @@ async def gitCloneToSandbox(*, ctx: IndexContext) -> None:
         # Mirror the setup pipeline, which creates it before cloning.
         await sandbox.fs_create_folder(workspace_path())
         result = await sandbox.execute(
-            build_clone_command(ctx),
+            build_clone_command(ctx, clone_url=clone_url),
             cwd=workspace_path(),
             timeout=CLONE_TIMEOUT_S,
         )

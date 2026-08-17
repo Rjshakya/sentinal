@@ -30,26 +30,17 @@ function SearchPage() {
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-6">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="-ml-2 gap-1 text-muted-foreground"
-            render={<Link to="/dashboard" />}
-          >
-            <IconArrowLeft className="size-3.5" />
-            Dashboard
-          </Button>
-          <h1 className="mt-8 text-2xl font-semibold tracking-tight">
+          <h1 className=" text-2xl font-semibold tracking-tight">
             {owner}/{name}
           </h1>
         </div>
       </div>
 
-      <Card className="py-0 pt-1 pb-1 px-1  ">
+      <Card className="py-0 pt-1 pb-1 px-1 bg-muted ">
         <CardHeader className="p-0  ">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Input
-              className=" bg-card dark:bg-card h-10  border-0 border-b  focus-visible:ring-0 focus-visible:border-b   px-1  "
+              className=" bg-muted dark:bg-muted h-10  border-0 border-b  focus-visible:ring-0 focus-visible:border-b   px-1  "
               value={query}
               onChange={(e) => setQuery(e.currentTarget.value)}
               placeholder="e.g. how does auth middleware attach the session?"
@@ -59,7 +50,7 @@ function SearchPage() {
             />
           </div>
         </CardHeader>
-        <CardContent className="space-y-3  bg-background  py-5">
+        <CardContent className={search?.data?.results?.length ? "px-0" : "p-2"}>
           {search.isPending && <SearchSkeleton />}
           {search.data && !search.isPending && (
             <SearchResults results={search.data?.results || []} owner={owner} repo={name} />

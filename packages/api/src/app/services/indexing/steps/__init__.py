@@ -3,10 +3,12 @@
 The pipeline has four steps:
 
 1. :func:`ensureIndexSandbox` -- create the E2B sandbox.
-2. :func:`gitCloneToSandbox` -- shallow-clone the repo.
-3. :func:`uploadScriptsToSandbox` -- upload ``chunking.py`` +
+2. :func:`getRepoUrl` -- resolve the authenticated clone URL from
+   the repo's installation (private-repo support).
+3. :func:`gitCloneToSandbox` -- shallow-clone the repo.
+4. :func:`uploadScriptsToSandbox` -- upload ``chunking.py`` +
    ``ingestion.py``.
-4. :func:`runIndexPipeline` -- combined chunking + ingestion in one
+5. :func:`runIndexPipeline` -- combined chunking + ingestion in one
    in-sandbox command.
 
 Plus a best-effort teardown at the end of the workflow:
@@ -37,6 +39,7 @@ from app.services.indexing.steps.ensure_index_sandbox import (
     _resolve_table_uri,
     ensureIndexSandbox,
 )
+from app.services.indexing.steps.get_repo_url import getRepoUrl
 from app.services.indexing.steps.git_clone import (
     build_clone_command,
     check_git_clone,
@@ -75,6 +78,7 @@ __all__ = [
     "check_index_run_result",
     "create_index_run_step",
     "ensureIndexSandbox",
+    "getRepoUrl",
     "gitCloneToSandbox",
     "mark_index_run_error_step",
     "mark_index_run_running_step",

@@ -19,16 +19,19 @@ export const SearchResults = React.memo(
     return (
       <div className="space-y-2 ">
         <ScrollArea className="max-h-112 overflow-y-auto">
-          <ul className="divide-y rounded-md ">
+          <ul className="flex flex-col gap-1 rounded-md ">
             {results.map((result, idx) => (
-              <li key={`${result.file_name}-${result.start_line}-${idx}`} className="space-y-2 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="truncate font-medium">{result.file_name}</span>
+              <li
+                key={`${result.file_name}-${result.start_line}-${idx}`}
+                className="space-y-2 p-3 bg-background  "
+              >
+                <div className="border-b border-ring/70  pb-2   flex flex-wrap items-center justify-between gap-2">
+                  <span className="truncate font-medium  ">{result.file_name}</span>
                   <span className="font-mono">
                     {result.start_line}-{result.end_line}
                   </span>
                 </div>
-                <div className=" overflow-auto p-0 text-xs">
+                <div className=" overflow-x-scroll overflow-y-auto  p-0 text-xs">
                   <CodeBlock
                     language={result.language}
                     code={result.content}

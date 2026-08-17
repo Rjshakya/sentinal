@@ -142,17 +142,16 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
   }
 
   return (
-    <Card className="flex flex-col">
-      <CardHeader>
-        <div className="flex items-start justify-between gap-2">
+    <Card className="flex flex-col  p-1 gap-1 drop-shadow-sm  ">
+      <CardHeader className=" p-4 gap-3 ">
+        <div className="flex items-center  gap-2">
           <div className="flex items-center gap-2">
-            <IconKey className="size-5" />
+            <IconKey className="size-4" />
             <CardTitle>LLM provider</CardTitle>
           </div>
           {existing ? (
-            <Badge>
-              <IconCheck />
-              Configured
+            <Badge className="p-1  bg-green-700  ">
+              <IconCheck className="size-3" />
             </Badge>
           ) : (
             <Badge variant="secondary">
@@ -162,12 +161,11 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
           )}
         </div>
         <CardDescription>
-          The chat model Sentinel uses to review your pull requests. Set an API key once — the
-          server stores it for you and reuses it on every review run.
+          The chat model Sentinel will use to review your pull requests.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid gap-2 sm:grid-cols-[180px_1fr] sm:items-center">
+      <CardContent className="space-y-4 bg-muted dark:bg-muted p-4 border-t ">
+        <div className="grid gap-4 ">
           <Label htmlFor="llm-provider">Provider</Label>
           <div className="space-y-2">
             <Select
@@ -178,8 +176,8 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
                 if (v !== OTHER_VALUE) setCustomProvider("");
               }}
             >
-              <SelectTrigger id="llm-provider" className="w-full">
-                <SelectValue placeholder="Select a provider" />
+              <SelectTrigger id="llm-provider" className="w-full text-muted-foreground ">
+                <SelectValue placeholder="Select a provider  " />
               </SelectTrigger>
               <SelectContent>
                 {PROVIDER_OPTIONS.map((opt) => (
@@ -200,7 +198,7 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
           </div>
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-[180px_1fr] sm:items-center">
+        <div className="grid gap-4 ">
           <Label htmlFor="llm-model">Model ID</Label>
           <Input
             id="llm-model"
@@ -208,10 +206,11 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
             onChange={(e) => setModelId(e.target.value)}
             placeholder="e.g. gpt-4o-mini, claude-3-5-sonnet-latest"
             autoComplete="off"
+            className=" text-muted-foreground"
           />
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-[180px_1fr] sm:items-center">
+        <div className="grid gap-4 ">
           <Label htmlFor="llm-base-url">Base URL</Label>
           <Input
             id="llm-base-url"
@@ -219,10 +218,11 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="https://api.openai.com/v1"
             autoComplete="off"
+            className=" text-muted-foreground"
           />
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-[180px_1fr] sm:items-center">
+        <div className="grid gap-4 ">
           <Label htmlFor="llm-api-key">API key</Label>
           <div className="space-y-1">
             <Input
@@ -232,6 +232,7 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={existing ? "•••••••• (set)" : "sk-…"}
               autoComplete="off"
+              className=" text-muted-foreground"
             />
             <p className="text-muted-foreground text-xs">
               The server stores this encrypted at rest. Re-enter the key each time you change it —
@@ -264,7 +265,7 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
           </>
         )}
       </CardContent>
-      <CardFooter className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <CardFooter className=" mb-1 bg-muted dark:bg-muted     flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
         {showTestHint(payload) ? (
           <p className="text-muted-foreground text-xs">Test the connection before saving.</p>
         ) : (
@@ -276,7 +277,7 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
             {test.isPending ? "Testing…" : "Test connection"}
           </Button>
           <Button onClick={handleSave} disabled={!canSave || update.isPending}>
-            {update.isPending ? "Saving…" : existing ? "Replace" : "Save"}
+            {update.isPending ? "Saving…" : existing ? "update" : "Save"}
           </Button>
         </div>
       </CardFooter>

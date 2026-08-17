@@ -30,6 +30,8 @@ from __future__ import annotations
 __all__ = [
     "IndexGitCloneError",
     "IndexGitCloneTransientError",
+    "IndexInstallTokenMintError",
+    "IndexInstallationNotFoundError",
     "IndexRunError",
     "IndexRunTransientError",
     "IndexSandboxConnectError",
@@ -129,6 +131,42 @@ class IndexGitCloneTransientError(TransientIndexingError):
     def __init__(self, message: str | None = None, *, cause: str = "") -> None:
         self.cause = cause
         super().__init__(message or f"git clone transient sandbox failure: {cause}")
+
+
+class IndexInstallationNotFoundError(IndexingError):
+    """No :class:`Installation` row matches ``(user_id, account_login)``.
+
+    Final — the repo's installation is missing from the local
+    ``installations`` table (or was deleted), so no installation
+    token can be minted and no authenticated clone URL can be built.
+    """
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        user_id: str = "",
+        repo_owner: str = "",
+        repo_name: str = "",
+    ) -> None:
+        self.user_id = user_id
+        self.repo_owner = repo_owner
+        self.repo_name = repo_name
+        super().__init__(
+            message
+            or f"no installation found for user_id={user_id} owner={repo_owner} "
+            f"repo={repo_name}"
+        )
+
+
+class IndexInstallTokenMintError(TransientIndexingError):
+    """Minting the installation access token failed. DBOS retries."""
+
+    def __init__(self, message: str | None = None, *, cause: str = "") -> None:
+        self.cause = cause
+        super().__init__(
+            message or f"installation token mint failed: {cause}"
+        )
 
 
 class ScriptSetupError(TransientIndexingError):
