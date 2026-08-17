@@ -9,7 +9,7 @@ failure).
 
 DBOS keys step registration on ``__name__``. Named ``gitCloneToSandbox``
 to avoid colliding with the setup pipeline's own ``git_clone_step``
-in :mod:`app.services.agent.setup_workflow`.
+in :mod:`app.services.setup.steps`.
 """
 
 from __future__ import annotations

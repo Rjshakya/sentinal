@@ -13,7 +13,7 @@ Two routes:
   no row is persisted beyond DBOS's own workflow state.
 
 The router is a thin shell. All setup logic lives in
-:mod:`app.services.agent.setup_workflow.workflow` and its step modules; the
+:mod:`app.services.setup.workflow` and its step modules; the
 router only handles request validation, the Repo-row skip check,
 and the DBOS dispatch / status read.
 """
@@ -36,8 +36,8 @@ from app.schemas.setup import (
     SetupWorkflowHandle,
     StartSetupResponse,
 )
-from app.services.agent.setup_workflow.types import SetupWorkflowInput
-from app.services.agent.setup_workflow.workflow import setup_workflow
+from app.services.setup.types import SetupWorkflowInput
+from app.services.setup.workflow import setup_workflow
 
 log = logging.getLogger(__name__)
 
@@ -150,6 +150,7 @@ async def start_setup_repos(
             installation_id=r.installation_id,
             llm_config=settings.llm_config,
             default_branch=r.default_branch,
+            index_after_setup=settings.indexing_configured,
         )
 
         workflow_info = await DBOS.start_workflow_async(setup_workflow, workflow_input)

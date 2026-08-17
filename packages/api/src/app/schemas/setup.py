@@ -9,7 +9,7 @@ through ``error_name`` / ``error_message`` on
 workflow's own DBOS-managed state.
 
 The schemas here are the HTTP-shape contract only; the workflow
-itself lives in :mod:`app.services.agent.setup_workflow.workflow`.
+itself lives in :mod:`app.services.setup.workflow`.
 """
 
 from __future__ import annotations

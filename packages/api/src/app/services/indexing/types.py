@@ -2,7 +2,7 @@
 
 Extracted so the workflow, the step modules, and the pure helpers can
 import from a single, circular-import-free module — the same split as
-:mod:`app.services.agent.setup_workflow.types`. Every model here is
+:mod:`app.services.setup.types`. Every model here is
 frozen so DBOS can serialize it across workflow checkpoints.
 
 Note: the in-sandbox chunking script defines its own local

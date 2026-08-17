@@ -259,19 +259,22 @@ them on `SQLModel.metadata`.
 
 `src/app/services/`:
 
-- `agent/` — the review-agent schemas + prompts + setup pipeline.
+- `agent/` — the review-agent schemas + prompts.
   - `models.py` — `CodeCommentDraft`, `ReviewComments` (mixed severities),
     `SummaryResult`, `ReviewResult`.
   - `prompts.py` — `PR_SUMMARY_SYSTEM_PROMPT` (summarizer agent) and
     `REVIEW_COMMENTS_SYSTEM_PROMPT` (the merged security/correctness/style
     rubric assigning P1_CRITICAL / P2_WARNING / P3_NITPICK).
   - `helpers.py` — small prompt/result helpers (`extract_message_kinds`).
-  - `setup_workflow/` — the durable per-repo setup workflow:
-    `ensure_repo_and_sandbox_step` → `mint_installation_token_step` →
-    `git_clone_step` → (`finally`) `stop_setup_sandbox_step`. Typed errors in
-    `errors.py`, Pydantic surface in `types.py` (`SetupWorkflowInput`,
-    `RepoContext`, `SetupWorkflowResult`), pure helpers in `_helpers.py`.
-    Workflow id `setup:{user_id}:{github_repo_id}`.
+- `setup/` — the durable per-repo setup workflow:
+  `ensure_repo_and_sandbox_step` → `mint_installation_token_step` →
+  `git_clone_step` → (`finally`) `stop_setup_sandbox_step`. Typed errors in
+  `errors.py`, Pydantic surface in `types.py` (`SetupWorkflowInput`,
+  `RepoContext`, `SetupWorkflowResult`), pure helpers in `_helpers.py`.
+  Workflow id `setup:{user_id}:{github_repo_id}`. When
+  `index_after_setup` is true (router sets it from
+  `Settings.indexing_configured`), the workflow fires off `indexRepo`
+  fire-and-forget as its final step.
 - `review/` — the durable review pipeline.
   - `workflow.py` — the top-level `review_workflow` DBOS orchestrator (see
     §3.5).
@@ -509,10 +512,11 @@ everything else → 202 with a log line.
 **Setup pipeline.** `POST /ai/repo/setup` (202) dispatches one
 `setup_workflow` per new repo: `ensure_repo_and_sandbox_step` (writes the
 `repos` + `sandboxes` rows) → `mint_installation_token_step` (GitHub
-installation token, passed into the sandbox as `GITHUB_TOKEN` for the
+installation token, embedded in the authenticated clone URL for the
 clone) → `git_clone_step` → `stop_setup_sandbox_step` in `finally`. The
 router's GET endpoint polls DBOS status. When `index_after_setup=True`
-and `Settings.indexing_configured` is true, the workflow fires off
+(router sets it from `Settings.indexing_configured`) and indexing is
+configured, the workflow fires off
 `app.services.indexing.workflow.indexRepo` with the deterministic id
 `index:{owner}:{repo}` and passes `local_repo_id=ctx.repo_id` so the
 indexing run can flip the parent `repos.is_indexed` mirror.
@@ -803,7 +807,7 @@ corresponding route file does not exist yet.
 - Review pipeline (workflow + steps + agent fan-out) → `packages/api/src/app/services/review/`
 - Comment-trigger workflow → `packages/api/src/app/services/pr_issue_comment/`
 - GitHub post workflow → `packages/api/src/app/services/github/`
-- Setup workflow → `packages/api/src/app/services/agent/setup_workflow/`
+- Setup workflow → `packages/api/src/app/services/setup/`
 - Per-user LLM config service + routes → `packages/api/src/app/services/llm_config/`, `packages/api/src/app/routers/llm_configs.py`
 - Webhook receiver → `packages/api/src/app/routers/webhooks.py`
 - Route tree → `web/src/routeTree.gen.ts` (generated)

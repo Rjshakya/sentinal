@@ -14,7 +14,7 @@ The retry policy at every ``@DBOS.step`` is::
 
 so a step only re-runs when the exception it raises inherits from
 :class:`TransientIndexingError`. The hierarchy mirrors
-:mod:`app.services.agent.setup_workflow.errors` but is named
+:mod:`app.services.setup.errors` but is named
 independently, per that module's convention.
 
 The single :func:`run_index_step` replaces the legacy

@@ -20,7 +20,7 @@ table is the user-facing mirror that the dashboard polls.
 The :func:`@DBOS.step` decorator (rather than
 :func:`@dbos_datasource.transaction`) keeps the steps consistent with
 the rest of the indexing pipeline — see
-:func:`app.services.agent.setup_workflow.steps.ensure_repo_and_sandbox.ensure_repo_and_sandbox_step`
+:func:`app.services.setup.steps.ensure_repo_and_sandbox.ensure_repo_and_sandbox_step`
 for the same pattern.
 """
 

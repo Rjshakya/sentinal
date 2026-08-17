@@ -2,7 +2,7 @@
 
 No I/O, no session, no clock, no settings reads — every function here
 is testable with ``assert f(x) == y``. Derived from
-:mod:`app.services.agent.setup_workflow._helpers`, which establishes
+:mod:`app.services.setup._helpers`, which establishes
 this convention for the setup pipeline.
 """
 

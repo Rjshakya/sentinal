@@ -25,7 +25,6 @@ Sandbox lifecycle: created in the first step, paused in the
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from dbos import DBOS, SetWorkflowID
 
@@ -69,7 +68,7 @@ async def setup_workflow(input: SetupWorkflowInput) -> SetupWorkflowResult:
     mirror steps in :mod:`app.services.indexing.steps.update_repo`;
     the user can always click "Index" manually to retry.
     """
-    ctx: Optional[RepoContext] = None
+    ctx: RepoContext | None = None
     try:
         ctx = await ensure_repo_and_sandbox_step(input)
 
@@ -118,7 +117,7 @@ async def _dispatch_indexing(
     user_id: str,
     repo_owner: str,
     repo_name: str,
-    default_branch: Optional[str],
+    default_branch: str | None,
     local_repo_id: str,
 ) -> None:
     """Fire-and-forget dispatch of :func:`indexRepo` for this repo.
