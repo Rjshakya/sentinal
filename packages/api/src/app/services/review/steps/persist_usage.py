@@ -71,6 +71,7 @@ async def persist_review_usage(
     session: AsyncSession,
     *,
     pr_id: str,
+    review_id: str | None,
     user_id: str,
     pr_number: int,
     repo_id: str,
@@ -87,6 +88,7 @@ async def persist_review_usage(
     """Insert a single :class:`ReviewUsage` row."""
     row = ReviewUsage(
         pr_id=pr_id,
+        review_id=review_id,
         user_id=user_id,
         pr_number=pr_number,
         repo_id=repo_id,
@@ -120,6 +122,7 @@ async def persist_review_usage(
 async def persist_review_usage_tx(
     *,
     pr_id: str,
+    review_id: str | None,
     user_id: str,
     pr_number: int,
     repo_id: str,
@@ -143,6 +146,7 @@ async def persist_review_usage_tx(
     row = await persist_review_usage(
         session,
         pr_id=pr_id,
+        review_id=review_id,
         user_id=user_id,
         pr_number=pr_number,
         repo_id=repo_id,

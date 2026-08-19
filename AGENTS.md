@@ -352,7 +352,9 @@ them on `SQLModel.metadata`.
     agent middleware stack (`ModelRetryMiddleware` max 3 retries, 2x
     backoff, `on_failure="error"`; `ModelCallLimitMiddleware` run cap 50;
     `ToolCallLimitMiddleware` run cap 200) wired into both review agents.
-  - `errors.py` — typed error variants for the pipeline.
+  - `errors.py` — typed error variants for the pipeline (incl.
+    `ReviewRunUpdateError`, the transient error raised by the `review`
+    lifecycle steps).
   - `steps/` — one file per I/O boundary, each exposing a pure helper and a
     DBOS-wrapped variant: `resolve_repo`/`resolve_repo_tx`,
     `resolve_sandbox`/`resolve_sandbox_step`, `fetch_diff_step`,
@@ -361,6 +363,10 @@ them on `SQLModel.metadata`.
     `persist_summary`/
     `persist_review_summary_tx`, `persist_comments`/
     `persist_code_comments_tx`, `persist_usage`/`persist_review_usage_tx`,
+    `review_run_steps` (`mark_review_is_running_step` /
+    `mark_review_is_stopped_step` / `mark_review_is_errored_step` +
+    `build_error_context` — the durable `review` lifecycle-row steps,
+    retried 3x on `ReviewRunUpdateError`),
     `stop_sandbox_step`.
 - `pr_issue_comment/` — the comment-trigger path.
   - `workflow.py` — `trigger_issue_comment_workflow` (id
@@ -408,7 +414,7 @@ to the provider's native env var (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
 
 ### 3.4 Domain model
 
-Eight tables; UUID (string, `uuidToStr()`) primary keys, timestamps are
+Nine tables; UUID (string, `uuidToStr()`) primary keys, timestamps are
 `TIMESTAMP(timezone=True)` with `now()` server defaults, CASCADE deletes at
 the DB layer with `passive_deletes=True` on relationships.
 
@@ -469,8 +475,32 @@ pull_requests
 ├── head_branch / head_sha
 └── created_at / updated_at
 
+review                       (per-run lifecycle row; one row per review_workflow run)
+├── id                str  PK
+├── user_id           str  index
+├── repo_id           str  → repos.id  CASCADE
+├── gh_repo_id        bigint
+├── pr_id             str  → pull_requests.id  CASCADE
+├── pr_number         int
+├── commit_id         str            (head sha; no FK)
+├── base_sha          str?
+├── workflow_id       str  UNIQUE index  (the deterministic
+│                                       `review:{repo_id}:{pr}:{head_sha[:7]}` id)
+├── trigger           str            ('opened' | 'comment')
+├── state             STARTING | RUNNING | SUCCESS | FAILED  index
+├── comment_count     int?
+├── github_review_id  bigint?        (back-link to the GitHub PR review)
+├── error_name / error_message  str?
+├── error_context     jsonb?         (agent failure context; see build_error_context)
+├── sandbox_id        str?
+├── llm_provider / llm_model / llm_base_url  str?  (snapshot of the
+│                                        resolved LLMConfig at run time)
+├── started_at / completed_at  timestamptz?
+└── created_at / updated_at
+
 code_comments
 ├── pr_id             str  → pull_requests.id  CASCADE
+├── review_id         str? → review.id  CASCADE    (lifecycle row of the run)
 ├── commit_id         str            (head sha; no FK — commit_snapshots was dropped)
 ├── github_comment_id bigint?        (back-link to the comment posted on GitHub)
 ├── file_name         str(1024)
@@ -485,6 +515,7 @@ code_comments
 
 review_summaries
 ├── pr_id             str  → pull_requests.id  CASCADE
+├── review_id         str? → review.id  CASCADE    UNIQUE (lifecycle row of the run)
 ├── commit_id         str            UNIQUE (head sha; no FK)
 ├── github_review_id  bigint?        (back-link to the GitHub PR review)
 ├── summary           text
@@ -495,6 +526,7 @@ review_usages
 ├── id                str  PK
 ├── user_id           str  index
 ├── pr_id             str  → pull_requests.id  CASCADE
+├── review_id         str? → review.id  CASCADE    (lifecycle row of the run)
 ├── pr_number         int
 ├── repo_id           str  → repos.id  CASCADE
 ├── review_summary_id uuid? → review_summaries.id  CASCADE
@@ -508,9 +540,10 @@ review_usages
 
 Enums (Python and DB-checked): `PRStatus`, `CommentSeverity`,
 `CommentSide`, `CommentState`, `ReviewVerdict`, `SandboxState`,
-`ReviewRunStatus`. The relationship graph: `Repo` 1—N `PullRequest`,
-`PullRequest` 1—N `CodeComment` and 1—1 `ReviewSummary` (per commit),
-1—N `ReviewUsage`.
+`ReviewRunStatus`, `ReviewState`. The relationship graph: `Repo` 1—N
+`PullRequest`, `PullRequest` 1—N `CodeComment` and 1—1 `ReviewSummary`
+(per commit), 1—N `ReviewUsage`; `Review` (the per-run lifecycle row)
+1—N `CodeComment`, 1—1 `ReviewSummary` (per run) and 1—N `ReviewUsage`.
 
 ### 3.5 Request lifecycles
 
@@ -629,13 +662,19 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
 2. `resolve_sandbox_step` — look up the active `Sandbox` row and connect to
    the E2B sandbox (`@DBOS.step`). Only the sandbox **id** travels onward;
    each step reconnects.
-3. `fetch_diff_step` — `git diff base_sha...head_sha` written to the
+3. `upsert_pull_request_tx` — insert/update the `PullRequest` row.
+4. `mark_review_is_running_step` — create (or reset on restart) the
+   `review` lifecycle row in `RUNNING`, keyed by the deterministic
+   `workflow_id` (unique index), with the PR link, sandbox, and LLM
+   snapshot; returns the row id. The step is **durable**: retried 3x on
+   transient DB failures and raises `ReviewRunUpdateError` otherwise.
+5. `update_repo_step` — refresh the sandbox repo to the default branch.
+6. `fetch_diff_step` — `git diff base_sha...head_sha` written to the
    sandbox (`file.diff`).
-4. `parse_diff_step` — parse the diff into a `HunkMap` and write
+7. `parse_diff_step` — parse the diff into a `HunkMap` and write
    `diff.json` alongside it. The `HunkMap` is the source of truth for which
    `(file, line, side)` anchors GitHub will accept.
-5. `upsert_pull_request_tx` — insert/update the `PullRequest` row.
-6. `invoke_summary_agent_step` / `invoke_comments_agent_step` — the
+8. `invoke_summary_agent_step` / `invoke_comments_agent_step` — the
    **two parallel agent steps**, started concurrently from the workflow
    body via `asyncio.gather(return_exceptions=True)` (the documented DBOS
    parallel-steps pattern; deterministic start order). Each
@@ -654,13 +693,30 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
    comment lists) with a warning log, and the review completes with the
    successful lanes' output; token usage is aggregated per model from
    successful lanes only.
-7. `filter_drafts(review, hunk_map)` — pure server-side backstop that drops
+9. `filter_drafts(review, hunk_map)` — pure server-side backstop that drops
    any draft whose anchor is not in the `HunkMap`.
-8. `persist_review_summary_tx` + `persist_code_comments_tx` — one
-   `ReviewSummary` row and one `CodeComment` row per surviving draft.
-9. `persist_review_usage_tx` — one `ReviewUsage` row with aggregated token
-   counts (success path; `review_status=SUCCESS`).
-10. `stop_sandbox_step` — always, in a `finally`.
+10. `persist_review_summary_tx` + `persist_code_comments_tx` — one
+    `ReviewSummary` row and one `CodeComment` row per surviving draft,
+    each carrying the run's `review_id` (the lifecycle row).
+11. `persist_review_usage_tx` — one `ReviewUsage` row with aggregated token
+    counts (success path; `review_status=SUCCESS`), carrying `review_id`.
+12. `mark_review_is_stopped_step` — flip the `review` row to `SUCCESS`
+    with the surviving comment count and the GitHub review id (from the
+    awaited post workflow). Durable like the running step.
+13. `stop_sandbox_step` — always, in a `finally`.
+
+Steps 3–4 run **inside** the `try`, so the `finally` sandbox stop also
+covers a raising `upsert_pull_request_tx` / running step. The `except`
+block flips the `review` row to `FAILED` via
+`mark_review_is_errored_step` (guarded by its own try/except so a
+failure while recording the error never masks the original exception —
+which is then re-raised) and re-raises. All three `mark_*` steps are
+durable (`@DBOS.step`, `retries_allowed=True`, `max_attempts=3`,
+`should_retry=_SHOULD_RETRY_TRANSIENT`) and raise
+`ReviewRunUpdateError` on failure, so a persistent lifecycle-row
+failure marks the workflow ERROR instead of silently leaving the row
+stuck in `RUNNING`; the running step's find-or-create semantics keep
+retries idempotent via the unique `workflow_id`.
 
 The summary in `review_summaries.summary` is the `summarizer` agent's
 markdown output (from its `SummaryResult` structured response), and the verdict is

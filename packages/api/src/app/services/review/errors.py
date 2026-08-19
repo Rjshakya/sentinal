@@ -146,6 +146,17 @@ class ReviewAgentRateLimitedError(TransientStepError):
         super().__init__(cause)
 
 
+class ReviewRunUpdateError(TransientStepError):
+    """The ``review`` lifecycle row could not be written/updated.
+
+    Raised by the ``mark_review_*`` steps in
+    :mod:`app.services.review.steps.review_run_steps` when the DB write
+    (or the row lookup) fails. Transient — DBOS retries the step up to
+    3 attempts; after that the error propagates and the workflow is
+    marked ERROR.
+    """
+
+
 # --------------------------------------------------------------------------- #
 # Per-subagent invocation errors (parallel fan-out)                            #
 # --------------------------------------------------------------------------- #
@@ -445,6 +456,7 @@ __all__ = [
     "ReviewAgentCrashedError",
     "ReviewAgentRateLimitedError",
     "ReviewAgentsInvocationError",
+    "ReviewRunUpdateError",
     "SandboxConnectError",
     "StepError",
     "SubagentInvocationError",

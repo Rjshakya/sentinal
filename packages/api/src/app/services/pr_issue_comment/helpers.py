@@ -279,6 +279,7 @@ def build_review_workflow_input(
         body=body or "",
         title=title or "",
         status=_classify_pr_status(state, merged),
+        trigger="comment",
         llm_config=llm_config,
         post_to_github=True,
         github_installation_id=trigger.installation_id,

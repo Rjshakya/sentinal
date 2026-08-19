@@ -20,10 +20,24 @@ Design notes:
 - The E2B sandbox object is never passed between steps. Only the
   sandbox id travels through the workflow; each step reconnects by
   id.
-- GitHub posting is a separate durable workflow
+- The ``review`` lifecycle row
+  (:func:`app.services.review.steps.review_run_steps`) records one
+  row per run: ``RUNNING`` once the PR row exists, ``SUCCESS`` after
+  the GitHub post completes, ``FAILED`` on any terminal exception.
+  The ``mark_*`` steps are durable — DBOS retries them on transient
+  DB failures and they raise
+  :class:`app.services.review.errors.ReviewRunUpdateError`; a
+  persistent mirror failure marks the workflow ERROR rather than
+  silently leaving the row stuck in ``RUNNING``. The row is created
+  inside the ``try`` so the sandbox ``finally`` also covers a running
+  step that raises.
+- GitHub posting is awaited before the review is marked stopped, so
+  the ``review`` row's ``github_review_id`` is populated on the
+  success path. The post is still a separate durable workflow
   (:func:`app.services.github.workflow.post_review_to_github_workflow`)
-  so it can be retried / restarted independently without re-running
-  the LLM agent.
+  that can be retried / restarted independently without re-running
+  the LLM agent; it never raises, so an awaited post failure does
+  not fail the review.
 - Token-usage accounting happens at the end of the local pipeline
   via :func:`app.services.review.steps.persist_usage.persist_review_usage_tx`,
   which writes a :class:`app.models.review_usage.ReviewUsage` row
@@ -58,8 +72,15 @@ from app.services.review.steps.invoke_agent import (
     invoke_summary_agent_step,
 )
 from app.services.review.steps.persist_usage import sum_total_usages
+from app.services.review.steps.review_run_steps import (
+    build_error_context,
+    mark_review_is_errored_step,
+    mark_review_is_running_step,
+    mark_review_is_stopped_step,
+)
 from app.services.review.workflow_types import (
     PostReviewInput,
+    PostReviewResult,
     ReviewRunResult,
     ReviewWorkflowInput,
 )
@@ -84,11 +105,56 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
     successful :func:`app.services.review.steps.resolve_sandbox_step`.
     If :func:`app.services.review.steps.resolve_sandbox_step` itself
     raises, there is no connected sandbox to stop.
+
+    The ``review`` lifecycle row runs alongside: the row is created
+    in ``RUNNING`` after the PR row exists, flipped to ``SUCCESS`` by
+    :func:`app.services.review.steps.review_run_steps.mark_review_is_stopped_step`
+    at the end of the success path, and flipped to ``FAILED`` by
+    :func:`app.services.review.steps.review_run_steps.mark_review_is_errored_step`
+    on any terminal exception (which is then re-raised). The
+    ``mark_*`` steps are durable and raise
+    :class:`app.services.review.errors.ReviewRunUpdateError` on
+    failure; the ``except`` block guards the errored step so a
+    failure while recording the error never masks the original
+    exception.
     """
     repo = await resolve_repo_tx(input.gh_repo_id)
     sandbox = await resolve_sandbox_step(user_id=input.user_id, repo_id=repo.id)
 
+    workflow_id = DBOS.workflow_id or "<no-workflow-id>"
+    review_id: str | None = None
+
     try:
+        pr_id = await upsert_pull_request_tx(
+            repo_id=repo.id,
+            github_pr_id=input.pr_id,
+            number=input.pr_number,
+            base_branch=input.branch,
+            base_sha=input.base_sha,
+            head_branch=input.head_branch,
+            head_sha=input.head_sha,
+            title=input.title,
+            body=input.body,
+            author=input.author,
+            status=input.status,
+        )
+
+        review_id = await mark_review_is_running_step(
+            user_id=input.user_id,
+            repo_id=repo.id,
+            gh_repo_id=input.gh_repo_id,
+            pr_id=pr_id,
+            pr_number=input.pr_number,
+            commit_id=input.head_sha,
+            base_sha=input.base_sha,
+            trigger=input.trigger,
+            sandbox_id=sandbox.sandbox_id,
+            workflow_id=workflow_id,
+            llm_provider=input.llm_config.provider,
+            llm_model=input.llm_config.model_id,
+            llm_base_url=input.llm_config.base_url,
+        )
+
         await update_repo_step(
             sandbox_id=sandbox.sandbox_id,
             sandbox_name=sandbox.sandbox_name,
@@ -126,20 +192,6 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             for file_name, entry in parsed_diff["files"].items()
         }
 
-        pr_id = await upsert_pull_request_tx(
-            repo_id=repo.id,
-            github_pr_id=input.pr_id,
-            number=input.pr_number,
-            base_branch=input.branch,
-            base_sha=input.base_sha,
-            head_branch=input.head_branch,
-            head_sha=input.head_sha,
-            title=input.title,
-            body=input.body,
-            author=input.author,
-            status=input.status,
-        )
-
         agent_results = await asyncio.gather(
             invoke_summary_agent_step(
                 sandbox_id=sandbox.sandbox_id,
@@ -171,19 +223,21 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             repo_id=repo.id,
             user_id=input.user_id,
             llm_config=input.llm_config,
-            workflow_id=DBOS.workflow_id or "<no-workflow-id>",
+            workflow_id=workflow_id,
         )
 
         filtered_review = filter_drafts(review, hunk_map)
 
         summary_id = await persist_review_summary_tx(
             pr_id=pr_id,
+            review_id=review_id,
             commit_id=input.head_sha,
             result=filtered_review,
         )
 
         await persist_code_comments_tx(
             pr_id=pr_id,
+            review_id=review_id,
             commit_id=input.head_sha,
             comments=[c.model_dump(mode="json") for c in filtered_review.comments],
         )
@@ -191,8 +245,10 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
         input_tokens, output_tokens, total_tokens, input_token_details = (
             sum_total_usages(usages)
         )
+
         await persist_review_usage_tx(
             pr_id=pr_id,
+            review_id=review_id,
             user_id=input.user_id,
             pr_number=input.pr_number,
             repo_id=repo.id,
@@ -207,6 +263,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             llm_base_url=input.llm_config.base_url,
         )
 
+        github_review_id: str | None = None
         if input.post_to_github and input.github_installation_id is not None:
             post_input = PostReviewInput(
                 repo_id=repo.id,
@@ -221,14 +278,23 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
 
             post_workflow_id = f"post:{repo.id}:{input.pr_number}:{input.head_sha[:7]}"
             with SetWorkflowID(post_workflow_id):
-                await DBOS.start_workflow_async(
+                post_handle = await DBOS.start_workflow_async(
                     post_review_to_github_workflow, post_input
                 )
+                post_result: PostReviewResult = await post_handle.get_result()
+            if post_result.github_review_id is not None:
+                github_review_id = str(post_result.github_review_id)
+
+        await mark_review_is_stopped_step(
+            review_id=review_id,
+            comment_count=len(filtered_review.comments),
+            github_review_id=github_review_id,
+        )
 
         log.info(
             "workflow: stopping workflow: workflow_id=%s "
             "gh_repo_id=%s number=%s head_sha=%s",
-            DBOS.workflow_id,
+            workflow_id,
             input.gh_repo_id,
             input.pr_number,
             input.head_sha,
@@ -240,6 +306,22 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             review=filtered_review,
             usages=usages,
         )
+
+    except BaseException as exc:
+        try:
+            await mark_review_is_errored_step(
+                review_id=review_id,
+                error_name=type(exc).__name__,
+                error_message=str(exc),
+                error_context=build_error_context(exc),
+            )
+        except Exception:
+            log.exception(
+                "workflow: failed to record review error review_id=%s workflow_id=%s",
+                review_id,
+                workflow_id,
+            )
+        raise
 
     finally:
         await stop_sandbox_step(

@@ -49,6 +49,7 @@ class ReviewWorkflowInput(BaseModel):
     body: str
     title: str
     status: PRStatus
+    trigger: str = "opened"
     llm_config: LLMConfig
     post_to_github: bool
     github_installation_id: int | None = None

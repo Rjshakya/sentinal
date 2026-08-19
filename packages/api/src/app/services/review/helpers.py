@@ -32,16 +32,17 @@ def get_repo_path(repo_name: str) -> str:
 def map_drafts_to_comment_rows(
     *,
     pr_id: str,
+    review_id: str | None,
     commit_id: str,
     comments: Sequence[CodeCommentDraft],
 ) -> list[CodeComment]:
     """Translate :class:`CodeCommentDraft` objects into ORM rows.
 
     Each draft becomes a :class:`CodeComment` keyed to ``(pr_id,
-    commit_id)`` with ``state=ACTIVE``. The agent's severity / side
-    strings are coerced into the corresponding enums; a bad value raises
-    ``ValueError`` here (this is a programmer error, not a pipeline
-    failure mode).
+    commit_id)`` with ``state=ACTIVE`` and the run's ``review_id``
+    when one exists. The agent's severity / side strings are coerced
+    into the corresponding enums; a bad value raises ``ValueError``
+    here (this is a programmer error, not a pipeline failure mode).
     """
     rows: list[CodeComment] = []
     for draft in comments:
@@ -49,6 +50,7 @@ def map_drafts_to_comment_rows(
             CodeComment(
                 id=uuidToStr(),
                 pr_id=pr_id,
+                review_id=review_id,
                 commit_id=commit_id,
                 file_name=draft.file_name,
                 comment=draft.comment,

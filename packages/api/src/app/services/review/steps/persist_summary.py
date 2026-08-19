@@ -28,12 +28,14 @@ async def persist_review_summary(
     session: AsyncSession,
     *,
     pr_id: str,
+    review_id: str | None,
     commit_id: str,
     result: ReviewResult,
 ) -> ReviewSummary:
     """Insert a single :class:`ReviewSummary` row."""
     summary = ReviewSummary(
         pr_id=pr_id,
+        review_id=review_id,
         commit_id=commit_id,
         summary=result.summary,
         verdict=ReviewVerdict(result.verdict),
@@ -54,6 +56,7 @@ async def persist_review_summary(
 async def persist_review_summary_tx(
     *,
     pr_id: str,
+    review_id: str | None,
     commit_id: str,
     result: ReviewResult,
 ) -> UUID:
@@ -66,6 +69,7 @@ async def persist_review_summary_tx(
     summary = await persist_review_summary(
         session,
         pr_id=pr_id,
+        review_id=review_id,
         commit_id=commit_id,
         result=result,
     )

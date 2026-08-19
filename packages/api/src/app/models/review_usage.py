@@ -49,6 +49,12 @@ class ReviewUsage(SQLModel, table=True):
         sa_column_args=(ForeignKey("reviewsummary.id", ondelete="CASCADE"),),
         nullable=True,
     )
+    review_id: Optional[str] = Field(
+        default=None,
+        sa_column_args=(ForeignKey("review.id", ondelete="CASCADE"),),
+        nullable=True,
+        index=True,
+    )
 
     review_status: ReviewRunStatus = Field(
         default=ReviewRunStatus.SUCCESS,

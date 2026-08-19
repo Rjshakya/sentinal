@@ -20,6 +20,8 @@ Modules:
 - :mod:`.persist_summary`     — insert the :class:`ReviewSummary` row.
 - :mod:`.persist_comments`    — insert the :class:`CodeComment` rows.
 - :mod:`.persist_usage`       — insert the :class:`ReviewUsage` row.
+- :mod:`.review_run_steps`    — the ``review`` lifecycle mirror
+  (running / stopped / errored transitions + ``build_error_context``).
 - :mod:`.stop_sandbox`        — best-effort sandbox stop.
 - :mod:`.update_repo`         — refresh the sandbox repo to the default branch.
 """
@@ -53,6 +55,12 @@ from app.services.review.steps.resolve_sandbox import (
     resolve_sandbox,
     resolve_sandbox_step,
 )
+from app.services.review.steps.review_run_steps import (
+    build_error_context,
+    mark_review_is_errored_step,
+    mark_review_is_running_step,
+    mark_review_is_stopped_step,
+)
 from app.services.review.steps.stop_sandbox import stop_sandbox_step
 from app.services.review.steps.update_repo import update_repo, update_repo_step
 from app.services.review.steps.upsert_pr import (
@@ -61,12 +69,16 @@ from app.services.review.steps.upsert_pr import (
 )
 
 __all__ = [
+    "build_error_context",
     "combine_agent_outcomes",
     "fetch_diff_step",
     "invoke_comments_agent",
     "invoke_comments_agent_step",
     "invoke_summary_agent",
     "invoke_summary_agent_step",
+    "mark_review_is_errored_step",
+    "mark_review_is_running_step",
+    "mark_review_is_stopped_step",
     "parse_diff_step",
     "persist_code_comments",
     "persist_code_comments_tx",
