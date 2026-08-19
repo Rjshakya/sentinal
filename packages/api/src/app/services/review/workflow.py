@@ -95,7 +95,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             repo_id=repo.id,
             repo_name=repo.repo_name,
             user_id=input.user_id,
-            default_branch=repo.default_branch,
+            default_branch=input.default_branch or repo.default_branch,
         )
 
         await fetch_diff_step(
@@ -181,6 +181,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             commit_id=input.head_sha,
             result=filtered_review,
         )
+
         await persist_code_comments_tx(
             pr_id=pr_id,
             commit_id=input.head_sha,
@@ -201,6 +202,9 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             output_tokens=output_tokens,
             total_tokens=total_tokens,
             input_token_details=input_token_details,
+            llm_model_id=input.llm_config.model_id,
+            llm_provider=input.llm_config.provider,
+            llm_base_url=input.llm_config.base_url,
         )
 
         if input.post_to_github and input.github_installation_id is not None:

@@ -48,6 +48,7 @@ class IssueCommentTriggerInput(BaseModel):
     repo_owner: str
     repo_name: str
     gh_repo_id: int
+    default_branch: str | None = None
     pr_number: int
     pr_author_login: str
     commenter_login: str

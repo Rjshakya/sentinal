@@ -41,6 +41,7 @@ class ReviewWorkflowInput(BaseModel):
     pr_id: int
     pr_number: int
     branch: str
+    default_branch: str | None = None
     base_sha: str
     head_sha: str
     head_branch: str

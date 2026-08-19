@@ -96,6 +96,7 @@ def validate_comment_payload(
         "repo_owner": owner,
         "repo_name": repository.get("name"),
         "gh_repo_id": repository.get("id"),
+        "default_branch": repository.get("default_branch"),
         "pr_number": issue.get("number"),
         "pr_author_login": issue_user.get("login"),
         "commenter_login": comment_user.get("login"),
@@ -260,7 +261,9 @@ def build_review_workflow_input(
     ``base_branch``, ``head_branch``, ``title``, ``body``, ``author``,
     ``state``, ``merged``) come from
     :func:`app.services.pr_issue_comment.steps.fetch_pr_state.fetch_pr_state_step`
-    — the comment payload does not carry them.
+    — the comment payload does not carry them. ``default_branch`` is
+    the exception: it is read straight off the payload's
+    ``repository.default_branch`` via :class:`IssueCommentTriggerInput`.
     """
     return ReviewWorkflowInput(
         user_id=user_id,
@@ -268,6 +271,7 @@ def build_review_workflow_input(
         pr_id=gh_pr_id,
         pr_number=trigger.pr_number,
         branch=base_branch,
+        default_branch=trigger.default_branch,
         base_sha=base_sha,
         head_sha=head_sha,
         head_branch=head_branch,

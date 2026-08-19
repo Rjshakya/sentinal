@@ -501,6 +501,8 @@ review_usages
 ├── review_status     SUCCESS | FAILED
 ├── input_tokens / output_tokens / total_tokens  int
 ├── input_token_details  jsonb?     (cache_read / cache_creation)
+├── llm_model_id / llm_provider / llm_base_url  str?  (snapshot of the
+│                                        resolved LLMConfig at run time)
 └── created_at / updated_at
 ```
 

@@ -69,12 +69,13 @@ class WebhookAck(BaseModel):
 
 
 class PRReviewInput(BaseModel):
-    """Flat, typed view of a verified ``pull_request`` payload."""
+    """Flat, typed pr_payload of a verified ``pull_request`` payload."""
 
     gh_repo_id: int
     gh_pr_id: int
     number: int
     base_branch: str
+    default_branch: str | None = None
     base_sha: str
     head_branch: str
     head_sha: str
@@ -105,7 +106,7 @@ def _classify_status(pr: dict[str, Any]) -> str | None:
 
 
 def extract_payload(payload: dict[str, Any]) -> PRReviewInput | None:
-    """Project the GitHub ``pull_request`` payload onto a typed view.
+    """Project the GitHub ``pull_request`` payload onto a typed pr_payload.
 
     Returns ``None`` on any malformed input — the orchestrator folds
     that into a ``skip_reason="malformed_payload"`` ack. Never raises.
@@ -121,6 +122,7 @@ def extract_payload(payload: dict[str, Any]) -> PRReviewInput | None:
         "gh_pr_id": pr.get("id"),
         "number": pr.get("number"),
         "base_branch": base.get("ref"),
+        "default_branch": repo.get("default_branch"),
         "base_sha": base.get("sha"),
         "head_branch": head.get("ref"),
         "head_sha": head.get("sha"),
@@ -162,27 +164,28 @@ async def resolve_llm_config(user_id: str) -> LLMConfig:
 
 
 def build_review_workflow_input(
-    view: PRReviewInput,
+    pr_payload: PRReviewInput,
     *,
     user_id: str,
     llm_config: LLMConfig,
     github_installation_id: int | None = None,
     post_to_github: bool = False,
 ) -> ReviewWorkflowInput:
-    """Translate the webhook view into a serializable workflow input."""
+    """Translate the webhook pr_payload into a serializable workflow input."""
     return ReviewWorkflowInput(
         user_id=user_id,
-        gh_repo_id=view.gh_repo_id,
-        pr_id=view.gh_pr_id,
-        pr_number=view.number,
-        branch=view.base_branch,
-        base_sha=view.base_sha,
-        head_sha=view.head_sha,
-        head_branch=view.head_branch,
-        author=view.author,
-        title=view.title,
-        body=view.body or "",
-        status=view.status,
+        gh_repo_id=pr_payload.gh_repo_id,
+        pr_id=pr_payload.gh_pr_id,
+        pr_number=pr_payload.number,
+        branch=pr_payload.base_branch,
+        default_branch=pr_payload.default_branch,
+        base_sha=pr_payload.base_sha,
+        head_sha=pr_payload.head_sha,
+        head_branch=pr_payload.head_branch,
+        author=pr_payload.author,
+        title=pr_payload.title,
+        body=pr_payload.body or "",
+        status=pr_payload.status,
         llm_config=llm_config,
         post_to_github=post_to_github,
         github_installation_id=github_installation_id,
@@ -288,8 +291,8 @@ async def handle_pull_request_opened(
             skip_reason="malformed_installation",
         )
 
-    view = extract_payload(payload)
-    if view is None:
+    pr_payload = extract_payload(payload)
+    if pr_payload is None:
         return WebhookAck(
             accepted=False,
             action="opened",
@@ -304,8 +307,8 @@ async def handle_pull_request_opened(
             "github_installation_id=%s gh_repo_id=%s number=%s",
             delivery,
             installation_id,
-            view.gh_repo_id,
-            view.number,
+            pr_payload.gh_repo_id,
+            pr_payload.number,
         )
         return WebhookAck(
             accepted=False,
@@ -314,14 +317,14 @@ async def handle_pull_request_opened(
             skip_reason="unowned_installation",
         )
 
-    repo_id = await resolve_repo_id(view.gh_repo_id)
+    repo_id = await resolve_repo_id(pr_payload.gh_repo_id)
     if repo_id is None:
         log.info(
             "review.webhook: skip (repo not configured): delivery=%s "
             "gh_repo_id=%s number=%s",
             delivery,
-            view.gh_repo_id,
-            view.number,
+            pr_payload.gh_repo_id,
+            pr_payload.number,
         )
         return WebhookAck(
             accepted=False,
@@ -336,8 +339,8 @@ async def handle_pull_request_opened(
             "delivery=%s gh_repo_id=%s number=%s llm_configured=%s "
             "sandbox_configured=%s",
             delivery,
-            view.gh_repo_id,
-            view.number,
+            pr_payload.gh_repo_id,
+            pr_payload.number,
             settings.llm_configured,
             settings.sandbox_configured,
         )
@@ -352,7 +355,7 @@ async def handle_pull_request_opened(
     post_to_github = installation_id is not None
 
     workflow_input = build_review_workflow_input(
-        view,
+        pr_payload,
         user_id=user_id,
         llm_config=llm_config,
         github_installation_id=installation_id,
@@ -361,8 +364,8 @@ async def handle_pull_request_opened(
 
     workflow_id = create_review_workflow_id(
         repo_id=repo_id,
-        pr_number=view.number,
-        head_sha=view.head_sha,
+        pr_number=pr_payload.number,
+        head_sha=pr_payload.head_sha,
     )
 
     log.info(
@@ -370,9 +373,9 @@ async def handle_pull_request_opened(
         "gh_repo_id=%s number=%s head_sha=%s post_to_github=%s",
         delivery,
         workflow_id,
-        view.gh_repo_id,
-        view.number,
-        view.head_sha,
+        pr_payload.gh_repo_id,
+        pr_payload.number,
+        pr_payload.head_sha,
         post_to_github,
     )
 
