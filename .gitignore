@@ -8,6 +8,9 @@ wheels/
 .venv/
 .uv-cache/
 
+# LanceDB test dataset
+packages/api/lance-db/
+
 # Environments / secrets
 .env
 .env.local

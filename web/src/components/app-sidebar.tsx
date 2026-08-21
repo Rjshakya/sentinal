@@ -1,8 +1,8 @@
-"use client"
+"use client";
 
-import * as React from "react"
-import { NavMain } from "@/components/nav-main"
-import { NavUser } from "@/components/nav-user"
+import * as React from "react";
+import { NavMain } from "@/components/nav-main";
+import { NavUser } from "@/components/nav-user";
 import {
   Sidebar,
   SidebarContent,
@@ -11,9 +11,9 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-} from "@/components/ui/sidebar"
-import { IconCommand } from "@tabler/icons-react"
-import { navItems } from "@/lib/nav"
+} from "@/components/ui/sidebar";
+import { navItems } from "@/lib/nav";
+import { BrandMark } from "./brand-mark";
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
@@ -22,9 +22,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" render={<a href="/dashboard" />}>
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-                <IconCommand className="size-4" />
-              </div>
+              <BrandMark className="p-3 bg-background " />
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">AI Code Review</span>
                 <span className="truncate text-xs">Dashboard</span>
@@ -40,5 +38,5 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <NavUser />
       </SidebarFooter>
     </Sidebar>
-  )
+  );
 }

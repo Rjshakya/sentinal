@@ -97,12 +97,17 @@ class RepoOut(BaseModel):
             "and exclude them from the configure payload."
         ),
     )
-    stargazers_count: int
-    language: str | None
-    updated_at: datetime | None
-    clone_url: str
-    installation_id: str
-    github_installation_id: int
+    is_indexed: bool = Field(
+        default=False,
+        description=(
+            "True when the latest :class:`IndexRun` for this repo "
+            "completed with ``state=SUCCESS``. ``False`` for never-"
+            "indexed repos, repos whose last index run errored, or "
+            "repos not yet configured on the local side. Computed "
+            "at the boundary from :attr:`Repo.is_indexed` "
+            "(``None`` is coerced to ``False``)."
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -229,19 +234,25 @@ async def list_installation_repos_route(request: Request) -> list[RepoOut]:
 
     # Cross-reference the merged GitHub-side repo list with the
     # local ``repo`` table to flag which ones the user has already
-    # started configuring. One indexed ``SELECT … WHERE github_repo_id
-    # # IN (…)`` keyed on ``Repo.github_repo_id`` (UNIQUE) and
-    # ``Repo.user_id`` (indexed). The result is the set of GitHub
-    # repo ids the dashboard should render as "already configured".
+    # started configuring and to surface the indexing mirror
+    # (``is_indexed``) of each local row. One indexed
+    # ``SELECT … WHERE github_repo_id IN (…)`` keyed on
+    # ``Repo.github_repo_id`` (UNIQUE) and ``Repo.user_id``
+    # (indexed). ``is_indexed`` is coerced ``None → False`` at the
+    # boundary so the response shape stays a strict ``bool``.
     if seen:
         async with async_session_maker() as session:
-            stmt = select(Repo.github_repo_id).where(
+            stmt = select(Repo.github_repo_id, Repo.is_indexed).where(
                 Repo.user_id == user_id,
                 Repo.github_repo_id.in_(list(seen.keys())),  # type: ignore[attr-defined]
             )
-            configured_gh_ids = {row for row in (await session.exec(stmt)).all()}
+            local_state: dict[int, bool] = {
+                row[0]: bool(row[1]) if row[1] is not None else False
+                for row in (await session.exec(stmt)).all()
+            }
         for r in seen.values():
-            r.is_configured = r.id in configured_gh_ids
+            r.is_configured = r.id in local_state
+            r.is_indexed = local_state.get(r.id, False)
 
     return list(seen.values())
 

@@ -38,19 +38,6 @@ class SandboxState(str, enum.Enum):
     ARCHIVED = "ARCHIVED"
 
 
-class SetupRunStatus(str, enum.Enum):
-    SUCCEEDED = "SUCCEEDED"
-    FAILED = "FAILED"
-
-
-class SetupErrorCode(str, enum.Enum):
-    INSTALLATION_NOT_FOUND = "INSTALLATION_NOT_FOUND"
-    INSTALL_TOKEN_MINT_FAILED = "INSTALL_TOKEN_MINT_FAILED"
-    GIT_CLONE_FAILED = "GIT_CLONE_FAILED"
-    AGENT_CRASHED = "AGENT_CRASHED"
-    NO_STRUCTURED_RESPONSE = "NO_STRUCTURED_RESPONSE"
-
-
 class ReviewRunStatus(str, enum.Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"

@@ -47,21 +47,19 @@ class CodeCommentDraft(BaseModel):
     )
 
 
-class SecurityComments(BaseModel):
+class ReviewComments(BaseModel):
     List: list[CodeCommentDraft] = Field(
-        description="List of CodeCommentDraft , This Output is Expected From Security Agent"
+        description="All inline comments the agent wants to post, mixed "
+        "severities. Empty list is valid — it means 'looks good, no findings'.",
     )
 
 
-class CorrectnessComments(BaseModel):
-    List: list[CodeCommentDraft] = Field(
-        description="List of CodeCommentDraft , This Output is Expected From Correctness Agent"
-    )
+class SummaryResult(BaseModel):
+    """The PR summary the summarizer agent must return."""
 
-
-class StyleComments(BaseModel):
-    List: list[CodeCommentDraft] = Field(
-        description="List of CodeCommentDraft , This Output is Expected From Style Agent"
+    summary: str = Field(
+        description="The PR review summary markdown block: title, intro, "
+        "highlights, files-changed table.",
     )
 
 
@@ -81,54 +79,4 @@ class ReviewResult(BaseModel):
         description="Overall review verdict. 'APPROVE' = ship it, "
         "'COMMENT' = ship if you address the nits, "
         "'REQUEST_CHANGES' = block on at least one P1_CRITICAL.",
-    )
-
-
-EcosystemStr = Literal["node", "python", "rust", "go", "ruby", "mixed", "none"]
-
-
-class SetupResult(BaseModel):
-    """Structured output of the setup deep-agent.
-
-    Emitted as a single object (not a list) — the setup agent is a
-    one-shot run, not a multi-finding sweep. The router turns this into
-    a per-repo entry inside :class:`SetupAck`.
-    """
-
-    ok: bool = Field(
-        description="True only when dependencies are installed and a "
-        "post-install verification command exited 0. False on any "
-        "failure (no manifest, install error, verification error)."
-    )
-    ecosystem: EcosystemStr = Field(
-        default="none",
-        description="Primary ecosystem of the repo, inferred from "
-        "manifests. 'mixed' is reserved for repos that legitimately "
-        "contain manifests from more than one ecosystem "
-        "(e.g. a Python project with a JS frontend).",
-    )
-    manager: str | None = Field(
-        default=None,
-        description="Concrete package manager used for the install "
-        "(e.g. 'pnpm', 'uv', 'cargo'). Must be one of the values in "
-        "SETUP_AGENT_MANAGER_ALLOWLIST when ok=true.",
-    )
-    install_cmd: str | None = Field(
-        default=None,
-        description="The exact command that was run to install "
-        "dependencies (e.g. 'pnpm install --frozen-lockfile').",
-    )
-    duration_s: float = Field(
-        description="Wall-clock seconds the install took, measured on "
-        "the host (between agent invocation and structured_response).",
-    )
-    notes: str = Field(
-        description="Short human-readable summary of what happened. "
-        "Empty when ok=true. On failure, names the failing step.",
-    )
-    bootstrapped_tools: list[str] = Field(
-        default_factory=list,
-        description="Tooling the agent had to install on demand "
-        "(e.g. ['node', 'pnpm']). The base E2B image is python3-only; "
-        "everything else is bootstrapped by the agent.",
     )

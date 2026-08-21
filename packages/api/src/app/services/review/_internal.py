@@ -10,9 +10,10 @@ outside the review package needs these:
   accepts any callable; we do not want a type checker to second-guess
   the exact signature.
 - :data:`_SHOULD_RETRY_AGENT` — the ``should_retry`` predicate for the
-  parallel-agent step. Retries on any :class:`TransientStepError` and
-  on any :class:`AgentInvocationError` / :class:`ReviewAgentsInvocationError`
-  whose :attr:`AgentInvocationError.retryable` flag is ``True``.
+  per-lane agent steps. Retries on any :class:`TransientStepError` and
+  on any :class:`AgentInvocationError` /
+  :class:`ReviewAgentsInvocationError` whose
+  :attr:`AgentInvocationError.retryable` flag is ``True``.
 - :func:`_e2b_spec` — reconstruct the active E2B spec from
   :class:`Settings`. Deterministic at workflow runtime because settings
   are loaded once on process startup and never change during a workflow.
@@ -39,16 +40,15 @@ def _should_retry_transient(exc: BaseException) -> bool:
 
 
 def _should_retry_agent(exc: BaseException) -> bool:
-    """``should_retry`` predicate for the parallel-agent step.
+    """``should_retry`` predicate for the per-lane agent steps.
 
     Retries on:
 
     - Any :class:`TransientStepError` (e.g. :class:`SandboxConnectError`).
-    - A bare :class:`AgentInvocationError` with ``retryable=True``.
-    - A :class:`ReviewAgentsInvocationError` whose aggregate contains at
-      least one :class:`AgentInvocationError` with ``retryable=True``.
+    - A bare :class:`AgentInvocationError` with ``retryable=True`
+      (raised by a single lane's step).
 
-    The per-subagent ``retryable`` flag is set by the
+    The per-lane ``retryable`` flag is set by the
     ``invoke_<name>_agent`` wrappers based on :func:`is_llm_retry_error`.
     """
     if isinstance(exc, TransientStepError):
@@ -56,7 +56,7 @@ def _should_retry_agent(exc: BaseException) -> bool:
     if isinstance(exc, AgentInvocationError) and exc.retryable:
         return True
     if isinstance(exc, ReviewAgentsInvocationError) and any(
-        e.retryable for e in exc.failed_agents
+        getattr(e, "retryable", False) for e in exc.failed_agents
     ):
         return True
     return False

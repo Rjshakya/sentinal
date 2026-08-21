@@ -44,6 +44,7 @@ export type Repo = {
   installation_id: string;
   github_installation_id: number;
   is_configured: boolean;
+  is_indexed: boolean;
 };
 
 export type SetupRepo = {
@@ -51,6 +52,7 @@ export type SetupRepo = {
   owner: string;
   name: string;
   installation_id: string;
+  default_branch: string;
 };
 
 export type SetupEcosystem = "node" | "python" | "rust" | "go" | "ruby" | "mixed" | "none";
@@ -75,28 +77,74 @@ export type SetupAck = {
   results: RepoSetupResult[];
 };
 
-export type CodeSearchRequest = {
-  repo_id: string;
+export type IndexRepoTriggerIn = {
+  repo_owner: string;
   repo_name: string;
+  repo_url: string;
+  default_branch?: string | null;
+};
+
+export type IndexRepoTriggerOut = {
+  workflow_id: string;
+};
+
+export type LlmConfig = {
+  id: string;
+  user_id: string;
+  provider: string;
+  model_id: string;
+  base_url: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LlmTestResult = {
+  response: string | null;
+  exception: string | null;
+};
+
+export type LlmConfigUpsertResponse = {
+  data: LlmConfig | null;
+  success: boolean;
+  error: string | null;
+  test_result: LlmTestResult;
+};
+
+export type LlmConfigTestResponse = {
+  success: boolean;
+  error: string | null;
+  test_result: LlmTestResult;
+};
+
+export type LlmConfigPayload = {
+  provider: string;
+  model_id: string;
+  base_url: string;
+  api_key: string;
+};
+
+export type CodeSearchRequest = {
+  owner: string;
+  repo: string;
   query: string;
   limit?: number;
 };
 
 export type CodeSearchResult = {
-  id?: string | number;
-  file_name?: string;
-  start_line?: number;
-  end_line?: number;
-  content?: string;
-  node_types?: string | string[] | null;
-  language?: string | null;
-  _relevance_score?: number;
+  file_name: string;
+  language: string;
+  start_line: number;
+  end_line: number;
+  node_types: string[];
+  content: string;
+  _relevance_score: number;
 };
 
 export type CodeSearchResponse = {
-  repo_name?: string;
-  query?: string;
-  results?: CodeSearchResult[];
+  owner: string;
+  repo: string;
+  query: string;
+  results: CodeSearchResult[];
 };
 
 export type UserRepo = {
@@ -108,6 +156,7 @@ export type UserRepo = {
   url: string | null;
   private: boolean;
   default_branch: string | null;
+  is_indexed: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -157,13 +206,32 @@ export const apiClient = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repos }),
     }),
+  indexRepo: (payload: IndexRepoTriggerIn) =>
+    request<IndexRepoTriggerOut>("/indexing/repo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   codeSearch: (payload: CodeSearchRequest) =>
-    request<CodeSearchResponse>("/ai/code/search", {
+    request<CodeSearchResponse>("/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
   installUrl: () => request<{ url: string }>("/github/install-url"),
+  getLlmConfig: () => request<LlmConfig[]>("/llm_config/"),
+  updateLlmConfig: (payload: LlmConfigPayload) =>
+    request<LlmConfigUpsertResponse>("/llm_config/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  testLlmConfig: (payload: LlmConfigPayload) =>
+    request<LlmConfigTestResponse>("/llm_config/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
 };
 
 export const apiBaseUrl = BASE;

@@ -29,12 +29,13 @@ async def persist_code_comments(
     session: AsyncSession,
     *,
     pr_id: str,
+    review_id: str | None,
     commit_id: str,
     comments: Sequence[CodeCommentDraft],
 ) -> list[CodeComment]:
     """Insert one :class:`CodeComment` row per draft finding."""
     rows = map_drafts_to_comment_rows(
-        pr_id=pr_id, commit_id=commit_id, comments=comments
+        pr_id=pr_id, review_id=review_id, commit_id=commit_id, comments=comments
     )
 
     if not rows:
@@ -59,6 +60,7 @@ async def persist_code_comments(
 async def persist_code_comments_tx(
     *,
     pr_id: str,
+    review_id: str | None,
     commit_id: str,
     comments: list[dict[str, Any]],
 ) -> list[str]:
@@ -71,7 +73,9 @@ async def persist_code_comments_tx(
     """
     session = dbos_datasource.sql_session()
     drafts = [CodeCommentDraft.model_validate(c) for c in comments]
-    rows = map_drafts_to_comment_rows(pr_id=pr_id, commit_id=commit_id, comments=drafts)
+    rows = map_drafts_to_comment_rows(
+        pr_id=pr_id, review_id=review_id, commit_id=commit_id, comments=drafts
+    )
     if not rows:
         return []
     session.add_all(rows)

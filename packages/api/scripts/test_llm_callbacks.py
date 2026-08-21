@@ -86,7 +86,7 @@ def main() -> int:
                                 {
                                     "id": "call_1",
                                     "name": "read_file",
-                                    "args": {"file_path": "/home/user/tmp/42/abc1234/diff.json"},
+                                    "args": {"file_path": "/home/user/tmp/42/abc1234/overview.md"},
                                 }
                             ],
                             usage_metadata={

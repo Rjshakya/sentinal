@@ -1,8 +1,12 @@
 """GitHub ``pull_request`` webhook adapter for the durable review workflow.
 
-Dispatches a verified ``opened`` / ``synchronize`` delivery to the DBOS
-review workflow. The workflow is durable, idempotent, and runs in the
-background without FastAPI ``BackgroundTasks``.
+Dispatches a verified ``opened`` delivery to the DBOS review workflow.
+The workflow is durable, idempotent, and runs in the background without
+FastAPI ``BackgroundTasks``.
+
+Note: the ``synchronize`` action no longer triggers a review. Users
+trigger a review by commenting ``@<app_slug> review`` on the PR; that
+path lives in :mod:`app.services.pr_issue_comment`.
 
 - **Ring 1 (pure)**       — :class:`PRReviewInput`,
   :func:`classify_action`, :func:`extract_payload`,
@@ -34,8 +38,9 @@ from app.models.enums import PRStatus
 from app.models.installation import Installation
 from app.models.repo import Repo
 from app.services.llm_config import NoActiveLLMConfigError, resolve_active_llm_config
+from app.services.review.helpers import create_review_workflow_id
 from app.services.review.workflow import review_workflow
-from app.services.review.workflow_types import ReviewWorkflowInput
+from app.services.review.workflow_types import PRSizeStats, ReviewWorkflowInput
 
 log = logging.getLogger(__name__)
 
@@ -64,12 +69,13 @@ class WebhookAck(BaseModel):
 
 
 class PRReviewInput(BaseModel):
-    """Flat, typed view of a verified ``pull_request`` payload."""
+    """Flat, typed pr_payload of a verified ``pull_request`` payload."""
 
     gh_repo_id: int
     gh_pr_id: int
     number: int
     base_branch: str
+    default_branch: str | None = None
     base_sha: str
     head_branch: str
     head_sha: str
@@ -77,11 +83,18 @@ class PRReviewInput(BaseModel):
     title: str
     body: str | None = None
     status: PRStatus
+    pr_size: PRSizeStats
 
 
 def classify_action(action: Any) -> bool:
-    """Return ``True`` iff ``action`` is ``"opened"`` or ``"synchronize"``."""
-    return action == "opened" or action == "synchronize"
+    """Return ``True`` iff ``action`` is ``"opened"``.
+
+    ``synchronize`` (new commit on an open PR) is intentionally not a
+    trigger. Reviews are now kicked off by a user commenting
+    ``@<app_slug> review`` on the PR; see
+    :mod:`app.services.pr_issue_comment`.
+    """
+    return action == "opened"
 
 
 def _classify_status(pr: dict[str, Any]) -> str | None:
@@ -93,8 +106,23 @@ def _classify_status(pr: dict[str, Any]) -> str | None:
     return None
 
 
+def _extract_pr_size(pr: dict[str, Any]) -> PRSizeStats:
+    """Project the PR's size stats onto a :class:`PRSizeStats`.
+
+    GitHub's ``pull_request`` payload carries ``additions`` /
+    ``deletions`` / ``changed_files`` at the top level of the PR
+    object; any value is coerced ``None → 0`` so a partial payload
+    still yields a valid, zero-sized stats dict.
+    """
+    return PRSizeStats(
+        additions=int(pr.get("additions") or 0),
+        deletions=int(pr.get("deletions") or 0),
+        changed_files=int(pr.get("changed_files") or 0),
+    )
+
+
 def extract_payload(payload: dict[str, Any]) -> PRReviewInput | None:
-    """Project the GitHub ``pull_request`` payload onto a typed view.
+    """Project the GitHub ``pull_request`` payload onto a typed pr_payload.
 
     Returns ``None`` on any malformed input — the orchestrator folds
     that into a ``skip_reason="malformed_payload"`` ack. Never raises.
@@ -110,6 +138,7 @@ def extract_payload(payload: dict[str, Any]) -> PRReviewInput | None:
         "gh_pr_id": pr.get("id"),
         "number": pr.get("number"),
         "base_branch": base.get("ref"),
+        "default_branch": repo.get("default_branch"),
         "base_sha": base.get("sha"),
         "head_branch": head.get("ref"),
         "head_sha": head.get("sha"),
@@ -117,6 +146,7 @@ def extract_payload(payload: dict[str, Any]) -> PRReviewInput | None:
         "title": pr.get("title"),
         "body": pr.get("body"),
         "status": _classify_status(pr),
+        "pr_size": _extract_pr_size(pr),
     }
     try:
         return PRReviewInput.model_validate(flat)
@@ -151,27 +181,29 @@ async def resolve_llm_config(user_id: str) -> LLMConfig:
 
 
 def build_review_workflow_input(
-    view: PRReviewInput,
+    pr_payload: PRReviewInput,
     *,
     user_id: str,
     llm_config: LLMConfig,
     github_installation_id: int | None = None,
     post_to_github: bool = False,
 ) -> ReviewWorkflowInput:
-    """Translate the webhook view into a serializable workflow input."""
+    """Translate the webhook pr_payload into a serializable workflow input."""
     return ReviewWorkflowInput(
         user_id=user_id,
-        gh_repo_id=view.gh_repo_id,
-        pr_id=view.gh_pr_id,
-        pr_number=view.number,
-        branch=view.base_branch,
-        base_sha=view.base_sha,
-        head_sha=view.head_sha,
-        head_branch=view.head_branch,
-        author=view.author,
-        title=view.title,
-        body=view.body or "",
-        status=view.status,
+        gh_repo_id=pr_payload.gh_repo_id,
+        pr_id=pr_payload.gh_pr_id,
+        pr_number=pr_payload.number,
+        branch=pr_payload.base_branch,
+        default_branch=pr_payload.default_branch,
+        base_sha=pr_payload.base_sha,
+        head_sha=pr_payload.head_sha,
+        head_branch=pr_payload.head_branch,
+        author=pr_payload.author,
+        title=pr_payload.title,
+        body=pr_payload.body or "",
+        status=pr_payload.status,
+        pr_size=pr_payload.pr_size,
         llm_config=llm_config,
         post_to_github=post_to_github,
         github_installation_id=github_installation_id,
@@ -277,8 +309,8 @@ async def handle_pull_request_opened(
             skip_reason="malformed_installation",
         )
 
-    view = extract_payload(payload)
-    if view is None:
+    pr_payload = extract_payload(payload)
+    if pr_payload is None:
         return WebhookAck(
             accepted=False,
             action="opened",
@@ -293,8 +325,8 @@ async def handle_pull_request_opened(
             "github_installation_id=%s gh_repo_id=%s number=%s",
             delivery,
             installation_id,
-            view.gh_repo_id,
-            view.number,
+            pr_payload.gh_repo_id,
+            pr_payload.number,
         )
         return WebhookAck(
             accepted=False,
@@ -303,14 +335,14 @@ async def handle_pull_request_opened(
             skip_reason="unowned_installation",
         )
 
-    repo_id = await resolve_repo_id(view.gh_repo_id)
+    repo_id = await resolve_repo_id(pr_payload.gh_repo_id)
     if repo_id is None:
         log.info(
             "review.webhook: skip (repo not configured): delivery=%s "
             "gh_repo_id=%s number=%s",
             delivery,
-            view.gh_repo_id,
-            view.number,
+            pr_payload.gh_repo_id,
+            pr_payload.number,
         )
         return WebhookAck(
             accepted=False,
@@ -325,8 +357,8 @@ async def handle_pull_request_opened(
             "delivery=%s gh_repo_id=%s number=%s llm_configured=%s "
             "sandbox_configured=%s",
             delivery,
-            view.gh_repo_id,
-            view.number,
+            pr_payload.gh_repo_id,
+            pr_payload.number,
             settings.llm_configured,
             settings.sandbox_configured,
         )
@@ -341,23 +373,27 @@ async def handle_pull_request_opened(
     post_to_github = installation_id is not None
 
     workflow_input = build_review_workflow_input(
-        view,
+        pr_payload,
         user_id=user_id,
         llm_config=llm_config,
         github_installation_id=installation_id,
         post_to_github=post_to_github,
     )
 
-    workflow_id = f"review:{repo_id}:{view.number}:{view.head_sha[:7]}"
+    workflow_id = create_review_workflow_id(
+        repo_id=repo_id,
+        pr_number=pr_payload.number,
+        head_sha=pr_payload.head_sha,
+    )
 
     log.info(
         "review.webhook: starting workflow: delivery=%s workflow_id=%s "
         "gh_repo_id=%s number=%s head_sha=%s post_to_github=%s",
         delivery,
         workflow_id,
-        view.gh_repo_id,
-        view.number,
-        view.head_sha,
+        pr_payload.gh_repo_id,
+        pr_payload.number,
+        pr_payload.head_sha,
         post_to_github,
     )
 

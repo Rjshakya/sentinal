@@ -41,8 +41,8 @@ export function CodeSearch({ repos }: Props) {
     if (!selectedRepo || !canSearch) return;
     search.mutate(
       {
-        repo_id: selectedRepo.id,
-        repo_name: selectedRepo.repo_name,
+        owner: selectedRepo.repo_owner,
+        repo: selectedRepo.repo_name,
         query: query.trim(),
       },
       {
@@ -114,7 +114,7 @@ export function CodeSearch({ repos }: Props) {
           <SearchResults
             results={sortedResults}
             query={search.data.query ?? query}
-            repoName={search.data.repo_name ?? selectedRepo?.repo_name ?? ""}
+            repoName={search.data.repo ?? selectedRepo?.repo_name ?? ""}
           />
         )}
         {!search.data && !search.isPending && !search.isError && (

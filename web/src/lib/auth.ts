@@ -18,10 +18,10 @@ export const protectPage = async () => {
   try {
     const session = await apiClient.session();
     if (!session?.user_id) {
-      throw redirect({ to: "/about" });
+      throw redirect({ to: "/login" });
     }
   } catch (error) {
-    throw redirect({ to: "/about" });
+    throw redirect({ to: "/login" });
   }
 };
 

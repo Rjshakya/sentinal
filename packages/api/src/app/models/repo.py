@@ -26,6 +26,15 @@ class Repo(SQLModel, table=True):
     private: bool = Field(default=False, nullable=False)
     default_branch: str | None = Field(default=None, nullable=True)
 
+    # Indexing mirror (DB columns added by migration ``98d1bc3c5752_``).
+    # ``is_indexed`` is ``None`` until the first index run resolves it;
+    # the boundary coerces ``None → False`` so the public contract is a
+    # strict ``bool``. ``indexed_run_id`` is the last successful (or
+    # failed) :class:`app.models.indexing.IndexRun` row's primary key;
+    # it is server-side-only and is not exposed on the dashboard.
+    is_indexed: Optional[bool] = Field(default=None, nullable=True)
+    indexed_run_id: Optional[str] = Field(default=None, nullable=True)
+
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(

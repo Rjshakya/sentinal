@@ -24,11 +24,34 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.llm import LLMConfig
 from app.models.enums import PRStatus
 from app.services.agent.models import ReviewResult
+
+
+class PRSizeStats(TypedDict):
+    """GitHub PR size stats carried from the trigger payload.
+
+    ``additions`` / ``deletions`` are the number of added / removed
+    lines; ``changed_files`` is the number of files touched by the PR.
+    Every trigger populates this from the GitHub payload (the
+    ``pull_request`` webhook carries them directly; the comment-trigger
+    path reads them from ``GET /repos/.../pulls/{number}``).
+
+    These drive the per-run model/tool call limits via
+    :func:`app.services.review.helpers.compute_review_limits`.
+    """
+
+    additions: int
+    deletions: int
+    changed_files: int
+
+
+def _empty_pr_size() -> PRSizeStats:
+    """A zero-size :class:`PRSizeStats` for inputs without size data."""
+    return PRSizeStats(additions=0, deletions=0, changed_files=0)
 
 
 class ReviewWorkflowInput(BaseModel):
@@ -41,6 +64,7 @@ class ReviewWorkflowInput(BaseModel):
     pr_id: int
     pr_number: int
     branch: str
+    default_branch: str | None = None
     base_sha: str
     head_sha: str
     head_branch: str
@@ -48,9 +72,22 @@ class ReviewWorkflowInput(BaseModel):
     body: str
     title: str
     status: PRStatus
+    trigger: str = "opened"
     llm_config: LLMConfig
     post_to_github: bool
     github_installation_id: int | None = None
+    pr_size: PRSizeStats = Field(default_factory=_empty_pr_size)
+    diff_base_sha: str | None = None
+    """Incremental-re-review override for the git-diff range.
+
+    When set, the review diffs ``diff_base_sha...head_sha`` instead of
+    ``base_sha...head_sha`` — the comment-trigger path sets it to the
+    last successfully reviewed head so a re-review covers only the
+    commits pushed since the previous run. ``base_sha`` itself always
+    keeps the PR's true base: the ``pull_requests`` and ``review``
+    rows record it unchanged, and only the diff range narrows.
+    """
+    diff_base_sha: str | None = None
 
 
 class PostReviewInput(BaseModel):
@@ -97,6 +134,7 @@ class RepoSnapshot(BaseModel):
     id: str
     repo_name: str
     repo_owner: str
+    default_branch: str | None = None
 
 
 class ResolvedSandbox(BaseModel):
@@ -143,8 +181,8 @@ class TotalUsagesPerPR(TypedDict):
     """Per-run aggregated token usage, keyed by model name.
 
     The envelope is built by
-    :func:`app.services.review.steps.invoke_agent.invoke_review_agents_step`
-    while the four subagents fan out, then carried through the
+    :func:`app.services.review.steps.invoke_agent.combine_agent_outcomes`
+    while the two agent steps fan out, then carried through the
     workflow boundary to be persisted by
     :func:`app.services.review.steps.persist_usage.persist_review_usage_tx`.
     """
@@ -158,6 +196,7 @@ class TotalUsagesPerPR(TypedDict):
 
 __all__ = [
     "InputTokenDetails",
+    "PRSizeStats",
     "PostReviewInput",
     "PostReviewResult",
     "RepoSnapshot",
