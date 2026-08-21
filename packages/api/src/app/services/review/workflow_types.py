@@ -24,11 +24,34 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.llm import LLMConfig
 from app.models.enums import PRStatus
 from app.services.agent.models import ReviewResult
+
+
+class PRSizeStats(TypedDict):
+    """GitHub PR size stats carried from the trigger payload.
+
+    ``additions`` / ``deletions`` are the number of added / removed
+    lines; ``changed_files`` is the number of files touched by the PR.
+    Every trigger populates this from the GitHub payload (the
+    ``pull_request`` webhook carries them directly; the comment-trigger
+    path reads them from ``GET /repos/.../pulls/{number}``).
+
+    These drive the per-run model/tool call limits via
+    :func:`app.services.review.helpers.compute_review_limits`.
+    """
+
+    additions: int
+    deletions: int
+    changed_files: int
+
+
+def _empty_pr_size() -> PRSizeStats:
+    """A zero-size :class:`PRSizeStats` for inputs without size data."""
+    return PRSizeStats(additions=0, deletions=0, changed_files=0)
 
 
 class ReviewWorkflowInput(BaseModel):
@@ -53,6 +76,7 @@ class ReviewWorkflowInput(BaseModel):
     llm_config: LLMConfig
     post_to_github: bool
     github_installation_id: int | None = None
+    pr_size: PRSizeStats = Field(default_factory=_empty_pr_size)
 
 
 class PostReviewInput(BaseModel):
@@ -161,6 +185,7 @@ class TotalUsagesPerPR(TypedDict):
 
 __all__ = [
     "InputTokenDetails",
+    "PRSizeStats",
     "PostReviewInput",
     "PostReviewResult",
     "RepoSnapshot",

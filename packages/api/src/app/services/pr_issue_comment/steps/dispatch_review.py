@@ -31,6 +31,7 @@ recorded child workflow instead of starting a second run.
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 
 from dbos import DBOS, SetWorkflowID
 
@@ -59,10 +60,15 @@ async def run_review_workflow(
     :class:`TriggerRunResult`. The inner review runs in the background;
     this function does not wait for it to complete.
     """
-    workflow_id = create_review_workflow_id(
-        repo_id=repo_id,
-        pr_number=pr_number,
-        head_sha=head_sha,
+
+    uniqId = str(uuid4())
+    workflow_id = (
+        create_review_workflow_id(
+            repo_id=repo_id,
+            pr_number=pr_number,
+            head_sha=head_sha,
+        )
+        + uniqId[:6]
     )
 
     log.info(

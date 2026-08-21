@@ -13,7 +13,7 @@ Modules:
 - :mod:`.resolve_repo`        — find the local :class:`Repo` row.
 - :mod:`.resolve_sandbox`     — find + connect the E2B sandbox.
 - :mod:`.fetch_diff`          — write the unified diff into the sandbox.
-- :mod:`.parse_diff`          — parse the diff, write ``diff.json``.
+- :mod:`.split_diff`          — split ``file.diff`` into per-file chunks.
 - :mod:`.upsert_pr`           — insert / update the :class:`PullRequest` row.
 - :mod:`.invoke_agent`        — run the two review agents as two
   parallel durable steps; combine their outcomes.
@@ -36,7 +36,6 @@ from app.services.review.steps.invoke_agent import (
     invoke_summary_agent,
     invoke_summary_agent_step,
 )
-from app.services.review.steps.parse_diff import parse_diff_step
 from app.services.review.steps.persist_comments import (
     persist_code_comments,
     persist_code_comments_tx,
@@ -61,6 +60,7 @@ from app.services.review.steps.review_run_steps import (
     mark_review_is_running_step,
     mark_review_is_stopped_step,
 )
+from app.services.review.steps.split_diff import split_diff_step
 from app.services.review.steps.stop_sandbox import stop_sandbox_step
 from app.services.review.steps.update_repo import update_repo, update_repo_step
 from app.services.review.steps.upsert_pr import (
@@ -79,7 +79,6 @@ __all__ = [
     "mark_review_is_errored_step",
     "mark_review_is_running_step",
     "mark_review_is_stopped_step",
-    "parse_diff_step",
     "persist_code_comments",
     "persist_code_comments_tx",
     "persist_review_summary",
@@ -90,6 +89,7 @@ __all__ = [
     "resolve_repo_tx",
     "resolve_sandbox",
     "resolve_sandbox_step",
+    "split_diff_step",
     "stop_sandbox_step",
     "sum_total_usages",
     "update_repo",

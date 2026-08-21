@@ -32,6 +32,7 @@ from githubkit.exception import GitHubException
 from app.core.github_app import installation_client
 from app.services.pr_issue_comment.errors import PRFetchError
 from app.services.pr_issue_comment.types import PRStateSnapshot
+from app.services.review.workflow_types import PRSizeStats
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,12 @@ def _pr_state_from_response(parsed: object) -> PRStateSnapshot:
     merged = bool(getattr(parsed, "merged", False))
     gh_pr_id = int(getattr(parsed, "id", 0) or 0)
 
+    pr_size: PRSizeStats = {
+        "additions": int(getattr(parsed, "additions", 0) or 0),
+        "deletions": int(getattr(parsed, "deletions", 0) or 0),
+        "changed_files": int(getattr(parsed, "changed_files", 0) or 0),
+    }
+
     return PRStateSnapshot(
         gh_pr_id=gh_pr_id,
         base_sha=base_sha,
@@ -83,6 +90,7 @@ def _pr_state_from_response(parsed: object) -> PRStateSnapshot:
         author=author_login,
         state=state,
         merged=merged,
+        pr_size=pr_size,
     )
 
 

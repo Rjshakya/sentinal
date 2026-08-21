@@ -114,6 +114,58 @@ class DiffUnavailableError(StepError):
         super().__init__(f"diff unavailable ({base_sha}...{head_sha}): {cause}")
 
 
+class DiffSplitError(StepError):
+    """The diff could not be split into per-file review chunks.
+
+    Raised by :func:`app.services.review.steps.split_diff.split_diff_step`
+    when the in-sandbox ``split_diff.py`` script exits non-zero (other
+    than the ``-1`` runner dropout) or prints a missing / unparseable
+    summary on stdout. Business outcome — not retried.
+    """
+
+    def __init__(
+        self,
+        *,
+        repo_id: str,
+        pr_number: int,
+        head_sha: str,
+        cause: str,
+    ) -> None:
+        self.repo_id = repo_id
+        self.pr_number = pr_number
+        self.head_sha = head_sha
+        self.cause = cause
+        super().__init__(
+            f"diff split failed (pr={pr_number} head_sha={head_sha[:7]}): {cause}"
+        )
+
+
+class DiffSplitSetupError(TransientStepError):
+    """The split script could not be uploaded or its run was dropped.
+
+    Raised by :func:`app.services.review.steps.split_diff.split_diff_step`
+    on filesystem-write failures, runner dropouts (exit ``-1``), and
+    sandbox-execute blips. Transient — DBOS retries the step, which
+    re-uploads and re-runs the script.
+    """
+
+    def __init__(
+        self,
+        *,
+        repo_id: str,
+        pr_number: int,
+        head_sha: str,
+        cause: str,
+    ) -> None:
+        self.repo_id = repo_id
+        self.pr_number = pr_number
+        self.head_sha = head_sha
+        self.cause = cause
+        super().__init__(
+            f"diff split setup failed (pr={pr_number} head_sha={head_sha[:7]}): {cause}"
+        )
+
+
 class RepoUpdateError(StepError):
     """The sandbox repo could not be refreshed to the default branch."""
 
@@ -449,6 +501,8 @@ def extract_retry_after_seconds(exc: BaseException) -> float | None:
 __all__ = [
     "AgentInvocationError",
     "CommentsAgentInvocationError",
+    "DiffSplitError",
+    "DiffSplitSetupError",
     "DiffUnavailableError",
     "NoActiveSandboxError",
     "RepoNotFoundError",

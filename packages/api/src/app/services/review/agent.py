@@ -7,7 +7,7 @@ This module owns the two parallel review agents:
 - :func:`build_comments_agent` — the comments deep-agent, emitting a
   ``ReviewComments`` list with mixed severities (P1_CRITICAL security
   findings, P2_WARNING correctness findings, P3_NITPICK style findings)
-  in a single pass over the diff.
+  from a file-by-file workflow over the per-file diff chunks.
 
 The workflow's per-lane steps
 (:func:`app.services.review.steps.invoke_agent.invoke_summary_agent_step`
@@ -54,6 +54,7 @@ from app.services.agent.prompts import (
     PR_SUMMARY_SYSTEM_PROMPT,
     REVIEW_COMMENTS_SYSTEM_PROMPT,
 )
+from app.services.review.helpers import get_review_diff_dir_path
 from app.services.review.middleware import build_review_middleware
 from app.services.review.tools import make_get_diff_tool
 from app.services.review.types import DeepAgentGraph
@@ -131,18 +132,10 @@ def _build_shared_tools(
     """Return the tool list every review agent receives.
 
     ``get_diff`` reads the unified PR diff from the sandbox. The
-    diff's parsed hunk map is also written to
-    ``/home/user/tmp/{pr_number}/{head_sha}/diff.json`` in the
-    sandbox; the agents read it directly via the deepagents
-    backend's ``read_file`` tool when they need to validate or
-    re-anchor a ``(file, line, side)`` comment. The deepagents
-    runtime inherits the backend tools (sandbox ``read_file`` /
-    ``ls`` / ``execute``) separately.
-
-    ``hunk_map`` is currently unused by the tool list itself — it
-    is only passed in so the workflow step can hand the same parsed
-    structure to both the agent step (for diff.json regeneration
-    parity) and the server-side :func:`filter_drafts` backstop.
+    split step also writes ``overview.md`` and the per-file annotated
+    chunks under ``splitted_diffs/`` next to ``file.diff``; the
+    agents read those via the deepagents backend's ``read_file`` /
+    ``ls`` tools (inherited separately).
     """
     return [
         make_get_diff_tool(sandbox=sandbox, pr_number=pr_number, head_sha=head_sha),
@@ -199,14 +192,17 @@ def build_comments_agent(
     tools: Sequence[BaseTool],
     middleware: list[AgentMiddleware[Any, None, Any]],
 ) -> DeepAgentGraph:
-    """Build the comments deep-agent (all severities in one pass).
+    """Build the comments deep-agent (all severities in one review).
 
     ``response_format`` is :class:`ReviewComments` — the agent emits
     one list of :class:`CodeCommentDraft` entries with mixed
     severities (P1_CRITICAL security findings, P2_WARNING correctness
-    findings, P3_NITPICK style findings) as its structured response.
-    The fan-out step validates it and hands it to
-    :func:`combine_review_results`.
+    findings, P3_NITPICK style findings). The prompt drives a
+    file-by-file workflow over the per-file chunks in ``splitted_diffs/``
+    (anchoring comments to gutter-visible lines only) and delegates the
+    individual passes to the ``task`` tool's ``general-purpose``
+    subagent when the PR is large. The fan-out step validates the result
+    and hands it to :func:`combine_review_results`.
 
     The shared middleware stack
     (:func:`app.services.review.middleware.build_review_middleware`)
@@ -266,9 +262,9 @@ def build_review_agents(
     ``llm_call_started`` / ``llm_call_completed`` log lines plus the
     interleaved ``tool_call_started`` / ``tool_call_completed`` lines
     for ``get_diff`` (and the deepagents backend's ``read_file`` /
-    ``ls`` / ``execute`` tools the agent uses to inspect
-    ``diff.json``). When the flag is off, no handler is attached
-    and there is zero per-call overhead.
+    ``ls`` / ``execute`` tools the agent uses to inspect the diff
+    artefacts in the sandbox). When the flag is off, no handler is
+    attached and there is zero per-call overhead.
     """
     backend = _build_backend(sandbox)
     tools = _build_shared_tools(
@@ -313,19 +309,27 @@ def assemble_user_prompt(
     repo_id: str,
     user_id: str,
     pr_number: int,
+    head_sha: str,
 ) -> str:
     """Build the user message sent to each of the two review agents.
 
-    Pure formatting — no I/O, no LLM. The diff is no longer inlined;
-    every agent calls the ``get_diff`` tool to read it from the
-    sandbox.
+    Pure formatting — no I/O, no LLM. The diff is not inlined; the
+    message carries the concrete Diff dir path (with ``overview.md``,
+    ``splitted_diffs/``, and ``file.diff``) so the agents never have
+    to discover it.
     """
+    diff_dir = get_review_diff_dir_path(pr_number, head_sha)
     return (
         f"Repo: {repo_name} (id={repo_id})\n"
         f"User: {user_id}\n"
         f"PR number: {pr_number}\n"
+        f"Head SHA: {head_sha}\n"
+        f"Diff dir: {diff_dir}/\n"
         f"\n"
-        f"Call the `get_diff()` tool to read the PR diff before reviewing.\n"
+        f"The PR diff artefacts live in the Diff dir above: read "
+        f"overview.md first, then the per-file chunks under "
+        f"splitted_diffs/ (file.diff is the raw unified diff; the "
+        f"get_diff() tool reads it).\n"
     )
 
 

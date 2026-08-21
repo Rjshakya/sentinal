@@ -119,14 +119,17 @@ async def trigger_issue_comment_workflow(
         return _skip(trigger_id, "malformed_payload")
 
     cls = classify_comment(raw_payload, app_slug=app_slug)
+
     if not cls.should_proceed:
         return _skip(trigger_id, cls.skip_reason or "unknown")
 
     installation = await resolve_installation_step(trigger_input.installation_id)
+
     if installation is None or installation.user_id is None:
         return _skip(trigger_id, "unowned_installation")
 
     repo_id = await resolve_repo_id_step(trigger_input.gh_repo_id)
+
     if repo_id is None:
         return _skip(trigger_id, "repo_not_indexed")
 
@@ -139,6 +142,8 @@ async def trigger_issue_comment_workflow(
             settings.sandbox_configured,
         )
         return _skip(trigger_id, "review_not_configured")
+
+    # fetch pr stata (get full details for pr)
 
     try:
         pr_state = await fetch_pr_state_step(

@@ -5,7 +5,7 @@ a chat model from it via :func:`app.core.llm.build_chat_model`, creates
 a vanilla E2B sandbox, wires both into a minimal ``create_deep_agent``
 with a Pydantic ``response_format`` schema and a single custom tool.
 If this script works but the real workflow fails, the problem is in
-the review-agent stack (subagents, long prompts, HunkMap), not the
+the review-agent stack (subagents, long prompts, tool wiring), not the
 provider config.
 
 Run from ``packages/api/``:

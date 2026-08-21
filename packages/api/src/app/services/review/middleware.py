@@ -44,12 +44,21 @@ _MODEL_CALL_RUN_LIMIT = 350
 _TOOL_CALL_RUN_LIMIT = 350
 
 
-def build_review_middleware() -> list[AgentMiddleware[Any, None, Any]]:
+def build_review_middleware(
+    *,
+    model_call_run_limit: int = _MODEL_CALL_RUN_LIMIT,
+    tool_call_run_limit: int = _TOOL_CALL_RUN_LIMIT,
+) -> list[AgentMiddleware[Any, None, Any]]:
     """Build the shared middleware stack for both review agents.
 
     Order matters: the first entry is the outermost layer, so the
     model retry wraps the underlying model call and the call-limit
     middlewares sit outside it as graph-node hooks.
+
+    The run limits default to the module constants
+    (:data:`_MODEL_CALL_RUN_LIMIT` / :data:`_TOOL_CALL_RUN_LIMIT`);
+    the review workflow overrides them per run from the PR's size via
+    :func:`app.services.review.helpers.compute_review_limits`.
 
     Returns:
         A fresh list of middleware instances. The instances are
@@ -63,8 +72,8 @@ def build_review_middleware() -> list[AgentMiddleware[Any, None, Any]]:
             initial_delay=_MODEL_INITIAL_DELAY,
             on_failure="error",
         ),
-        ModelCallLimitMiddleware(run_limit=_MODEL_CALL_RUN_LIMIT),
-        ToolCallLimitMiddleware(run_limit=_TOOL_CALL_RUN_LIMIT),
+        ModelCallLimitMiddleware(run_limit=model_call_run_limit),
+        ToolCallLimitMiddleware(run_limit=tool_call_run_limit),
     ]
 
 

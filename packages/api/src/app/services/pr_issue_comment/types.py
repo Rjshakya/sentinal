@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from app.services.review.workflow_types import PRSizeStats
+
 
 class IssueCommentTriggerInput(BaseModel):
     """Flat, typed view of a verified ``issue_comment`` payload.
@@ -127,6 +129,7 @@ class PRStateSnapshot(BaseModel):
     author: str
     state: str
     merged: bool
+    pr_size: PRSizeStats
 
 
 __all__ = [

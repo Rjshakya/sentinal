@@ -49,12 +49,12 @@ Google** as the review LLM.
    hands the delivery to a **durable DBOS workflow** that:
    - resolves the local `Repo` row and the active sandbox,
    - fetches the unified diff,
-   - parses it into a `HunkMap` (the source of truth for which
-     `(file, line, side)` anchors GitHub will accept),
+   - splits it in-sandbox into per-file annotated chunks (the gutter
+     line numbers tell the agent which `(file, line, side)` anchors
+     GitHub will accept),
    - runs the review deep-agent (orchestrator + 4 specialist subagents:
      `summarizer`, `security`, `correctness`, `style`),
-   - filters the agent's drafts through the `HunkMap` server-side,
-   - persists a `ReviewSummary` and one `CodeComment` per surviving draft,
+   - persists a `ReviewSummary` and one `CodeComment` per draft,
    - and — separately — posts the review to GitHub via a retryable
      workflow.
 6. **Triage** on GitHub: a short PR summary up top, inline comments
@@ -126,9 +126,9 @@ Read flow for a PR review:
 2. The handler verifies the `X-Hub-Signature-256` HMAC, parses the
    payload, and dispatches a DBOS workflow with id
    `review:{repo_id}:{pr_number}:{head_sha[:7]}`.
-3. The workflow runs end-to-end inside DBOS: diff fetch → parse →
-   `PullRequest` upsert → review agent → `HunkMap` filter → persist
-   summary + comments → sandbox stop.
+3. The workflow runs end-to-end inside DBOS: diff fetch → in-sandbox
+   split (overview + per-file chunks) → `PullRequest` upsert → review
+   agent → persist summary + comments → sandbox stop.
 4. A separate `post:{repo_id}:{pr_number}:{head_sha[:7]}` workflow
    posts the review to GitHub with retryable / non-retryable error
    handling.

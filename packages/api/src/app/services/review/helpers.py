@@ -7,7 +7,10 @@ no session, no clock. Every function here is testable with plain
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import TypedDict
 
 from app.models.code_comment import CodeComment
 from app.models.enums import (
@@ -16,6 +19,7 @@ from app.models.enums import (
     CommentState,
 )
 from app.services.agent.models import CodeCommentDraft
+from app.services.review.workflow_types import PRSizeStats
 from app.utils.util import repo_path, uuidToStr
 
 
@@ -27,6 +31,16 @@ def get_repo_path(repo_name: str) -> str:
     constants.
     """
     return repo_path(repo_name)
+
+
+def get_review_diff_dir_path(pr_number: int, head_sha: str) -> str:
+    """Return the in-sandbox directory holding the PR diff artefacts.
+
+    Layout: ``/home/user/tmp/{pr_number}/{head_sha}/`` — ``file.diff``
+    (the raw unified diff), ``overview.md``, and ``splitted_diffs/``
+    (the per-file annotated chunks written by the split step).
+    """
+    return f"/home/user/tmp/{pr_number}/{head_sha}"
 
 
 def map_drafts_to_comment_rows(
@@ -76,4 +90,107 @@ def create_review_workflow_id(*, repo_id: str, pr_number: int, head_sha: str) ->
     return f"review:{repo_id}:{pr_number}:{short_sha}"
 
 
-__all__ = ["get_repo_path", "map_drafts_to_comment_rows", "create_review_workflow_id"]
+# Calibration for the per-run agent call limits. The cap is a ceiling,
+# not a target: a PR with more files / lines gets more headroom so a
+# large PR can complete without the middleware capping the agent
+# mid-run, while small PRs keep a modest ceiling against runaway loops.
+_REVIEW_LIMIT_BASE = 150
+_REVIEW_LIMIT_PER_FILE = 40
+_REVIEW_LIMIT_PER_LINE = 0.25
+_REVIEW_LIMIT_MIN = 150
+_REVIEW_LIMIT_MAX = 2000
+
+
+@dataclass(frozen=True)
+class ReviewLimits:
+    """Per-run model/tool call limits for the review agents."""
+
+    model_call_run_limit: int
+    tool_call_run_limit: int
+
+
+def compute_review_limits(pr_size: PRSizeStats) -> ReviewLimits:
+    """Size the per-run agent call limits from the PR's size stats.
+
+    Pure formula: the limit scales with the number of changed files and
+    the total changed lines (``additions + deletions``). The same
+    ceiling is applied to both the model-call and tool-call run limits,
+    clamped to ``[_REVIEW_LIMIT_MIN, _REVIEW_LIMIT_MAX]`` so a huge PR
+    cannot set an unbounded budget while a trivial PR still gets enough
+    headroom to complete.
+    """
+    files = pr_size["changed_files"]
+    lines = pr_size["additions"] + pr_size["deletions"]
+    work = files * _REVIEW_LIMIT_PER_FILE + lines * _REVIEW_LIMIT_PER_LINE
+    limit = int(_REVIEW_LIMIT_BASE + work)
+    limit = max(_REVIEW_LIMIT_MIN, min(_REVIEW_LIMIT_MAX, limit))
+    return ReviewLimits(
+        model_call_run_limit=limit,
+        tool_call_run_limit=limit,
+    )
+
+
+class SplitDiffResult(TypedDict):
+    """The tiny summary JSON the in-sandbox split script prints on stdout.
+
+    ``overview_written`` — whether ``overview.md`` was written.
+    ``files_changed``  — number of per-file chunks created in ``splitted_diffs/``.
+    ``skipped``        — paths that appeared in the diff but were not split
+        (binary files, or rename-only sections with no hunks).
+
+    Parsing lives here so ``scripts/split_diff.py``'s stdout is validated by
+    exactly the same code in the host step (:mod:`...steps.split_diff`) and
+    the dev harness (``test-data/test_split.py``).
+    """
+
+    overview_written: bool
+    files_changed: int
+    skipped: list[str]
+
+
+def parse_split_summary(stdout: str) -> SplitDiffResult:
+    """Parse and validate the script's single stdout JSON line.
+
+    Raises:
+        ValueError: the stdout is not a single JSON object with a boolean
+            ``overview_written``, a non-negative ``files_changed``, and a
+            string-list ``skipped``.
+    """
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"split summary is not valid JSON: {stdout[:200]!r}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"split summary is not a JSON object: {stdout[:200]!r}")
+
+    overview_written = data.get("overview_written")
+    if not isinstance(overview_written, bool):
+        raise ValueError(
+            f"split summary has no boolean overview_written: {stdout[:200]!r}"
+        )
+    files_changed = data.get("files_changed")
+    if not isinstance(files_changed, int) or files_changed < 0:
+        raise ValueError(
+            f"split summary has no non-negative files_changed: {stdout[:200]!r}"
+        )
+    skipped = data.get("skipped")
+    if not isinstance(skipped, list) or not all(isinstance(s, str) for s in skipped):
+        raise ValueError(f"split summary has no string-list skipped: {stdout[:200]!r}")
+
+    return SplitDiffResult(
+        overview_written=overview_written,
+        files_changed=files_changed,
+        skipped=skipped,
+    )
+
+
+__all__ = [
+    "ReviewLimits",
+    "SplitDiffResult",
+    "compute_review_limits",
+    "create_review_workflow_id",
+    "get_repo_path",
+    "get_review_diff_dir_path",
+    "map_drafts_to_comment_rows",
+    "parse_split_summary",
+]

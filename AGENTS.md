@@ -332,10 +332,18 @@ them on `SQLModel.metadata`.
     `TotalUsages` / `TotalUsagesPerPR` token envelopes.
   - `_internal.py` — `_e2b_spec()` and the `_SHOULD_RETRY_TRANSIENT` /
     `_SHOULD_RETRY_AGENT` predicates passed to durable steps.
-  - `diff.py` — unified-diff parsing; `parse_and_write_diff_json` writes
-    `diff.json` (the JSON hunk map) alongside the diff in the sandbox.
-  - `hunk_map.py` — the `HunkMap` type (`files[file_name][RIGHT|LEFT]` line
-    sets) and the pure `filter_drafts(review, hunk_map)` backstop.
+  - `helpers.py` — pure helpers: `get_repo_path`, `get_review_diff_dir_path`
+    (the in-sandbox diff dir), `map_drafts_to_comment_rows`,
+    `create_review_workflow_id`, plus the shared `SplitDiffResult` /
+    `parse_split_summary` (the single parser for the split script's
+    stdout, used by both the host step and the dev harness).
+  - `diff.py` — `fetch_diff` writes the unified diff into the sandbox
+    (`file.diff`).
+  - `scripts/` — `split_diff.py`, the in-sandbox splitter (stdlib-only,
+    uploaded as bytes, never imported on the host): writes `overview.md`
+    and the per-file chunks into `splitted_diffs/` and prints the tiny
+    `SplitDiffResult` summary JSON to stdout (`overview_written`,
+    `files_changed`, `skipped` — no per-file line sets).
   - `tools.py` — `make_get_diff_tool` (the shared sandbox `get_diff` tool).
   - `agent.py` — agent factories for the **two parallel agents**
     (`build_summary_agent` + `build_comments_agent`, both taking a
@@ -358,7 +366,8 @@ them on `SQLModel.metadata`.
   - `steps/` — one file per I/O boundary, each exposing a pure helper and a
     DBOS-wrapped variant: `resolve_repo`/`resolve_repo_tx`,
     `resolve_sandbox`/`resolve_sandbox_step`, `fetch_diff_step`,
-    `parse_diff_step`, `upsert_pr`/`upsert_pull_request_tx`,
+    `split_diff_step` (uploads + runs the split script, returns the
+    `SplitDiffResult` summary), `upsert_pr`/`upsert_pull_request_tx`,
     `invoke_agent` (the two parallel agent steps + `combine_agent_outcomes`),
     `persist_summary`/
     `persist_review_summary_tx`, `persist_comments`/
@@ -671,9 +680,15 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
 5. `update_repo_step` — refresh the sandbox repo to the default branch.
 6. `fetch_diff_step` — `git diff base_sha...head_sha` written to the
    sandbox (`file.diff`).
-7. `parse_diff_step` — parse the diff into a `HunkMap` and write
-   `diff.json` alongside it. The `HunkMap` is the source of truth for which
-   `(file, line, side)` anchors GitHub will accept.
+7. `split_diff_step` — upload `split_diff.py` into the sandbox and run it
+   against `file.diff`; the script writes `overview.md` (the four-bucket
+   paths-only gate document) and the per-file annotated chunks into
+   `splitted_diffs/`, and prints the tiny `SplitDiffResult` summary JSON
+   to stdout (`overview_written`, `files_changed`, `skipped` — no per-file
+   line sets; exit-code contract: `0` success, `-1` transient
+   runner dropout, `>0` final `DiffSplitError`). The summary is parsed by
+   the shared `parse_split_summary` in `helpers.py`; the diff text itself
+   never crosses the sandbox boundary.
 8. `invoke_summary_agent_step` / `invoke_comments_agent_step` — the
    **two parallel agent steps**, started concurrently from the workflow
    body via `asyncio.gather(return_exceptions=True)` (the documented DBOS
@@ -693,17 +708,15 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
    comment lists) with a warning log, and the review completes with the
    successful lanes' output; token usage is aggregated per model from
    successful lanes only.
-9. `filter_drafts(review, hunk_map)` — pure server-side backstop that drops
-   any draft whose anchor is not in the `HunkMap`.
-10. `persist_review_summary_tx` + `persist_code_comments_tx` — one
-    `ReviewSummary` row and one `CodeComment` row per surviving draft,
-    each carrying the run's `review_id` (the lifecycle row).
-11. `persist_review_usage_tx` — one `ReviewUsage` row with aggregated token
+9. `persist_review_summary_tx` + `persist_code_comments_tx` — one
+   `ReviewSummary` row and one `CodeComment` row per draft,
+   each carrying the run's `review_id` (the lifecycle row).
+10. `persist_review_usage_tx` — one `ReviewUsage` row with aggregated token
     counts (success path; `review_status=SUCCESS`), carrying `review_id`.
-12. `mark_review_is_stopped_step` — flip the `review` row to `SUCCESS`
+11. `mark_review_is_stopped_step` — flip the `review` row to `SUCCESS`
     with the surviving comment count and the GitHub review id (from the
     awaited post workflow). Durable like the running step.
-13. `stop_sandbox_step` — always, in a `finally`.
+12. `stop_sandbox_step` — always, in a `finally`.
 
 Steps 3–4 run **inside** the `try`, so the `finally` sandbox stop also
 covers a raising `upsert_pull_request_tx` / running step. The `except`
@@ -733,17 +746,15 @@ main workflow completes regardless of the post outcome.
 
 **Diff parsing and comment-line validation.** GitHub's review-comments API
 rejects (422) any inline comment whose `(file, line, side)` anchor is not in
-the PR's diff. Three layers guard this:
+the PR's diff. Two layers guard this:
 
-1. **Agent self-validation (prompt-driven).** The comments agent
-   reads `/home/user/tmp/{pr_number}/{head_sha}/diff.json` (the JSON
-   hunk map written by `parse_diff_step`) and confirms every draft's
-   `from_line` is in `files[file_name][side]`; if not, it re-anchors to the
-   nearest in-bounds line in the **same hunk**, or drops the comment.
-2. **Server-side backstop.** `filter_drafts(review, hunk_map)` — one pure
-   call in the workflow body, immediately after the agent step, before any
-   persist/post step.
-3. **`< 1` guard.** `convert_to_github_comments` still rejects drafts with
+1. **Gutter-visible anchors (chunk-driven).** The comments agent reviews
+   the per-file chunks under `splitted_diffs/`, each of which carries the
+   visible LEFT/RIGHT gutter line numbers, so the agent anchors drafts only
+   to lines it can see on its chosen side. (Prompt guidance for this is
+   pending the agent redesign; the pipeline's split step already produces
+   the chunks.)
+2. **`< 1` guard.** `convert_to_github_comments` still rejects drafts with
    `from_line < 1` (or `to_line < 1`) as final defence-in-depth.
 
 ### 3.6 Migrations

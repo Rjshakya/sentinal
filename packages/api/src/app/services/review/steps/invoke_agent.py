@@ -298,6 +298,7 @@ def _build_prompt_payload(
     repo_id: str,
     user_id: str,
     pr_number: int,
+    head_sha: str,
 ) -> dict[str, Any]:
     """Build the user message payload sent to every review agent."""
     user_prompt = assemble_user_prompt(
@@ -305,6 +306,7 @@ def _build_prompt_payload(
         repo_id=repo_id,
         user_id=user_id,
         pr_number=pr_number,
+        head_sha=head_sha,
     )
     return {"messages": [{"role": "user", "content": user_prompt}]}
 
@@ -330,6 +332,8 @@ async def invoke_summary_agent_step(
     pr_number: int,
     head_sha: str,
     llm_config: LLMConfig,
+    model_call_limit: int,
+    tool_call_limit: int,
 ) -> tuple[str, dict[str, UsageMetadata]]:
     """Durable step: run the summarizer lane and return ``(markdown, usage)``.
 
@@ -338,6 +342,11 @@ async def invoke_summary_agent_step(
     :func:`invoke_summary_agent`. Transient failures retry this lane
     alone. The sandbox is never stopped here — the workflow's
     ``finally`` owns the stop.
+
+    ``model_call_limit`` / ``tool_call_limit`` are the per-run agent
+    caps computed by the workflow from the PR's size
+    (:func:`app.services.review.helpers.compute_review_limits`) and
+    applied to the built middleware stack.
     """
     sandbox = await _connect_sandbox(
         sandbox_id=sandbox_id,
@@ -349,7 +358,10 @@ async def invoke_summary_agent_step(
     model = build_chat_model(config=llm_config)
     backend = AsyncE2BSandbox(sandbox=sandbox.sandbox, workdir="/home/user")
 
-    middleware = build_review_middleware()
+    middleware = build_review_middleware(
+        model_call_run_limit=model_call_limit,
+        tool_call_run_limit=tool_call_limit,
+    )
 
     agent = build_summary_agent(
         model=model,
@@ -365,6 +377,7 @@ async def invoke_summary_agent_step(
         repo_id=repo_id,
         user_id=user_id,
         pr_number=pr_number,
+        head_sha=head_sha,
     )
 
     log.info(
@@ -394,6 +407,8 @@ async def invoke_comments_agent_step(
     pr_number: int,
     head_sha: str,
     llm_config: LLMConfig,
+    model_call_limit: int,
+    tool_call_limit: int,
 ) -> tuple[ReviewComments, dict[str, UsageMetadata]]:
     """Durable step: run the comments lane and return
     ``(ReviewComments, usage)``. Same semantics as
@@ -419,7 +434,10 @@ async def invoke_comments_agent_step(
 
     # Deep Agent
 
-    middleware = build_review_middleware()
+    middleware = build_review_middleware(
+        model_call_run_limit=model_call_limit,
+        tool_call_run_limit=tool_call_limit,
+    )
 
     agent = build_comments_agent(
         model=model,
@@ -437,6 +455,7 @@ async def invoke_comments_agent_step(
         repo_id=repo_id,
         user_id=user_id,
         pr_number=pr_number,
+        head_sha=head_sha,
     )
 
     log.info(

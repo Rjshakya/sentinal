@@ -46,7 +46,7 @@ from app.services.pr_issue_comment.types import (
     ClassifyCommentResult,
     IssueCommentTriggerInput,
 )
-from app.services.review.workflow_types import ReviewWorkflowInput
+from app.services.review.workflow_types import PRSizeStats, ReviewWorkflowInput
 
 REVIEW_MENTION_RE: Final[re.Pattern[str]] = re.compile(
     r"(?i)@(?P<slug>[\w\-.]+)\s+review\b"
@@ -247,6 +247,7 @@ def build_review_workflow_input(
     author: str,
     state: str,
     merged: bool,
+    pr_size: PRSizeStats,
     user_id: str,
     llm_config: LLMConfig,
 ) -> ReviewWorkflowInput:
@@ -259,7 +260,7 @@ def build_review_workflow_input(
 
     All PR-side fields (``gh_pr_id``, ``base_sha``, ``head_sha``,
     ``base_branch``, ``head_branch``, ``title``, ``body``, ``author``,
-    ``state``, ``merged``) come from
+    ``state``, ``merged``, ``pr_size``) come from
     :func:`app.services.pr_issue_comment.steps.fetch_pr_state.fetch_pr_state_step`
     — the comment payload does not carry them. ``default_branch`` is
     the exception: it is read straight off the payload's
@@ -280,6 +281,7 @@ def build_review_workflow_input(
         title=title or "",
         status=_classify_pr_status(state, merged),
         trigger="comment",
+        pr_size=pr_size,
         llm_config=llm_config,
         post_to_github=True,
         github_installation_id=trigger.installation_id,

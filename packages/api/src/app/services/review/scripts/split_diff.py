@@ -49,24 +49,27 @@ Layout — given the sandbox dir ``p = /home/user/tmp/{pr}/{commit}``
    column; added lines blank the left. The ``@@`` hunk headers are
    kept verbatim; the git ``\\ No newline at end of file`` marker is
    passed through unguttered.
-5. Prints one compact JSON line to stdout — the per-file line sets
-   (``ParsedDiff`` shape) the host uses as the comment-anchor backstop
-   and for lane grouping. The diff text itself never crosses the
+5. Prints one compact JSON line to stdout — the tiny
+   ``SplitDiffResult`` summary (``overview_written`` / ``files_changed`` /
+   ``skipped``). The diff text and its per-file line sets never cross the
    sandbox boundary.
 
-Skipped from chunks (no ``.md``, no JSON entry): binary files and
-files with no hunks (pure renames) — they still appear in the overview.
+Skipped from chunks (no ``.md``): binary files and files with no hunks
+(pure renames) — they still appear in the overview and are listed in the
+summary's ``skipped`` array.
 
 Usage: ``split_diff.py <file.diff> <dir> [--pr <number>] [--commit <sha>]``
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 import sys
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Literal
 
 _HUNK_HEADER_RE = re.compile(
@@ -106,25 +109,17 @@ class AnnotatedFile:
 
 
 @dataclass
-class FileEntry:
-    """Per-file line sets in the host summary.
+class SplitResult:
+    """The tiny summary printed to stdout (``SplitDiffResult`` shape).
 
-    Field names are uppercase because they ARE the wire format: the
-    host ``ParsedDiff`` contract expects exactly ``RIGHT`` / ``LEFT``.
+    Field names are lowercase because the host :class:`SplitDiffResult`
+    contract expects exactly ``overview_written`` / ``files_changed`` /
+    ``skipped``.
     """
 
-    RIGHT: list[int]
-    LEFT: list[int]
-
-
-@dataclass
-class Summary:
-    """The compact summary printed to stdout (``ParsedDiff`` shape)."""
-
-    files: dict[str, FileEntry]
+    overview_written: bool
     files_changed: int
-    right_lines_total: int
-    left_lines_total: int
+    skipped: list[str]
 
 
 def split_sections(diff_text: str) -> list[Section]:
@@ -253,7 +248,10 @@ def annotate_section(section: Section) -> AnnotatedFile | None:
             annotated.append(line)
             continue
 
-        if line.startswith(("--- ", "+++ ", "diff --git ")) or line == _NO_NEWLINE_MARKER:
+        if (
+            line.startswith(("--- ", "+++ ", "diff --git "))
+            or line == _NO_NEWLINE_MARKER
+        ):
             annotated.append(line)
             continue
 
@@ -295,52 +293,27 @@ def render_chunk(name: str, body: list[str]) -> str:
     return f"### {name}\n\n```diff\n\n" + "\n".join(body) + "\n\n```\n"
 
 
-def build_summary(files: list[AnnotatedFile]) -> Summary:
-    """Build the compact host summary (``ParsedDiff`` shape)."""
-    summary_files: dict[str, FileEntry] = {
-        f.name: FileEntry(RIGHT=sorted(f.right), LEFT=sorted(f.left))
-        for f in files
-    }
-    return Summary(
-        files=summary_files,
+def build_summary(files: list[AnnotatedFile], skipped: list[str]) -> SplitResult:
+    """Build the tiny host summary (``SplitDiffResult`` shape)."""
+    return SplitResult(
+        overview_written=True,
         files_changed=len(files),
-        right_lines_total=sum(len(f.right) for f in files),
-        left_lines_total=sum(len(f.left) for f in files),
+        skipped=skipped,
     )
 
 
-def main(argv: list[str]) -> int:
-    positional: list[str] = []
-    pr: str | None = None
-    commit: str | None = None
+def main() -> int:
+    parser = argparse.ArgumentParser(description="diff splitting script")
+    parser.add_argument("diff_path", help="path of diff file")
+    parser.add_argument("out_dir", help="out dir path")
+    parser.add_argument("--pr", help="pr number")
+    parser.add_argument("--commit", help="commit id")
 
-    i = 1
-    while i < len(argv):
-        arg = argv[i]
-        if arg == "--pr":
-            i += 1
-            if i >= len(argv):
-                print("usage: --pr <number>", file=sys.stderr)
-                return 2
-            pr = argv[i]
-        elif arg == "--commit":
-            i += 1
-            if i >= len(argv):
-                print("usage: --commit <sha>", file=sys.stderr)
-                return 2
-            commit = argv[i]
-        else:
-            positional.append(arg)
-        i += 1
-
-    if len(positional) != 2:
-        print(
-            f"usage: {argv[0]} <file.diff> <dir> [--pr <number>] [--commit <sha>]",
-            file=sys.stderr,
-        )
-        return 2
-
-    diff_path, out_dir = positional
+    args = parser.parse_args()
+    diff_path = Path(args.diff_path)
+    out_dir = Path(args.out_dir)
+    pr = args.pr
+    commit = args.commit
 
     try:
         with open(diff_path, "r", encoding="utf-8", errors="ignore") as fh:
@@ -359,6 +332,7 @@ def main(argv: list[str]) -> int:
         "renamed": [],
     }
     annotated: list[AnnotatedFile] = []
+    skipped: list[str] = []
 
     for section in split_sections(diff_text):
         kind = classify_section(section)
@@ -369,6 +343,7 @@ def main(argv: list[str]) -> int:
 
         result = annotate_section(section)
         if result is None:
+            skipped.append(section.name)
             continue
         chunk_path = os.path.join(chunks_dir, result.name.replace("/", ".") + ".md")
         with open(chunk_path, "w", encoding="utf-8") as fh:
@@ -379,9 +354,9 @@ def main(argv: list[str]) -> int:
     with open(overview_path, "w", encoding="utf-8") as fh:
         fh.write(build_overview(buckets, pr, commit))
 
-    print(json.dumps(asdict(build_summary(annotated))))
+    print(json.dumps(asdict(build_summary(annotated, skipped))))
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())

@@ -54,6 +54,7 @@ def build_review_input_step(
         author=pr_state.author,
         state=pr_state.state,
         merged=pr_state.merged,
+        pr_size=pr_state.pr_size,
         user_id=user_id,
         llm_config=llm_config,
     )

@@ -53,15 +53,15 @@ from dbos import DBOS, SetWorkflowID
 
 from app.models.enums import ReviewRunStatus
 from app.services.github.workflow import post_review_to_github_workflow
-from app.services.review.hunk_map import HunkMap, filter_drafts
+from app.services.review.helpers import compute_review_limits
 from app.services.review.steps import (
     fetch_diff_step,
-    parse_diff_step,
     persist_code_comments_tx,
     persist_review_summary_tx,
     persist_review_usage_tx,
     resolve_repo_tx,
     resolve_sandbox_step,
+    split_diff_step,
     stop_sandbox_step,
     update_repo_step,
     upsert_pull_request_tx,
@@ -175,22 +175,27 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             head_sha=input.head_sha,
         )
 
-        parsed_diff = await parse_diff_step(
+        split_result = await split_diff_step(
             sandbox_id=sandbox.sandbox_id,
             sandbox_name=sandbox.sandbox_name,
             repo_id=repo.id,
             user_id=input.user_id,
             pr_number=input.pr_number,
-            base_sha=input.base_sha,
             head_sha=input.head_sha,
         )
-        hunk_map: HunkMap = {
-            file_name: {
-                "RIGHT": set(entry["RIGHT"]),
-                "LEFT": set(entry["LEFT"]),
-            }
-            for file_name, entry in parsed_diff["files"].items()
-        }
+
+        limits = compute_review_limits(input.pr_size)
+        log.info(
+            "workflow: computed per-run agent limits: workflow_id=%s "
+            "pr_number=%s changed_files=%s model_call_run_limit=%d "
+            "tool_call_run_limit=%d split_files=%d",
+            workflow_id,
+            input.pr_number,
+            input.pr_size["changed_files"],
+            limits.model_call_run_limit,
+            limits.tool_call_run_limit,
+            split_result["files_changed"],
+        )
 
         agent_results = await asyncio.gather(
             invoke_summary_agent_step(
@@ -202,6 +207,8 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
                 pr_number=input.pr_number,
                 head_sha=input.head_sha,
                 llm_config=input.llm_config,
+                model_call_limit=limits.model_call_run_limit,
+                tool_call_limit=limits.tool_call_run_limit,
             ),
             invoke_comments_agent_step(
                 sandbox_id=sandbox.sandbox_id,
@@ -212,6 +219,8 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
                 pr_number=input.pr_number,
                 head_sha=input.head_sha,
                 llm_config=input.llm_config,
+                model_call_limit=limits.model_call_run_limit,
+                tool_call_limit=limits.tool_call_run_limit,
             ),
             return_exceptions=True,
         )
@@ -226,20 +235,18 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             workflow_id=workflow_id,
         )
 
-        filtered_review = filter_drafts(review, hunk_map)
-
         summary_id = await persist_review_summary_tx(
             pr_id=pr_id,
             review_id=review_id,
             commit_id=input.head_sha,
-            result=filtered_review,
+            result=review,
         )
 
         await persist_code_comments_tx(
             pr_id=pr_id,
             review_id=review_id,
             commit_id=input.head_sha,
-            comments=[c.model_dump(mode="json") for c in filtered_review.comments],
+            comments=[c.model_dump(mode="json") for c in review.comments],
         )
 
         input_tokens, output_tokens, total_tokens, input_token_details = (
@@ -273,7 +280,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
                 repo_owner=repo.repo_owner,
                 repo_name=repo.repo_name,
                 pr_number=input.pr_number,
-                review=filtered_review,
+                review=review,
             )
 
             post_workflow_id = f"post:{repo.id}:{input.pr_number}:{input.head_sha[:7]}"
@@ -287,7 +294,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
 
         await mark_review_is_stopped_step(
             review_id=review_id,
-            comment_count=len(filtered_review.comments),
+            comment_count=len(review.comments),
             github_review_id=github_review_id,
         )
 
@@ -303,7 +310,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
         return ReviewRunResult(
             pr_id=pr_id,
             commit_id=input.head_sha,
-            review=filtered_review,
+            review=review,
             usages=usages,
         )
 

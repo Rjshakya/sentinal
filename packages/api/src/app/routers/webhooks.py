@@ -397,8 +397,6 @@ async def github_webhook(
     if event == "issue_comment":
         action = payload.get("action")
         if action == "created":
-            log.info("issue_comment_created payload: %s", payload)
-
             ack = await handle_issue_comment_created(payload, delivery)
             log.info(
                 "github_webhook: issue_comment handled: %s",

@@ -40,7 +40,7 @@ from app.models.repo import Repo
 from app.services.llm_config import NoActiveLLMConfigError, resolve_active_llm_config
 from app.services.review.helpers import create_review_workflow_id
 from app.services.review.workflow import review_workflow
-from app.services.review.workflow_types import ReviewWorkflowInput
+from app.services.review.workflow_types import PRSizeStats, ReviewWorkflowInput
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ class PRReviewInput(BaseModel):
     title: str
     body: str | None = None
     status: PRStatus
+    pr_size: PRSizeStats
 
 
 def classify_action(action: Any) -> bool:
@@ -103,6 +104,21 @@ def _classify_status(pr: dict[str, Any]) -> str | None:
     if state == "closed":
         return PRStatus.MERGED if pr.get("merged") else PRStatus.CLOSED
     return None
+
+
+def _extract_pr_size(pr: dict[str, Any]) -> PRSizeStats:
+    """Project the PR's size stats onto a :class:`PRSizeStats`.
+
+    GitHub's ``pull_request`` payload carries ``additions`` /
+    ``deletions`` / ``changed_files`` at the top level of the PR
+    object; any value is coerced ``None → 0`` so a partial payload
+    still yields a valid, zero-sized stats dict.
+    """
+    return PRSizeStats(
+        additions=int(pr.get("additions") or 0),
+        deletions=int(pr.get("deletions") or 0),
+        changed_files=int(pr.get("changed_files") or 0),
+    )
 
 
 def extract_payload(payload: dict[str, Any]) -> PRReviewInput | None:
@@ -130,6 +146,7 @@ def extract_payload(payload: dict[str, Any]) -> PRReviewInput | None:
         "title": pr.get("title"),
         "body": pr.get("body"),
         "status": _classify_status(pr),
+        "pr_size": _extract_pr_size(pr),
     }
     try:
         return PRReviewInput.model_validate(flat)
@@ -186,6 +203,7 @@ def build_review_workflow_input(
         title=pr_payload.title,
         body=pr_payload.body or "",
         status=pr_payload.status,
+        pr_size=pr_payload.pr_size,
         llm_config=llm_config,
         post_to_github=post_to_github,
         github_installation_id=github_installation_id,
