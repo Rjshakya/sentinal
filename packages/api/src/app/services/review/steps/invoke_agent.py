@@ -1,29 +1,34 @@
 """DBOS durable steps that actually run the review agents.
 
-This module owns the two per-agent steps, plus the helpers used to
-wire each review agent to the E2B sandbox and the pure helper that
-combines their outcomes.
+This module owns the two per-agent steps, the extractor-lane runner
+that follows them, and the pure helper that combines their outcomes.
 
-Two parallel steps:
+Two parallel research steps:
 
-- :func:`invoke_summary_agent_step` — summarizer (markdown text).
-- :func:`invoke_comments_agent_step` — comments (pydantic
-  :class:`ReviewComments` with mixed severities).
+- :func:`invoke_summary_agent_step` — summarizer (free-form markdown).
+- :func:`invoke_comments_agent_step` — comments (free-form findings
+  report).
 
 Each step reconnects to the shared E2B sandbox by id, builds its
 own chat model and deep-agent (with the shared ``get_diff`` tool),
 runs it via the :func:`invoke_<name>_agent` wrappers (which
 translate any failure into the per-agent error class with a
-``retryable`` flag), and returns ``(result, usage)``. Steps are
+``retryable`` flag), and returns ``(raw_text, usage)``. Steps are
 started concurrently from the workflow body with
 ``asyncio.gather(..., return_exceptions=True)`` — the documented
 DBOS parallel-steps pattern — and a transient failure (429 / 5xx /
 timeout) retries **that lane alone** (``max_attempts=3``,
 ``backoff_rate=2``) instead of re-running both agents.
 
-:func:`combine_agent_outcomes` then partitions the two results:
+The agents are research-only: they produce free-form text, never a
+structured payload. :func:`run_extractor_lanes` then dispatches the
+durable structured-extractor steps
+(:mod:`app.services.review.steps.extract_result`) for the lanes whose
+research agent succeeded; failed agent lanes carry their error through.
 
-- both lanes failed → raises
+:func:`combine_agent_outcomes` then partitions the lane outcomes:
+
+- both lanes failed (research **or** extraction) → raises
   :class:`app.services.review.errors.ReviewAgentsInvocationError`
   (pushed to Sentry with the full run context before raising);
 - partial failure → failed lane degrades to an empty default (``""``
@@ -38,19 +43,16 @@ stops it.
 
 from __future__ import annotations
 
-import json
 import logging
-import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal, TypedDict, cast
 
 import sentry_sdk
 from dbos import DBOS
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import UsageMetadata
 from langchain_e2b import AsyncE2BSandbox
-from pydantic import BaseModel
 
 from app.core.llm import LLMConfig, build_chat_model
 from app.core.sandbox.e2b import E2BSandbox
@@ -67,16 +69,19 @@ from app.services.review.agent import (
     combine_review_results,
 )
 from app.services.review.errors import (
-    AgentInvocationError,
     CommentsAgentInvocationError,
-    ReviewAgentCrashedError,
     ReviewAgentsInvocationError,
     SandboxConnectError,
+    StepError,
     SubagentInvocationError,
     SummaryAgentInvocationError,
     is_llm_retry_error,
 )
 from app.services.review.middleware import build_review_middleware
+from app.services.review.steps.extract_result import (
+    extract_comments_result_step,
+    extract_summary_result_step,
+)
 from app.services.review.tools import make_get_diff_tool
 from app.services.review.types import DeepAgentGraph
 from app.services.review.workflow_types import (
@@ -91,9 +96,6 @@ log = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # Per-subagent wrappers                                                         #
 # --------------------------------------------------------------------------- #
-
-_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
-"""Matches a fenced code block that may carry a ``json`` language tag."""
 
 
 def _last_ai_text(result: Any) -> str:
@@ -120,93 +122,29 @@ def _last_ai_text(result: Any) -> str:
     return ""
 
 
-def _parse_json_text(text: str) -> dict[str, Any]:
-    """Parse the first JSON object out of free-form model text.
-
-    Tries, in order: the whole trimmed message, a fenced ```json
-    block, and the substring between the first ``{`` and the last
-    ``}``. Raises ``ValueError`` when nothing parses.
-    """
-    stripped = text.strip()
-    if not stripped:
-        raise ValueError("agent returned an empty final message")
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
-    fence = _FENCED_JSON_RE.search(stripped)
-    if fence is not None:
-        try:
-            return json.loads(fence.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-    start, end = stripped.find("{"), stripped.rfind("}")
-    if start != -1 and end > start:
-        try:
-            return json.loads(stripped[start : end + 1])
-        except json.JSONDecodeError:
-            pass
-    raise ValueError(f"could not parse JSON from agent output: {stripped[:200]!r}")
-
-
-def _extract_structured(result: Any, model_cls: type[BaseModel]) -> Any:
-    """Extract and validate the lane's structured payload.
-
-    Preferred source is the runtime's ``structured_response`` (the
-    schema tool call). When the agent ends with plain text instead —
-    or when ``response_format`` was dropped for an endpoint that
-    rejects forced tool choice — the last AI message is parsed as
-    JSON and validated against ``model_cls``.
-    """
-    if isinstance(result, dict) and result.get("structured_response") is not None:
-        return model_cls.model_validate(result["structured_response"])
-    data = _parse_json_text(_last_ai_text(result))
-    if "List" not in data and "list" in data:
-        # The comment models' field is `List` (capital L); models
-        # occasionally emit lowercase `list` despite the contract.
-        data = dict(data)
-        data["List"] = data.pop("list")
-    return model_cls.model_validate(data)
-
-
-def _summary_extractor(result: Any) -> SummaryResult:
-    """Validate the summarizer's structured payload.
-
-    Accepts the runtime's ``structured_response`` (a
-    :class:`SummaryResult`) or, when the model ended with text, JSON
-    parsed from the final message. Mirrors the structured extractor
-    of the comments agent.
-    """
-    return _extract_structured(result, SummaryResult)
-
-
-def _comments_extractor(result: Any) -> ReviewComments:
-    """Validate the comments agent's structured payload."""
-    return _extract_structured(result, ReviewComments)
-
-
 async def _call_with_error_wrapping(
     *,
     agent: DeepAgentGraph,
     prompt_payload: dict[str, Any],
     error_cls: type[SubagentInvocationError],
-    result_extractor: Callable[[Any], Any],
-) -> tuple[Any, dict[str, UsageMetadata]]:
+) -> tuple[str, dict[str, UsageMetadata]]:
     """Run ``agent.ainvoke`` and translate any failure into ``error_cls``.
 
     The wrapper performs two things:
 
-    1. Calls the subagent's ``ainvoke`` and applies ``result_extractor``
-       to convert the raw output into the structured payload the caller
-       expects (markdown text for the summary agent, a validated
-       pydantic model for the three structured agents).
+    1. Calls the agent's ``ainvoke`` and returns the last AI message's
+       text content — the free-form research output (markdown
+       walkthrough for the summarizer, findings report for the
+       comments agent). The structured payload is produced afterwards
+       by the extractor steps in
+       :mod:`app.services.review.steps.extract_result`.
     2. Catches any exception (LLM 5xx/429/timeout from
-       :func:`is_llm_retry_error`, validation errors, post-processing
-       errors) and re-raises it as an instance of ``error_cls`` with a
-       ``retryable`` flag and any recoverable details (message kinds
-       from the partial result). The original exception is preserved
-       via ``raise ... from exc`` so Sentry's exception chain and
-       Python's ``__cause__`` both work.
+       :func:`is_llm_retry_error`, empty-output validation errors,
+       post-processing errors) and re-raises it as an instance of
+       ``error_cls`` with a ``retryable`` flag and any recoverable
+       details (message kinds from the partial result). The original
+       exception is preserved via ``raise ... from exc`` so Sentry's
+       exception chain and Python's ``__cause__`` both work.
     """
     result: Any = None
     try:
@@ -214,7 +152,10 @@ async def _call_with_error_wrapping(
             result = await agent.ainvoke(prompt_payload)
             usage = usage_cb.usage_metadata
 
-        return result_extractor(result), usage
+        text = _last_ai_text(result)
+        if not text.strip():
+            raise ValueError("agent produced no text output")
+        return text, usage
 
     except Exception as exc:
         retryable = is_llm_retry_error(exc)
@@ -234,27 +175,27 @@ async def _call_with_error_wrapping(
 
 async def invoke_summary_agent(
     agent: DeepAgentGraph, prompt_payload: dict[str, Any]
-) -> tuple[SummaryResult, dict[str, UsageMetadata]]:
+) -> tuple[str, dict[str, UsageMetadata]]:
     """Run the summarizer subagent; on failure raise
-    :class:`SummaryAgentInvocationError`."""
+    :class:`SummaryAgentInvocationError`. Returns the free-form
+    walkthrough text."""
     return await _call_with_error_wrapping(
         agent=agent,
         prompt_payload=prompt_payload,
         error_cls=SummaryAgentInvocationError,
-        result_extractor=_summary_extractor,
     )
 
 
 async def invoke_comments_agent(
     agent: DeepAgentGraph, prompt_payload: dict[str, Any]
-) -> tuple[ReviewComments, dict[str, UsageMetadata]]:
+) -> tuple[str, dict[str, UsageMetadata]]:
     """Run the comments subagent; on failure raise
-    :class:`CommentsAgentInvocationError`."""
+    :class:`CommentsAgentInvocationError`. Returns the free-form
+    findings report text."""
     return await _call_with_error_wrapping(
         agent=agent,
         prompt_payload=prompt_payload,
         error_cls=CommentsAgentInvocationError,
-        result_extractor=_comments_extractor,
     )
 
 
@@ -387,8 +328,7 @@ async def invoke_summary_agent_step(
         pr_number,
     )
 
-    summary, usage = await invoke_summary_agent(agent, prompt_payload)
-    return summary.summary, usage
+    return await invoke_summary_agent(agent, prompt_payload)
 
 
 @DBOS.step(
@@ -409,9 +349,9 @@ async def invoke_comments_agent_step(
     llm_config: LLMConfig,
     model_call_limit: int,
     tool_call_limit: int,
-) -> tuple[ReviewComments, dict[str, UsageMetadata]]:
+) -> tuple[str, dict[str, UsageMetadata]]:
     """Durable step: run the comments lane and return
-    ``(ReviewComments, usage)``. Same semantics as
+    ``(findings_report_text, usage)``. Same semantics as
     :func:`invoke_summary_agent_step`.
     """
 
@@ -474,8 +414,42 @@ async def invoke_comments_agent_step(
 # Outcome combination (pure)                                                   #
 # --------------------------------------------------------------------------- #
 
-AGENT_LANES: tuple[str, ...] = ("summarizer", "comments")
+AGENT_LANES: tuple[Literal["summarizer"], Literal["comments"]] = (
+    "summarizer",
+    "comments",
+)
 """The two lane names, in the deterministic gather order."""
+
+AgentStepOutcome = tuple[str, dict[str, UsageMetadata]] | BaseException
+"""Outcome of one research-agent step: ``(raw_text, usage)`` or an exception."""
+
+ExtractedSummary = tuple[SummaryResult, dict[str, UsageMetadata]]
+"""Successful summarizer extractor result: the payload plus token usage."""
+
+ExtractedComments = tuple[ReviewComments, dict[str, UsageMetadata]]
+"""Successful comments extractor result: the payload plus token usage."""
+
+SummaryLaneOutcome = ExtractedSummary | BaseException
+"""Final summarizer lane outcome: extracted payload or a lane failure."""
+
+CommentsLaneOutcome = ExtractedComments | BaseException
+"""Final comments lane outcome: extracted payload or a lane failure."""
+
+
+class ExtractorLaneResults(TypedDict):
+    """Per-lane outcomes of the research + extraction fan-out.
+
+    Each value is either the lane's validated structured payload with
+    its token usage (from the extractor step) or a ``BaseException`` —
+    a per-lane :class:`AgentInvocationError` from the research agent,
+    or a :class:`SummaryExtractionError` /
+    :class:`CommentsExtractionError` /
+    :class:`ReviewAgentRateLimitedError` from the extractor step.
+    """
+
+    summarizer: SummaryLaneOutcome
+    comments: CommentsLaneOutcome
+
 
 # Defaults for failed lanes: an empty summary string and an empty
 # comment list. The summary column is non-null, so an empty string is
@@ -484,8 +458,68 @@ _DEFAULT_SUMMARY: str = ""
 _DEFAULT_COMMENTS_MODEL: type[ReviewComments] = ReviewComments
 
 
+async def run_extractor_lanes(
+    *,
+    agent_results: Sequence[AgentStepOutcome],
+    extractor_config: LLMConfig,
+) -> ExtractorLaneResults:
+    """Run the structured-extractor steps for the lanes that succeeded.
+
+    ``agent_results`` holds the two :func:`asyncio.gather` outcomes in
+    the deterministic order of :data:`AGENT_LANES`. Each entry is
+    either ``(raw_text, usage)`` from a successful research lane or a
+    per-lane :class:`AgentInvocationError`.
+
+    For every successful lane the matching durable extractor step
+    (:func:`extract_summary_result_step` /
+    :func:`extract_comments_result_step`) is awaited (sequentially —
+    each is a single structured-output call); an extractor failure is
+    captured as the lane's outcome so the workflow's combine step can
+    degrade the lane. Failed agent lanes carry their error through
+    unchanged. The extractor steps' own transient-error retries happen
+    inside the steps, so a captured exception here is always terminal
+    for that lane.
+
+    Returns a fully typed :class:`ExtractorLaneResults` mapping each
+    lane to its outcome.
+    """
+    summary_agent_outcome = agent_results[0]
+    comments_agent_outcome = agent_results[1]
+
+    summary_lane: SummaryLaneOutcome
+    if isinstance(summary_agent_outcome, BaseException):
+        summary_lane = summary_agent_outcome
+    else:
+        raw_text, _usage = summary_agent_outcome
+        try:
+            summary_lane = await extract_summary_result_step(
+                extractor_config=extractor_config,
+                raw_text=raw_text,
+            )
+        except BaseException as exc:
+            summary_lane = exc
+
+    comments_lane: CommentsLaneOutcome
+    if isinstance(comments_agent_outcome, BaseException):
+        comments_lane = comments_agent_outcome
+    else:
+        raw_text, _usage = comments_agent_outcome
+        try:
+            comments_lane = await extract_comments_result_step(
+                extractor_config=extractor_config,
+                raw_text=raw_text,
+            )
+        except BaseException as exc:
+            comments_lane = exc
+
+    return ExtractorLaneResults(
+        summarizer=summary_lane,
+        comments=comments_lane,
+    )
+
+
 def combine_agent_outcomes(
-    results: Sequence[Any],
+    lane_outcomes: ExtractorLaneResults,
     *,
     pr_number: int,
     head_sha: str,
@@ -494,13 +528,16 @@ def combine_agent_outcomes(
     llm_config: LLMConfig,
     workflow_id: str,
 ) -> tuple[ReviewResult, TotalUsagesPerPR]:
-    """Partition the two gather results and combine them into a review.
+    """Partition the lane outcomes and combine them into a review.
 
-    ``results`` holds the two :func:`asyncio.gather` outcomes in the
-    deterministic order of :data:`AGENT_LANES` (the order the steps
-    were started in). Each entry is either ``(result, usage)`` from a
-    successful lane, a per-lane :class:`AgentInvocationError`, or —
-    defensively — any other ``BaseException``.
+    ``lane_outcomes`` is the fully typed :class:`ExtractorLaneResults`
+    mapping each lane to either ``(result, usage)`` (a validated
+    structured payload from the extractor step, plus the aggregated
+    agent + extractor usage) or a ``BaseException`` (a per-lane
+    :class:`AgentInvocationError` from the research agent, or a
+    :class:`SummaryExtractionError` /
+    :class:`CommentsExtractionError` /
+    :class:`ReviewAgentRateLimitedError` from the extractor step).
 
     Behaviour:
 
@@ -510,15 +547,14 @@ def combine_agent_outcomes(
       workflow is marked ERROR.
     - Partial failure → failed lane degrades to an empty default
       (``""`` summary / ``ReviewComments(List=[])``), a warning is
-      logged for the failed lane (name, cause, retryable), and the
-      review is built from the successful lane.
-    - Unexpected ``BaseException`` (programming bug) → raises
-      :class:`ReviewAgentCrashedError`.
+      logged for the failed lane, and the review is built from the
+      successful lane.
 
     Token usage is aggregated from the successful lanes only.
     """
-    successes: dict[str, Any] = {}
-    failures: list[AgentInvocationError] = []
+    failures: list[tuple[str, BaseException]] = []
+    summary_markdown: str = _DEFAULT_SUMMARY
+    comments: ReviewComments = _DEFAULT_COMMENTS_MODEL(List=[])
 
     total_usages_per_pr = TotalUsagesPerPR(
         pr_number=pr_number,
@@ -528,63 +564,30 @@ def combine_agent_outcomes(
         usages={},
     )
 
-    for agent_name, value in zip(AGENT_LANES, results):
-        if isinstance(value, AgentInvocationError):
-            failures.append(value)
-        elif isinstance(value, BaseException):
-            # Defensive: the wrappers only raise AgentInvocationError
-            # subclasses, so anything else here is a programming bug.
-            # Re-raise as a non-retryable error so DBOS marks the
-            # workflow as ERROR without retrying.
-            log.exception(
-                "review agents saw unexpected exception type from "
-                "subagent wrapper: name=%s exc_type=%s",
-                agent_name,
-                type(value).__name__,
-            )
-            raise ReviewAgentCrashedError(
-                cause=f"{type(value).__name__}: {value}"
-            ) from value
-        else:
-            agent_result, agent_usage = value
-            successes[agent_name] = agent_result
+    summarizer_value = lane_outcomes["summarizer"]
+    if isinstance(summarizer_value, BaseException):
+        failures.append(("summarizer", summarizer_value))
+    else:
+        summary_result, summary_usage = summarizer_value
+        summary_markdown = summary_result.summary
+        _accumulate_usage(total_usages_per_pr["usages"], summary_usage)
 
-            for model_name, usage in agent_usage.items():
-                bucket = total_usages_per_pr["usages"].setdefault(
-                    model_name,
-                    TotalUsages(
-                        input_tokens=0,
-                        output_tokens=0,
-                        total_tokens=0,
-                        input_token_details=InputTokenDetails(
-                            cache_read=0,
-                            cache_creation=0,
-                        ),
-                    ),
-                )
-                bucket["input_tokens"] += usage.get("input_tokens", 0)
-                bucket["output_tokens"] += usage.get("output_tokens", 0)
-                bucket["total_tokens"] += usage.get("total_tokens", 0)
-                details = usage.get("input_token_details") or {}
-                prev_cache_read = bucket["input_token_details"].get("cache_read")
-                prev_cache_creation = bucket["input_token_details"].get(
-                    "cache_creation"
-                )
-                bucket["input_token_details"]["cache_read"] = (
-                    prev_cache_read if prev_cache_read is not None else 0
-                ) + (details.get("cache_read") or 0)
-                bucket["input_token_details"]["cache_creation"] = (
-                    prev_cache_creation if prev_cache_creation is not None else 0
-                ) + (details.get("cache_creation") or 0)
+    comments_value = lane_outcomes["comments"]
+    if isinstance(comments_value, BaseException):
+        failures.append(("comments", comments_value))
+    else:
+        comments_result, comments_usage = comments_value
+        comments = comments_result
+        _accumulate_usage(total_usages_per_pr["usages"], comments_usage)
 
     if len(failures) == len(AGENT_LANES):
-        for failed in failures:
+        for lane, failed in failures:
             log.error(
                 "review agents total failure: lane=%s retryable=%s cause=%r "
                 "pr_number=%s head_sha=%s",
-                failed.name,
-                failed.retryable,
-                failed.cause_exception,
+                lane,
+                _failure_retryable(failed),
+                _failure_cause(failed),
                 pr_number,
                 head_sha[:7],
             )
@@ -595,36 +598,82 @@ def combine_agent_outcomes(
             head_sha=head_sha,
             llm_config=llm_config,
             workflow_id=workflow_id,
-            failed_agents=failures,
-            succeeded_agents=list(successes.keys()),
+            failed_agents=[cast(StepError, failed) for _lane, failed in failures],
+            succeeded_agents=[
+                lane for lane in AGENT_LANES if lane not in {f[0] for f in failures}
+            ],
             occurred_at=datetime.now(UTC),
         )
         _capture_review_agents_error_to_sentry(err)
         raise err
 
     if failures:
-        for failed in failures:
+        for lane, failed in failures:
             log.warning(
                 "review agents partial failure: lane=%s retryable=%s cause=%r "
                 "pr_number=%s head_sha=%s",
-                failed.name,
-                failed.retryable,
-                failed.cause_exception,
+                lane,
+                _failure_retryable(failed),
+                _failure_cause(failed),
                 pr_number,
                 head_sha[:7],
             )
-        if "summarizer" not in successes:
-            successes["summarizer"] = _DEFAULT_SUMMARY
-        if "comments" not in successes:
-            successes["comments"] = _DEFAULT_COMMENTS_MODEL(List=[])
 
     return (
         combine_review_results(
-            summary_markdown=successes["summarizer"],
-            comments=successes["comments"],
+            summary_markdown=summary_markdown,
+            comments=comments,
         ),
         total_usages_per_pr,
     )
+
+
+def _accumulate_usage(
+    buckets: dict[str, TotalUsages],
+    usage: dict[str, UsageMetadata],
+) -> None:
+    """Accumulate one lane's per-model usage into the run's usage buckets.
+
+    ``buckets`` is the ``usages`` map of a :class:`TotalUsagesPerPR`
+    envelope; each model gets a :class:`TotalUsages` counter with the
+    input / output / total token counts and the cache details merged.
+    """
+    for model_name, per_model in usage.items():
+        bucket = buckets.setdefault(
+            model_name,
+            TotalUsages(
+                input_tokens=0,
+                output_tokens=0,
+                total_tokens=0,
+                input_token_details=InputTokenDetails(
+                    cache_read=0,
+                    cache_creation=0,
+                ),
+            ),
+        )
+        bucket["input_tokens"] += per_model.get("input_tokens", 0)
+        bucket["output_tokens"] += per_model.get("output_tokens", 0)
+        bucket["total_tokens"] += per_model.get("total_tokens", 0)
+        details = per_model.get("input_token_details") or {}
+        prev_cache_read = bucket["input_token_details"].get("cache_read")
+        prev_cache_creation = bucket["input_token_details"].get("cache_creation")
+        bucket["input_token_details"]["cache_read"] = (
+            prev_cache_read if prev_cache_read is not None else 0
+        ) + (details.get("cache_read") or 0)
+        bucket["input_token_details"]["cache_creation"] = (
+            prev_cache_creation if prev_cache_creation is not None else 0
+        ) + (details.get("cache_creation") or 0)
+
+
+def _failure_retryable(failure: BaseException) -> bool:
+    """The lane failure's retryable flag, when it has one."""
+    return bool(getattr(failure, "retryable", False))
+
+
+def _failure_cause(failure: BaseException) -> str:
+    """The lane failure's underlying cause, when it carries one."""
+    cause = getattr(failure, "cause_exception", None)
+    return repr(cause) if cause is not None else repr(failure)
 
 
 def _capture_review_agents_error_to_sentry(
@@ -636,10 +685,10 @@ def _capture_review_agents_error_to_sentry(
     needs to attribute the failure: PR number, short and full head
     SHA, user id, LLM provider/model, failed/succeeded agent names,
     retryable flag per agent, workflow id, occurred_at, and the
-    per-agent original cause. Per-subagent
-    :class:`AgentInvocationError` instances ride along as the
-    exception chain (``__context__``) because each one is raised
-    ``from exc`` inside its wrapper.
+    per-agent original cause. Failed lanes may be per-subagent
+    :class:`AgentInvocationError` instances or the extractor steps'
+    :class:`StepError` variants; the per-lane extras are read with
+    attribute fallbacks so both kinds serialize identically.
 
     Sentry is observability, not a hard dependency: any failure from
     the capture path is swallowed after logging so it never masks the
@@ -663,9 +712,9 @@ def _capture_review_agents_error_to_sentry(
                 "failed_agents",
                 [
                     {
-                        "name": e.name,
-                        "retryable": e.retryable,
-                        "cause": repr(e.cause_exception),
+                        "name": _failure_name(e),
+                        "retryable": _failure_retryable(e),
+                        "cause": repr(getattr(e, "cause_exception", e)),
                     }
                     for e in err.failed_agents
                 ],
@@ -676,11 +725,23 @@ def _capture_review_agents_error_to_sentry(
         log.exception("failed to capture ReviewAgentsInvocationError to Sentry")
 
 
+def _failure_name(failure: BaseException) -> str:
+    """The lane failure's name, when it has one."""
+    return getattr(failure, "name", None) or type(failure).__name__
+
+
 __all__ = [
     "AGENT_LANES",
+    "AgentStepOutcome",
+    "CommentsLaneOutcome",
+    "ExtractedComments",
+    "ExtractedSummary",
+    "ExtractorLaneResults",
+    "SummaryLaneOutcome",
     "combine_agent_outcomes",
     "invoke_comments_agent",
     "invoke_comments_agent_step",
     "invoke_summary_agent",
     "invoke_summary_agent_step",
+    "run_extractor_lanes",
 ]

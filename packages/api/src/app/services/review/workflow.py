@@ -42,6 +42,11 @@ Design notes:
   via :func:`app.services.review.steps.persist_usage.persist_review_usage_tx`,
   which writes a :class:`app.models.review_usage.ReviewUsage` row
   for every successful run.
+- The two research agents run in parallel and return free-form text;
+  the structured payloads are produced afterwards by the durable
+  extractor steps (:mod:`app.services.review.steps.extract_result`)
+  via :func:`app.services.review.steps.invoke_agent.run_extractor_lanes`,
+  which re-invoke a small OpenAI model with the schema bound.
 """
 
 from __future__ import annotations
@@ -66,10 +71,12 @@ from app.services.review.steps import (
     update_repo_step,
     upsert_pull_request_tx,
 )
+from app.services.review.steps.extract_result import build_extractor_config
 from app.services.review.steps.invoke_agent import (
     combine_agent_outcomes,
     invoke_comments_agent_step,
     invoke_summary_agent_step,
+    run_extractor_lanes,
 )
 from app.services.review.steps.persist_usage import sum_total_usages
 from app.services.review.steps.review_run_steps import (
@@ -225,8 +232,14 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             return_exceptions=True,
         )
 
+        extractor_config = build_extractor_config()
+        extractor_lanes = await run_extractor_lanes(
+            agent_results=agent_results,
+            extractor_config=extractor_config,
+        )
+
         review, usages = combine_agent_outcomes(
-            agent_results,
+            extractor_lanes,
             pr_number=input.pr_number,
             head_sha=input.head_sha,
             repo_id=repo.id,

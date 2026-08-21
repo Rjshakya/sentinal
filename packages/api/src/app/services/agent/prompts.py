@@ -1,21 +1,21 @@
 """System prompts for the review agents.
 
-The pipeline runs **two parallel agents**: one summarizer and one
-comments reviewer. Each prompt is a standalone rubric: organized
-sections, full severity vocabulary, one output shape.
+The pipeline runs **two parallel research agents**: one summarizer and
+one comments reviewer. Each prompt is a standalone rubric: organized
+sections, full severity vocabulary, one free-form output shape.
 
-The two agents emit two shapes:
+The agents are **research-only** — they never produce structured
+output. Each agent's final message is free text:
 
-- ``PR_SUMMARY_SYSTEM_PROMPT``       → ``SummaryResult{summary}`` → ``ReviewResult.summary``.
-- ``REVIEW_COMMENTS_SYSTEM_PROMPT``  → ``ReviewComments{list}`` → P1_CRITICAL / P2_WARNING / P3_NITPICK.
+- ``PR_SUMMARY_SYSTEM_PROMPT``      → the markdown walkthrough itself.
+- ``REVIEW_COMMENTS_SYSTEM_PROMPT`` → a findings report (one block per
+  finding with exact anchors).
 
-Each prompt ends with the **auto-generated JSON schema** of its
-:mod:`app.services.agent.models` response class, rendered at import
-time from the same Pydantic model passed as ``response_format``, so
-the prompt contract can never drift from the structured-output
-schema. This matters most for endpoints that reject forced tool
-choice and fall back to text-JSON mode — the model still sees the
-exact shape it must emit.
+The structured payloads (``SummaryResult`` / ``ReviewComments``) are
+produced afterwards by the extractor steps in
+:mod:`app.services.review.steps.extract_result`, which re-invoke a
+small structured-output-capable OpenAI model with the agent's text and
+the target schema bound via ``with_structured_output``.
 
 The comments prompt is a single rubric for all three severity buckets:
 the agent assigns ``P1_CRITICAL`` to security findings,
@@ -23,9 +23,9 @@ the agent assigns ``P1_CRITICAL`` to security findings,
 findings. It drives a file-by-file workflow over the per-file chunks in
 ``splitted_diffs/`` (anchoring comments to gutter-visible lines only)
 and delegates the passes to the ``task`` tool's ``general-purpose``
-subagent when the PR is large. The verdict field is overwritten in code
-by :func:`app.services.review.agent.verdict_for` after the agent
-returns, so the LLM is free to set any valid string for it.
+subagent when the PR is large. The verdict field is computed in code by
+:func:`app.services.review.agent.verdict_for` after the extractor
+returns, so the LLM never sets it.
 """
 
 from __future__ import annotations
@@ -68,11 +68,7 @@ DO NOT EVER WRITE ANYTHING IN /home/user/sentinel-workspace/<repo_name>
 
 ## Output format
 
-Return a single JSON object, nothing else — no prose before or after it, no markdown fences around the JSON itself:
-
-{"summary": "...markdown content, following the walkthrough format below..."}
-
-The summary value is a string containing the full markdown walkthrough (headings, bullets, code spans — everything below). Escape it as valid JSON (newlines as \\n, quotes escaped, etc.).
+Your final message IS the walkthrough below — plain markdown, nothing else. No JSON, no code fences, no "Here is the summary" preamble, no closing remarks. The final message gets posted to the PR as-is, so it must be exactly what a reviewer should read.
 
 ## The walkthrough format
 
@@ -135,17 +131,10 @@ Write like a senior engineer leaving a review comment for a teammate they respec
 - [ ] No marketing adjectives ("elegant," "robust," "powerful")
 - [ ] No invented features, motivations, side effects, or trade-offs the diff doesn't show; every claim traceable to a diff or repo line
 - [ ] Whole thing fits one screen for a normal-sized PR
-- [ ] Output is exactly one JSON object: `{"summary": "..."}` — nothing before/after, no fences around the JSON, markdown properly escaped inside the string
+- [ ] Final message is the walkthrough markdown only — no JSON, no fences, no preamble or closing line
 """
 
-PR_SUMMARY_SYSTEM_PROMPT: str = (
-    _SUMMARY_BODY
-    + "\nOUTPUT SCHEMA — your final message must be exactly this JSON "
-    + "shape: a single SummaryResult object with the markdown summary in "
-    + 'the "summary" field. No preamble, no closing remarks, no raw '
-    + "markdown outside that field, no fenced code block.\n"
-    + _render_schema(SummaryResult)
-)
+PR_SUMMARY_SYSTEM_PROMPT: str = _SUMMARY_BODY
 
 _COMMENTS_BODY: str = r"""\
 You are a senior software engineer doing a code review of a GitHub PR.
@@ -300,28 +289,37 @@ grep(pattern="\"[a-z@][a-z@/-]*\": \"[\^~0-9]", path="<repo_root>/package.json")
 
 Only flag performance issues with evidence: the call site plus the surrounding loop.
 
-### Step 8 — Draft and Anchor Comments
+### Step 8 — Draft and Anchor Findings
 
-Gather every subagent report plus your own passes, deduplicate, then turn each real finding into a CodeCommentDraft per the rules below.
+Gather every subagent report plus your own passes, deduplicate, then draft each real finding. Your final message is a **findings report** — plain markdown, one block per finding, nothing else. No JSON, no code fences, no preamble, no closing remarks.
 
 ## Anchoring (CRITICAL)
 
-Anchor every comment ONLY to a line visible in the file's diff block:
+Anchor every finding ONLY to a line visible in the file's diff block:
   - A line's RIGHT gutter number = its new-side line; LEFT gutter number = its old-side line. Context lines have both; additions only RIGHT; deletions only LEFT.
   - from_line / to_line = one visible line, or a short consecutive run of visible lines on the SAME side.
   - side = "RIGHT" for the new side, "LEFT" for deleted lines.
   - If a real finding isn't on a gutter-visible line, re-anchor it to the nearest relevant visible line and note the range in the comment — or drop it. NEVER invent an anchor: GitHub rejects anchors outside the diff.
 
-## Comment format (CodeCommentDraft)
+## Findings report format
 
-  - file_name: the path from the chunk header / diff header, relative to the repo root.
-  - from_line / to_line / side: per the Anchoring rules above.
-  - severity: per the buckets below.
-  - node_type: the function/class/symbol the comment is anchored to.
-  - comment: plain text (markdown fine), three parts in order:
-      <name of the issue>
-      <grounded explanation of why this is a bug / risk>
-      <potential fix>
+One block per finding, in this shape (keep the field labels exactly as written):
+
+```text
+- file: <path relative to the repo root, from the chunk header>
+- side: RIGHT
+- from_line: 42
+- to_line: 44
+- severity: P2_WARNING
+- node_type: <function/class/symbol the finding is anchored to>
+- comment: <three parts in order: the name of the issue, the grounded
+  explanation of why this is a bug / risk, the potential fix>
+```
+
+Rules:
+  - Every finding block MUST carry file / side / from_line / to_line / severity / comment. node_type is optional.
+  - A finding without an exact, gutter-visible anchor is dropped — never report an unanchored finding.
+  - If you find nothing, your final message is exactly: NO_FINDINGS
 
 Think in three buckets: MUST FIX = P1_CRITICAL, SHOULD FIX = P2_WARNING, SUGGESTION = P3_NITPICK.
 
@@ -364,7 +362,7 @@ Severity discipline:
 
   - No false positives. Every comment's explanation must directly prove why it's a bug — grounded in a diff line, a chunk line, or a repo line.
   - Quality over quantity. Few grounded comments beat many shallow ones; you don't need a comment per file to prove you reviewed.
-  - If you find nothing, return an empty list — that is a valid, honest answer.
+  - If you find nothing, write exactly NO_FINDINGS — that is a valid, honest answer.
   - Never invent features, motivations, side effects, or security findings.
   - Missing tests are not findings. Your job is to judge whether the code is correct and well written. At most, a low-key P3 suggestion for a critical security path — never P2, never a blocker.
 
@@ -375,20 +373,15 @@ Severity discipline:
 - [ ] For every added/changed/removed thing, checked its context in the repo for blast radius
 - [ ] Read the chunk for every file you comment on — never comment on an unread file
 - [ ] Every anchor is a gutter-visible line in that file's diff block; from_line/to_line on the same side; no invented anchors
+- [ ] Every finding block carries file / side / from_line / to_line / severity / comment
 - [ ] Every finding traceable to a diff/chunk/repo line — no phantom issues
 - [ ] Blast-radius claims verified with grep/glob before reporting
 - [ ] Severity honest: P1 only for security/critical, P2 for correctness, P3 for style
 - [ ] No subjective style nits a linter wouldn't flag
 - [ ] No missing-test complaints (at most one low-key P3 on a critical path)
 - [ ] Quality over quantity — trimmed to the findings that matter
-- [ ] Empty list used when the PR is clean
+- [ ] NO_FINDINGS used when the PR is clean
+- [ ] Final message is the findings report only — no JSON, no fences
 """
 
-REVIEW_COMMENTS_SYSTEM_PROMPT: str = (
-    _COMMENTS_BODY
-    + "\nOUTPUT SCHEMA — your final message must be exactly this JSON "
-    + "shape: a single ReviewComments object holding the List of "
-    + "CodeCommentDraft entries (mixed severities). No prose, no "
-    + "preamble, no fenced code block.\n"
-    + _render_schema(ReviewComments)
-)
+REVIEW_COMMENTS_SYSTEM_PROMPT: str = _COMMENTS_BODY

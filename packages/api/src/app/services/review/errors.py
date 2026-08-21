@@ -209,6 +209,38 @@ class ReviewRunUpdateError(TransientStepError):
     """
 
 
+class SummaryExtractionError(StepError):
+    """The structured extractor could not produce a :class:`SummaryResult`.
+
+    Raised by
+    :func:`app.services.review.steps.extract_result.extract_summary_result_step`
+    when the OpenAI structured-output call fails or returns something
+    that does not validate against :class:`SummaryResult`. Business
+    outcome — not retried; the lane degrades via
+    :func:`app.services.review.steps.invoke_agent.combine_agent_outcomes`.
+    """
+
+    def __init__(self, *, cause: str) -> None:
+        self.cause = cause
+        super().__init__(f"summary extraction failed: {cause}")
+
+
+class CommentsExtractionError(StepError):
+    """The structured extractor could not produce a :class:`ReviewComments`.
+
+    Raised by
+    :func:`app.services.review.steps.extract_result.extract_comments_result_step`
+    when the OpenAI structured-output call fails or returns something
+    that does not validate against :class:`ReviewComments`. Business
+    outcome — not retried; the lane degrades via
+    :func:`app.services.review.steps.invoke_agent.combine_agent_outcomes`.
+    """
+
+    def __init__(self, *, cause: str) -> None:
+        self.cause = cause
+        super().__init__(f"comments extraction failed: {cause}")
+
+
 # --------------------------------------------------------------------------- #
 # Per-subagent invocation errors (parallel fan-out)                            #
 # --------------------------------------------------------------------------- #
@@ -314,6 +346,11 @@ class ReviewAgentsInvocationError(StepError):
     step received, so the Sentry tags (``llm.provider``,
     ``llm.model``) and ``llm.base_url`` extra keep their existing
     names.
+
+    :attr:`failed_agents` holds the per-lane failures — per-subagent
+    :class:`AgentInvocationError` instances from the research agents
+    or the extractor steps' :class:`StepError` variants. Consumers
+    read name / retryable / cause with attribute fallbacks.
     """
 
     user_id: str
@@ -324,7 +361,7 @@ class ReviewAgentsInvocationError(StepError):
     llm_model: str
     llm_base_url: str | None
     workflow_id: str
-    failed_agents: list[AgentInvocationError]
+    failed_agents: list[StepError]
     succeeded_agents: list[str]
     occurred_at: datetime
 
@@ -337,7 +374,7 @@ class ReviewAgentsInvocationError(StepError):
         head_sha: str,
         llm_config: LLMConfig,
         workflow_id: str,
-        failed_agents: list[AgentInvocationError],
+        failed_agents: list[StepError],
         succeeded_agents: list[str],
         occurred_at: datetime,
     ) -> None:
@@ -352,7 +389,7 @@ class ReviewAgentsInvocationError(StepError):
         self.failed_agents = list(failed_agents)
         self.succeeded_agents = list(succeeded_agents)
         self.occurred_at = occurred_at
-        names = [e.name for e in failed_agents]
+        names = [getattr(e, "name", None) or type(e).__name__ for e in failed_agents]
         super().__init__(
             f"review agents invocation failed for pr={pr_number} "
             f"head_sha={head_sha[:7]}: failed={names} "
@@ -501,6 +538,7 @@ def extract_retry_after_seconds(exc: BaseException) -> float | None:
 __all__ = [
     "AgentInvocationError",
     "CommentsAgentInvocationError",
+    "CommentsExtractionError",
     "DiffSplitError",
     "DiffSplitSetupError",
     "DiffUnavailableError",
@@ -515,6 +553,7 @@ __all__ = [
     "StepError",
     "SubagentInvocationError",
     "SummaryAgentInvocationError",
+    "SummaryExtractionError",
     "TransientStepError",
     "extract_retry_after_seconds",
     "is_llm_retry_error",

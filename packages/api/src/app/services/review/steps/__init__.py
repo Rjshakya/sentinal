@@ -17,6 +17,8 @@ Modules:
 - :mod:`.upsert_pr`           — insert / update the :class:`PullRequest` row.
 - :mod:`.invoke_agent`        — run the two review agents as two
   parallel durable steps; combine their outcomes.
+- :mod:`.extract_result`      — turn the agents' free-form output
+  into structured payloads via a small OpenAI model (DBOS steps).
 - :mod:`.persist_summary`     — insert the :class:`ReviewSummary` row.
 - :mod:`.persist_comments`    — insert the :class:`CodeComment` rows.
 - :mod:`.persist_usage`       — insert the :class:`ReviewUsage` row.
@@ -29,12 +31,18 @@ Modules:
 from __future__ import annotations
 
 from app.services.review.steps.fetch_diff import fetch_diff_step
+from app.services.review.steps.extract_result import (
+    build_extractor_config,
+    extract_comments_result_step,
+    extract_summary_result_step,
+)
 from app.services.review.steps.invoke_agent import (
     combine_agent_outcomes,
     invoke_comments_agent,
     invoke_comments_agent_step,
     invoke_summary_agent,
     invoke_summary_agent_step,
+    run_extractor_lanes,
 )
 from app.services.review.steps.persist_comments import (
     persist_code_comments,
@@ -70,7 +78,10 @@ from app.services.review.steps.upsert_pr import (
 
 __all__ = [
     "build_error_context",
+    "build_extractor_config",
     "combine_agent_outcomes",
+    "extract_comments_result_step",
+    "extract_summary_result_step",
     "fetch_diff_step",
     "invoke_comments_agent",
     "invoke_comments_agent_step",
@@ -89,6 +100,7 @@ __all__ = [
     "resolve_repo_tx",
     "resolve_sandbox",
     "resolve_sandbox_step",
+    "run_extractor_lanes",
     "split_diff_step",
     "stop_sandbox_step",
     "sum_total_usages",

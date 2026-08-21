@@ -2,27 +2,29 @@
 
 This module owns the two parallel review agents:
 
-- :func:`build_summary_agent` — the PR-summarizer deep-agent, emitting a
-  ``SummaryResult`` (markdown summary).
+- :func:`build_summary_agent` — the PR-summarizer deep-agent,
+  emitting a free-form markdown walkthrough as its final message.
 - :func:`build_comments_agent` — the comments deep-agent, emitting a
-  ``ReviewComments`` list with mixed severities (P1_CRITICAL security
-  findings, P2_WARNING correctness findings, P3_NITPICK style findings)
-  from a file-by-file workflow over the per-file diff chunks.
+  free-form findings report (one block per finding with exact
+  anchors) as its final message.
+
+Both agents are **research-only**: they never produce structured
+output. After the fan-out, the extractor steps in
+:mod:`app.services.review.steps.extract_result` re-invoke a small
+structured-output-capable OpenAI model with each agent's text and
+bind the target schema (``SummaryResult`` / ``ReviewComments``), so
+the pipeline always receives validated structured payloads regardless
+of how the research agent ended its run.
 
 The workflow's per-lane steps
 (:func:`app.services.review.steps.invoke_agent.invoke_summary_agent_step`
 and :func:`app.services.review.steps.invoke_agent.invoke_comments_agent_step`)
-run them in parallel and combine the results with
+run them in parallel and combine the extracted results with
 :func:`combine_review_results`.
 
 Each chat model (one per agent) gets its own
 :func:`app.core.llm_callbacks.make_llm_io_handler` so the log
 stream can tell ``agent="summarizer"`` from ``agent="comments"``.
-
-Structured output is normally ``response_format``: langchain binds the
-schema as a tool and forces ``tool_choice="any"``. OpenAI-compatible
-endpoints that reject forced tool choice (DeepSeek returns HTTP 400 for
-``tool_choice="required"``) use text-JSON mode instead.
 
 This module is pure: no I/O, no session, no clock. The chat model
 and sandbox connection are passed in by the caller.
@@ -166,10 +168,13 @@ def build_summary_agent(
 ) -> DeepAgentGraph:
     """Build the PR-summary deep-agent.
 
-    ``response_format`` is :class:`SummaryResult` — the agent emits a
-    single ``summary`` markdown block as its structured response. The
-    fan-out step reads it from ``structured_response`` and passes it
-    to :func:`combine_review_results` as ``summary_markdown``.
+    The agent is research-only: it produces a free-form markdown
+    walkthrough as its final message (no structured output). The
+    structured :class:`SummaryResult` payload is produced afterwards
+    by the extractor step
+    (:func:`app.services.review.steps.extract_result.extract_summary_result_step`),
+    which re-invokes a small structured-output-capable model with the
+    agent's text.
 
     The shared middleware stack
     (:func:`app.services.review.middleware.build_review_middleware`)
@@ -179,7 +184,6 @@ def build_summary_agent(
         model=model,
         system_prompt=PR_SUMMARY_SYSTEM_PROMPT,
         backend=backend,
-        response_format=SummaryResult,
         tools=list(tools),
         middleware=middleware,
     )
@@ -194,15 +198,17 @@ def build_comments_agent(
 ) -> DeepAgentGraph:
     """Build the comments deep-agent (all severities in one review).
 
-    ``response_format`` is :class:`ReviewComments` — the agent emits
-    one list of :class:`CodeCommentDraft` entries with mixed
-    severities (P1_CRITICAL security findings, P2_WARNING correctness
-    findings, P3_NITPICK style findings). The prompt drives a
-    file-by-file workflow over the per-file chunks in ``splitted_diffs/``
-    (anchoring comments to gutter-visible lines only) and delegates the
-    individual passes to the ``task`` tool's ``general-purpose``
-    subagent when the PR is large. The fan-out step validates the result
-    and hands it to :func:`combine_review_results`.
+    The agent is research-only: it produces a free-form findings
+    report (one block per finding with exact anchors) as its final
+    message — no structured output. The structured
+    :class:`ReviewComments` payload is produced afterwards by the
+    extractor step
+    (:func:`app.services.review.steps.extract_result.extract_comments_result_step`).
+
+    The prompt drives a file-by-file workflow over the per-file chunks
+    in ``splitted_diffs/`` (anchoring comments to gutter-visible lines
+    only) and delegates the passes to the ``task`` tool's
+    ``general-purpose`` subagent when the PR is large.
 
     The shared middleware stack
     (:func:`app.services.review.middleware.build_review_middleware`)
@@ -212,7 +218,6 @@ def build_comments_agent(
         model=model,
         system_prompt=REVIEW_COMMENTS_SYSTEM_PROMPT,
         backend=backend,
-        response_format=ReviewComments,
         tools=list(tools),
         middleware=middleware,
     )

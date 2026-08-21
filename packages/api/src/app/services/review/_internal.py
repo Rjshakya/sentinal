@@ -56,7 +56,7 @@ def _should_retry_agent(exc: BaseException) -> bool:
     if isinstance(exc, AgentInvocationError) and exc.retryable:
         return True
     if isinstance(exc, ReviewAgentsInvocationError) and any(
-        e.retryable for e in exc.failed_agents
+        getattr(e, "retryable", False) for e in exc.failed_agents
     ):
         return True
     return False
