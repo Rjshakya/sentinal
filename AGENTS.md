@@ -382,15 +382,22 @@ them on `SQLModel.metadata`.
     `trigger_issue_comment:{comment_id}`): validate → classify
     (`action` / `is_pr` / `is_self` / `has_mention` / `is_authorized`) →
     resolve installation → resolve repo → env gate → fetch PR state →
-    best-effort 👀 reaction → resolve per-user LLM config → build inner
-    `ReviewWorkflowInput` → dispatch `review_workflow` with the
-    deterministic id. Every skip path returns `TriggerRunResult` with a
-    `skip_reason` instead of raising.
-  - `helpers.py` — pure `validate_comment_payload` / `classify_comment`.
-  - `types.py` — `TriggerRunResult`, `IssueCommentTriggerInput`.
-  - `steps/` — `resolve_installation`, `resolve_repo_id`, `fetch_pr_state`,
-    `add_reaction`, `resolve_llm_config`, `build_review_input`,
-    `dispatch_review`.
+    resolve last review → best-effort 👀 reaction → resolve per-user LLM
+    config → build inner `ReviewWorkflowInput` → dispatch
+    `review_workflow` with the deterministic id. When the latest
+    successful `review` row's head differs from the fetched head, the
+    inner review becomes an **incremental re-review**: the git-diff
+    base is the last reviewed head (`LastReviewSnapshot.commit_id`),
+    so only the commits pushed since the previous review are diffed.
+    Every skip path returns `TriggerRunResult` with a `skip_reason`
+    instead of raising.
+  - `helpers.py` — pure `validate_comment_payload` / `classify_comment`
+    / `effective_diff_base` (the incremental-re-review decision).
+  - `types.py` — `TriggerRunResult`, `IssueCommentTriggerInput`,
+    `LastReviewSnapshot`.
+  - `steps/` — `resolve_installation`, `resolve_repo_id`,
+    `resolve_last_review`, `fetch_pr_state`, `add_reaction`,
+    `resolve_llm_config`, `build_review_input`, `dispatch_review`.
 - `github/` — the GitHub post-pipeline.
   - `post_review.py` — pure conversions (`convert_to_github_*`),
     `post_review_to_github` (the REST call via an installation client),
@@ -661,7 +668,16 @@ indistinguishably.
    repo, gates config, resolves the per-user LLM config).
 2. A PR comment mentioning `@<app_slug> review` →
    `pr_issue_comment.workflow.trigger_issue_comment_workflow` (id
-   `trigger_issue_comment:{comment_id}`; classify → resolve → 👀 → dispatch).
+   `trigger_issue_comment:{comment_id}`; classify → resolve → fetch PR
+   state → resolve last review → 👀 → dispatch). The trigger resolves
+   the latest successful `review` row for the PR
+   (`resolve_last_review_step`, filtering `state=SUCCESS`) and, when
+   its head (`review.commit_id`) differs from the fetched head, runs an
+   **incremental re-review**: the inner input carries
+   `diff_base_sha = <last reviewed head>` so only the commits pushed
+   since the previous review are diffed. `diff_base_sha` never touches
+   `base_sha` — the `pull_requests` and `review` rows keep the PR's
+   true base.
 
 Both start the workflow with the deterministic id
 `review:{repo_id}:{pr_number}:{head_sha[:7]}`, so duplicate deliveries for
@@ -678,8 +694,10 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
    snapshot; returns the row id. The step is **durable**: retried 3x on
    transient DB failures and raises `ReviewRunUpdateError` otherwise.
 5. `update_repo_step` — refresh the sandbox repo to the default branch.
-6. `fetch_diff_step` — `git diff base_sha...head_sha` written to the
-   sandbox (`file.diff`).
+6. `fetch_diff_step` — `git diff {diff_base_sha or base_sha}...head_sha`
+   written to the sandbox (`file.diff`). `diff_base_sha` narrows the
+   range on an incremental re-review; `base_sha` (the PR's true base)
+   still lands on the `pull_requests` / `review` rows.
 7. `split_diff_step` — upload `split_diff.py` into the sandbox and run it
    against `file.diff`; the script writes `overview.md` (the four-bucket
    paths-only gate document) and the per-file annotated chunks into

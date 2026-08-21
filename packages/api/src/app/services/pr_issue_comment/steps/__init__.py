@@ -13,6 +13,9 @@ Modules:
   row, return an :class:`app.services.pr_issue_comment.types.InstallationSnapshot`.
 - :mod:`.resolve_repo_id`     — find the local :class:`Repo` id by
   GitHub-side ``github_repo_id``.
+- :mod:`.resolve_last_review` — load the latest successful ``review``
+  row so the trigger workflow can run an incremental re-review
+  (diffing only the commits since the last reviewed head).
 - :mod:`.fetch_pr_state`      — ``GET /repos/{owner}/{repo}/pulls/{pr}``
   to read the current ``head_sha`` and other PR fields not on the
   comment payload.
@@ -45,12 +48,16 @@ from app.services.pr_issue_comment.steps.resolve_llm_config import (
     resolve_llm_config_step,
 )
 from app.services.pr_issue_comment.steps.resolve_repo_id import resolve_repo_id_step
+from app.services.pr_issue_comment.steps.resolve_last_review import (
+    resolve_last_review_step,
+)
 
 __all__ = [
     "add_eyes_reaction_step",
     "build_review_input_step",
     "fetch_pr_state_step",
     "resolve_installation_step",
+    "resolve_last_review_step",
     "resolve_llm_config_step",
     "resolve_repo_id_step",
     "run_review_workflow",

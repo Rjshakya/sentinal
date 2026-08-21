@@ -77,6 +77,17 @@ class ReviewWorkflowInput(BaseModel):
     post_to_github: bool
     github_installation_id: int | None = None
     pr_size: PRSizeStats = Field(default_factory=_empty_pr_size)
+    diff_base_sha: str | None = None
+    """Incremental-re-review override for the git-diff range.
+
+    When set, the review diffs ``diff_base_sha...head_sha`` instead of
+    ``base_sha...head_sha`` — the comment-trigger path sets it to the
+    last successfully reviewed head so a re-review covers only the
+    commits pushed since the previous run. ``base_sha`` itself always
+    keeps the PR's true base: the ``pull_requests`` and ``review``
+    rows record it unchanged, and only the diff range narrows.
+    """
+    diff_base_sha: str | None = None
 
 
 class PostReviewInput(BaseModel):

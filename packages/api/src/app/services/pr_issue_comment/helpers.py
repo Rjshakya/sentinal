@@ -28,7 +28,12 @@ Public surface:
   plus the fetched PR state into the existing
   :class:`app.services.review.workflow_types.ReviewWorkflowInput`
   that :func:`app.services.review.workflow.review_workflow` already
-  consumes.
+  consumes. ``diff_base_sha`` optionally narrows the git-diff range to
+  the commits since the last successful review (incremental re-review).
+- :func:`effective_diff_base` — the pure decision behind the
+  incremental re-review: given the GitHub API's base/head and the
+  latest successful :class:`app.services.pr_issue_comment.types.LastReviewSnapshot`,
+  return the git-diff base to use (``None`` = the API's ``base_sha``).
 - :data:`WRITE_ASSOCIATIONS` — frozenset of GitHub
   ``author_association`` values that imply write access.
 """
@@ -45,6 +50,7 @@ from app.models.enums import PRStatus
 from app.services.pr_issue_comment.types import (
     ClassifyCommentResult,
     IssueCommentTriggerInput,
+    LastReviewSnapshot,
 )
 from app.services.review.workflow_types import PRSizeStats, ReviewWorkflowInput
 
@@ -234,6 +240,33 @@ def _classify_pr_status(state: str | None, merged: bool) -> PRStatus:
     return PRStatus.OPEN
 
 
+def effective_diff_base(
+    *,
+    api_base_sha: str,
+    api_head_sha: str,
+    last_review: LastReviewSnapshot | None,
+) -> str | None:
+    """Choose the git-diff base for a comment-triggered review.
+
+    Returns ``None`` to diff from the GitHub API's ``api_base_sha`` —
+    the first-review behaviour. That covers:
+
+    - no prior successful review (``last_review`` is ``None``), and
+    - an unchanged head (``last_review.commit_id == api_head_sha``),
+      where the deterministic inner workflow id
+      (``review:{repo}:{pr}:{head_sha[:7]}``) already dedupes the
+      re-trigger to the previous run.
+
+    When the head **has** moved, the function returns the last
+    successfully reviewed head, so ``git diff lastReviewedHead...newHead``
+    covers only the commits pushed since the previous review instead of
+    re-reviewing the whole PR diff.
+    """
+    if last_review is None or last_review.commit_id == api_head_sha:
+        return None
+    return last_review.commit_id
+
+
 def build_review_workflow_input(
     *,
     trigger: IssueCommentTriggerInput,
@@ -250,6 +283,7 @@ def build_review_workflow_input(
     pr_size: PRSizeStats,
     user_id: str,
     llm_config: LLMConfig,
+    diff_base_sha: str | None = None,
 ) -> ReviewWorkflowInput:
     """Translate a trigger input + fetched PR state into the inner review input.
 
@@ -265,6 +299,13 @@ def build_review_workflow_input(
     — the comment payload does not carry them. ``default_branch`` is
     the exception: it is read straight off the payload's
     ``repository.default_branch`` via :class:`IssueCommentTriggerInput`.
+
+    ``diff_base_sha`` is the incremental-re-review override computed by
+    :func:`effective_diff_base`: when set, the inner workflow diffs
+    ``diff_base_sha...head_sha`` (only the commits since the last
+    successful review) instead of ``base_sha...head_sha``. The
+    ``base_sha`` field itself always keeps the PR's true base, which is
+    what the ``pull_requests`` and ``review`` rows record.
     """
     return ReviewWorkflowInput(
         user_id=user_id,
@@ -285,6 +326,7 @@ def build_review_workflow_input(
         llm_config=llm_config,
         post_to_github=True,
         github_installation_id=trigger.installation_id,
+        diff_base_sha=diff_base_sha,
     )
 
 
@@ -295,6 +337,7 @@ __all__ = [
     "build_review_workflow_input",
     "classify_comment",
     "commenter_is_authorized",
+    "effective_diff_base",
     "is_pr_comment",
     "is_self_comment",
     "should_review_comment",

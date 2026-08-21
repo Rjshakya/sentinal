@@ -32,6 +32,7 @@ def build_review_input_step(
     pr_state: PRStateSnapshot,
     user_id: str,
     llm_config: LLMConfig,
+    diff_base_sha: str | None = None,
 ) -> ReviewWorkflowInput:
     """Durable DBOS step: build the inner :class:`ReviewWorkflowInput`.
 
@@ -41,6 +42,11 @@ def build_review_input_step(
     symmetry and for any future pure logic we may want to add
     (e.g. PR title sanitization) without changing the trigger
     workflow's call shape.
+
+    ``diff_base_sha`` is the incremental-re-review override from
+    :func:`app.services.pr_issue_comment.helpers.effective_diff_base`;
+    when ``None`` the inner workflow diffs from ``pr_state.base_sha``
+    (first-review behaviour).
     """
     return build_review_workflow_input(
         trigger=trigger,
@@ -57,6 +63,7 @@ def build_review_input_step(
         pr_size=pr_state.pr_size,
         user_id=user_id,
         llm_config=llm_config,
+        diff_base_sha=diff_base_sha,
     )
 
 

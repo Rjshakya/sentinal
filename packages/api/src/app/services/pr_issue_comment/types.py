@@ -26,9 +26,17 @@ ORM, no ``date`` magic). Each one corresponds to a single concern:
   :func:`app.services.pr_issue_comment.steps.resolve_installation.resolve_installation_step`.
   DBOS cannot persist SQLModel ORM rows across a step boundary, so the
   step returns this Pydantic snapshot instead.
+
+- :class:`LastReviewSnapshot` — serialisable subset of the latest
+  successful :class:`app.models.review.Review` row, returned by
+  :func:`app.services.pr_issue_comment.steps.resolve_last_review.resolve_last_review_step`.
+  Lets the trigger workflow run an incremental re-review (diffing only
+  the commits since the last reviewed head) instead of the full PR diff.
 """
 
 from __future__ import annotations
+
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
@@ -132,10 +140,30 @@ class PRStateSnapshot(BaseModel):
     pr_size: PRSizeStats
 
 
+class LastReviewSnapshot(BaseModel):
+    """Serializable subset of the latest successful :class:`Review` row.
+
+    Returned by
+    :func:`app.services.pr_issue_comment.steps.resolve_last_review.resolve_last_review_step`
+    so the trigger workflow can decide the git-diff base for an
+    incremental re-review. ``commit_id`` is the head SHA the previous
+    run reviewed; ``base_sha`` is the PR base that run started from
+    (kept for observability). Both are the values recorded on the
+    ``review`` lifecycle row, never re-fetched from GitHub.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    commit_id: str
+    base_sha: str | None = None
+    created_at: datetime
+
+
 __all__ = [
     "ClassifyCommentResult",
     "InstallationSnapshot",
     "IssueCommentTriggerInput",
+    "LastReviewSnapshot",
     "PRStateSnapshot",
     "TriggerRunResult",
 ]

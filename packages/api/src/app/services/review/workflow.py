@@ -42,6 +42,11 @@ Design notes:
   via :func:`app.services.review.steps.persist_usage.persist_review_usage_tx`,
   which writes a :class:`app.models.review_usage.ReviewUsage` row
   for every successful run.
+- The comment-trigger path can set ``input.diff_base_sha`` to the
+  last successfully reviewed head; ``fetch_diff_step`` then produces
+  ``git diff {diff_base_sha}...{head_sha}`` so an incremental re-review
+  covers only the commits pushed since the previous run. ``base_sha``
+  keeps the PR's true base for the ``pull_requests`` / ``review`` rows.
 - The two research agents run in parallel and return free-form text;
   the structured payloads are produced afterwards by the durable
   extractor steps (:mod:`app.services.review.steps.extract_result`)
@@ -179,6 +184,7 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             user_id=input.user_id,
             pr_number=input.pr_number,
             base_sha=input.base_sha,
+            diff_base_sha=input.diff_base_sha,
             head_sha=input.head_sha,
         )
 

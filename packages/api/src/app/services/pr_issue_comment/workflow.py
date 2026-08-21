@@ -45,6 +45,7 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.services.pr_issue_comment.helpers import (
     classify_comment,
+    effective_diff_base,
     validate_comment_payload,
 )
 from app.services.pr_issue_comment.steps import (
@@ -52,6 +53,7 @@ from app.services.pr_issue_comment.steps import (
     build_review_input_step,
     fetch_pr_state_step,
     resolve_installation_step,
+    resolve_last_review_step,
     resolve_llm_config_step,
     resolve_repo_id_step,
 )
@@ -96,14 +98,19 @@ async def trigger_issue_comment_workflow(
        ``repo_not_indexed``.
     5. **Env gate** — ``llm_configured`` and ``sandbox_configured``.
        Failure -> ``review_not_configured``.
-    6. **Fetch PR state** — ``GET /repos/{owner}/{repo}/pulls/{pr}``.
+6. **Fetch PR state** — ``GET /repos/{owner}/{repo}/pulls/{pr}``.
        Retried by DBOS on transient GitHub failures. On persistent
        failure the workflow converts the error to ``pr_fetch_failed``.
-    7. **Ack reaction** — best-effort 👀 on the comment.
-    8. **Resolve LLM config** — per-user, with env fallback.
-    9. **Build review input** — assemble the inner
-       :class:`ReviewWorkflowInput`.
-    10. **Dispatch review** — enqueue the inner ``review_workflow``
+    7. **Resolve last review** — load the latest successful ``review``
+       row for the PR. When its head differs from the fetched head,
+       the inner review becomes an **incremental re-review**: the
+       git-diff base is the last reviewed head, so only the commits
+       pushed since the previous review are diffed.
+    8. **Ack reaction** — best-effort 👀 on the comment.
+    9. **Resolve LLM config** — per-user, with env fallback.
+    10. **Build review input** — assemble the inner
+        :class:`ReviewWorkflowInput`.
+    11. **Dispatch review** — enqueue the inner ``review_workflow``
         with the deterministic id.
 
     Returns:
@@ -162,6 +169,26 @@ async def trigger_issue_comment_workflow(
         )
         return _skip(trigger_id, "pr_fetch_failed")
 
+    last_review = await resolve_last_review_step(
+        repo_id=repo_id,
+        pr_number=trigger_input.pr_number,
+    )
+
+    diff_base_sha = effective_diff_base(
+        api_base_sha=pr_state.base_sha,
+        api_head_sha=pr_state.head_sha,
+        last_review=last_review,
+    )
+    if diff_base_sha is not None:
+        log.info(
+            "trigger_issue_comment_workflow: incremental re-review: "
+            "trigger_id=%s pr_number=%s diff_base_sha=%s head_sha=%s",
+            trigger_id,
+            trigger_input.pr_number,
+            diff_base_sha,
+            pr_state.head_sha,
+        )
+
     await add_eyes_reaction_step(
         trigger_input.installation_id,
         owner=trigger_input.repo_owner,
@@ -176,6 +203,7 @@ async def trigger_issue_comment_workflow(
         pr_state=pr_state,
         user_id=installation.user_id,
         llm_config=llm_config,
+        diff_base_sha=diff_base_sha,
     )
 
     review_workflow_id = await run_review_workflow(
