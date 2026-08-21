@@ -71,6 +71,7 @@ async def persist_review_usage(
     session: AsyncSession,
     *,
     pr_id: str,
+    review_id: str | None,
     user_id: str,
     pr_number: int,
     repo_id: str,
@@ -80,10 +81,14 @@ async def persist_review_usage(
     output_tokens: int,
     total_tokens: int,
     input_token_details: dict[str, int | None] | None,
+    llm_model_id: str | None,
+    llm_provider: str | None,
+    llm_base_url: str | None,
 ) -> ReviewUsage:
     """Insert a single :class:`ReviewUsage` row."""
     row = ReviewUsage(
         pr_id=pr_id,
+        review_id=review_id,
         user_id=user_id,
         pr_number=pr_number,
         repo_id=repo_id,
@@ -93,6 +98,9 @@ async def persist_review_usage(
         output_tokens=output_tokens,
         total_tokens=total_tokens,
         input_token_details=input_token_details,
+        llm_model_id=llm_model_id,
+        llm_provider=llm_provider,
+        llm_base_url=llm_base_url,
     )
     session.add(row)
     await session.flush()
@@ -114,6 +122,7 @@ async def persist_review_usage(
 async def persist_review_usage_tx(
     *,
     pr_id: str,
+    review_id: str | None,
     user_id: str,
     pr_number: int,
     repo_id: str,
@@ -123,6 +132,9 @@ async def persist_review_usage_tx(
     output_tokens: int,
     total_tokens: int,
     input_token_details: dict[str, int | None] | None,
+    llm_model_id: str | None,
+    llm_provider: str | None,
+    llm_base_url: str | None,
 ) -> str:
     """Durable DBOS transaction: persist the review usage row.
 
@@ -134,6 +146,7 @@ async def persist_review_usage_tx(
     row = await persist_review_usage(
         session,
         pr_id=pr_id,
+        review_id=review_id,
         user_id=user_id,
         pr_number=pr_number,
         repo_id=repo_id,
@@ -143,6 +156,9 @@ async def persist_review_usage_tx(
         output_tokens=output_tokens,
         total_tokens=total_tokens,
         input_token_details=input_token_details,
+        llm_model_id=llm_model_id,
+        llm_provider=llm_provider,
+        llm_base_url=llm_base_url,
     )
     return str(row.id)
 

@@ -5,14 +5,10 @@ SHA) and passed to the review deep-agent. The agent can call them to read
 on-demand data that is too large to embed in the prompt, such as the unified
 PR diff.
 
-Comment-line validation is no longer a dedicated tool. The HunkMap is written
-to ``diff.json`` inside the sandbox by :func:`app.services.review.diff.parse_and_write_diff_json`,
-and the specialist subagents are told (in their system prompts) to ``read_file``
-that JSON, check the ``(file, line, side)`` anchor against
-``files[file_name][side]``, and re-anchor to the nearest in-bounds line in
-the same hunk when the original anchor is not present. The server-side
-:func:`app.services.review.hunk_map.filter_drafts` remains the final
-backstop.
+The per-file annotated chunks written by the split step into
+``splitted_diffs/`` carry the visible LEFT/RIGHT gutter line numbers, so
+the specialist subagents validate their ``(file, line, side)`` anchors
+directly against the chunk text they read.
 """
 
 from __future__ import annotations

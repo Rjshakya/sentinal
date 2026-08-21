@@ -12,7 +12,11 @@ from typing import Literal, overload
 from app.core.config import settings
 from app.core.sandbox.base import BaseSandbox
 from app.core.sandbox.daytona import DaytonaSandbox, DaytonaSandboxSpec, get_daytona
-from app.core.sandbox.e2b import E2BSandbox, E2BSandboxSpec
+from app.core.sandbox.e2b import (
+    CODE_SANDBOX_TEMPLATE_NAME,
+    E2BSandbox,
+    E2BSandboxSpec,
+)
 from app.core.sandbox.types import SandboxSpec
 
 
@@ -80,6 +84,14 @@ def build_default_spec(provider: Literal["e2b", "daytona"]) -> SandboxSpec:
     ``"e2b"``). Provider-specific values are pulled from the corresponding
     ``e2b_*`` / ``daytona_*`` settings.
 
+    For E2B, the default template falls back to the locally-built
+    :data:`CODE_SANDBOX_TEMPLATE_NAME` when ``E2B_TEMPLATE`` is unset,
+    matching the legacy :meth:`E2BSandbox.create` behavior (which
+    always used the built template, regardless of the spec's template
+    field). Callers that want a different image (e.g. the indexing
+    pipeline pointing at ``INDEX_SANDBOX_TEMPLATE_NAME``) construct
+    the spec explicitly.
+
     Raises:
         RuntimeError: when the active provider's API key is missing.
         ValueError: when :attr:`Settings.sandbox_provider` is unknown.
@@ -91,10 +103,18 @@ def build_default_spec(provider: Literal["e2b", "daytona"]) -> SandboxSpec:
                 "E2B_API_KEY is not set. Add it to .env or set the "
                 "E2B_API_KEY environment variable."
             )
+        template_name = settings.e2b_template
+        # Empty / default-only value falls back to the locally-built
+        # review/setup template. The Pydantic default of
+        # ``code-interpreter-v1`` is treated as "unset" here so the
+        # legacy default path is preserved unless the operator
+        # explicitly opts in.
+        if not template_name or template_name == "code-interpreter-v1":
+            template_name = CODE_SANDBOX_TEMPLATE_NAME
         return SandboxSpec(
             provider="e2b",
             api_key=settings.e2b_api_key,
-            template=settings.e2b_template or "code-interpreter-v1",
+            template=template_name,
             cpu_count=settings.e2b_cpu_count,
             memory_mb=settings.e2b_memory_mb,
             timeout_s=settings.e2b_timeout_s,

@@ -36,8 +36,15 @@ async def fetch_diff_step(
     pr_number: int,
     base_sha: str,
     head_sha: str,
+    diff_base_sha: str | None = None,
 ) -> str:
     """Durable step: reconnect to the sandbox and fetch the unified diff.
+
+    ``diff_base_sha`` narrows the diff range for an incremental
+    re-review: when set, ``git diff {diff_base_sha}...{head_sha}`` is
+    produced instead of ``git diff {base_sha}...{head_sha}``, covering
+    only the commits since the last reviewed head. ``base_sha`` itself
+    still records the PR's true base on the lifecycle rows.
 
     Returns the sandbox path of the saved ``file.diff``. The actual diff
     body is not returned to the workflow — the agent re-reads it via the
@@ -74,7 +81,7 @@ async def fetch_diff_step(
             repo_id=repo_id,
             repo_path_str=get_repo_path(repo_name),
             pr_number=pr_number,
-            base_sha=base_sha,
+            base_sha=diff_base_sha or base_sha,
             head_sha=head_sha,
         )
     finally:
@@ -85,3 +92,6 @@ async def fetch_diff_step(
 
 
 __all__ = ["fetch_diff_step"]
+
+
+

@@ -8,7 +8,6 @@ All endpoints are user-scoped: they read ``request.state.user_id`` (set by
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -29,12 +28,13 @@ router = APIRouter(prefix="/users", tags=["users"])
 class UserRepoOut(BaseModel):
     id: str
     user_id: str
-    org_id: Optional[str] = None
+    org_id: str | None = None
     repo_name: str
     repo_owner: str
-    url: Optional[str] = None
+    url: str | None = None
     private: bool
-    default_branch: Optional[str] = None
+    default_branch: str | None = None
+    is_indexed: bool
     created_at: datetime
     updated_at: datetime
 
@@ -58,10 +58,18 @@ async def list_my_repos(
     session: AsyncSession = Depends(get_session),
     limit: int = Query(100, ge=1, le=100),
 ) -> list[UserRepoOut]:
+    """List the caller's indexed repositories.
+
+    Only repos with ``is_indexed = True`` are returned — the endpoint is
+    the source of truth for the dashboard's "indexed repositories" list.
+    """
     try:
         stmt = (
             select(Repo)
-            .where(Repo.user_id == request.state.user_id)
+            .where(
+                Repo.user_id == request.state.user_id,
+                Repo.is_indexed == True,
+            )
             .order_by(desc(Repo.updated_at))
             .limit(limit)
         )
@@ -78,6 +86,7 @@ async def list_my_repos(
                 url=r.url,
                 private=r.private,
                 default_branch=r.default_branch,
+                is_indexed=r.is_indexed or False,
                 created_at=r.created_at,
                 updated_at=r.updated_at,
             )

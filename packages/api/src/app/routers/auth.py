@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
@@ -16,6 +17,7 @@ from app.core.workos import (
     seal_session,
 )
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 PROVIDERS: dict[str, str] = {
@@ -65,7 +67,9 @@ async def callback(
         )
         return response
 
-    except Exception:
+    except Exception as exc:
+        log.error("failed to authenticate with code , error: %s", exc)
+
         raise HTTPException(
             detail="Failed to authenticate with code",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

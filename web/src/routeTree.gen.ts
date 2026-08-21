@@ -10,24 +10,26 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as AboutRouteImport } from './routes/about'
 import { Route as DashboardRouteRouteImport } from './routes/dashboard/route'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard/index'
 import { Route as DashboardRepositoriesRouteRouteImport } from './routes/dashboard/repositories/route'
+import { Route as DashboardSettingsRouteRouteImport } from './routes/dashboard/settings/route'
+import { Route as DashboardSearchOwnerNameRouteRouteImport } from './routes/dashboard/search/$owner/$name/route'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AboutRoute = AboutRouteImport.update({
-  id: '/about',
-  path: '/about',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const DashboardRouteRoute = DashboardRouteRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardIndexRoute = DashboardIndexRouteImport.update({
@@ -41,47 +43,78 @@ const DashboardRepositoriesRouteRoute =
     path: '/repositories',
     getParentRoute: () => DashboardRouteRoute,
   } as any)
+const DashboardSettingsRouteRoute = DashboardSettingsRouteRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => DashboardRouteRoute,
+} as any)
+const DashboardSearchOwnerNameRouteRoute =
+  DashboardSearchOwnerNameRouteRouteImport.update({
+    id: '/search/$owner/$name',
+    path: '/search/$owner/$name',
+    getParentRoute: () => DashboardRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRouteRouteWithChildren
-  '/about': typeof AboutRoute
+  '/login': typeof LoginRoute
   '/dashboard/repositories': typeof DashboardRepositoriesRouteRoute
+  '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard/': typeof DashboardIndexRoute
+  '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/about': typeof AboutRoute
+  '/login': typeof LoginRoute
   '/dashboard/repositories': typeof DashboardRepositoriesRouteRoute
+  '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard': typeof DashboardIndexRoute
+  '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/dashboard': typeof DashboardRouteRouteWithChildren
-  '/about': typeof AboutRoute
+  '/login': typeof LoginRoute
   '/dashboard/repositories': typeof DashboardRepositoriesRouteRoute
+  '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard/': typeof DashboardIndexRoute
+  '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/dashboard' | '/about' | '/dashboard/repositories' | '/dashboard/'
+    | '/'
+    | '/dashboard'
+    | '/login'
+    | '/dashboard/repositories'
+    | '/dashboard/settings'
+    | '/dashboard/'
+    | '/dashboard/search/$owner/$name'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/about' | '/dashboard/repositories' | '/dashboard'
+  to:
+    | '/'
+    | '/login'
+    | '/dashboard/repositories'
+    | '/dashboard/settings'
+    | '/dashboard'
+    | '/dashboard/search/$owner/$name'
   id:
     | '__root__'
     | '/'
     | '/dashboard'
-    | '/about'
+    | '/login'
     | '/dashboard/repositories'
+    | '/dashboard/settings'
     | '/dashboard/'
+    | '/dashboard/search/$owner/$name'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DashboardRouteRoute: typeof DashboardRouteRouteWithChildren
-  AboutRoute: typeof AboutRoute
+  LoginRoute: typeof LoginRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -93,18 +126,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/about': {
-      id: '/about'
-      path: '/about'
-      fullPath: '/about'
-      preLoaderRoute: typeof AboutRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/dashboard': {
       id: '/dashboard'
       path: '/dashboard'
       fullPath: '/dashboard'
       preLoaderRoute: typeof DashboardRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/dashboard/': {
@@ -121,17 +154,35 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardRepositoriesRouteRouteImport
       parentRoute: typeof DashboardRouteRoute
     }
+    '/dashboard/settings': {
+      id: '/dashboard/settings'
+      path: '/settings'
+      fullPath: '/dashboard/settings'
+      preLoaderRoute: typeof DashboardSettingsRouteRouteImport
+      parentRoute: typeof DashboardRouteRoute
+    }
+    '/dashboard/search/$owner/$name': {
+      id: '/dashboard/search/$owner/$name'
+      path: '/search/$owner/$name'
+      fullPath: '/dashboard/search/$owner/$name'
+      preLoaderRoute: typeof DashboardSearchOwnerNameRouteRouteImport
+      parentRoute: typeof DashboardRouteRoute
+    }
   }
 }
 
 interface DashboardRouteRouteChildren {
   DashboardRepositoriesRouteRoute: typeof DashboardRepositoriesRouteRoute
+  DashboardSettingsRouteRoute: typeof DashboardSettingsRouteRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
+  DashboardSearchOwnerNameRouteRoute: typeof DashboardSearchOwnerNameRouteRoute
 }
 
 const DashboardRouteRouteChildren: DashboardRouteRouteChildren = {
   DashboardRepositoriesRouteRoute: DashboardRepositoriesRouteRoute,
+  DashboardSettingsRouteRoute: DashboardSettingsRouteRoute,
   DashboardIndexRoute: DashboardIndexRoute,
+  DashboardSearchOwnerNameRouteRoute: DashboardSearchOwnerNameRouteRoute,
 }
 
 const DashboardRouteRouteWithChildren = DashboardRouteRoute._addFileChildren(
@@ -141,7 +192,7 @@ const DashboardRouteRouteWithChildren = DashboardRouteRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DashboardRouteRoute: DashboardRouteRouteWithChildren,
-  AboutRoute: AboutRoute,
+  LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

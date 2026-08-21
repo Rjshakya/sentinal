@@ -46,6 +46,15 @@ CODE_SANDBOX_TEMPLATE_NAME = "SENTINAL_CODE_SANDBOX_TEMP"
 CODE_SANDBOX_CPU = 2
 CODE_SANDBOX_MEM_IN_MB = 1024 * 2
 
+INDEX_SANDBOX_TEMPLATE_NAME = "SENTINEL_INDEX_SANDBOX_TEMP"
+INDEX_SANDBOX_CPU = 2
+INDEX_SANDBOX_MEM_IN_MB = 1024 * 4
+INDEX_SANDBOX_PIP_PACKAGES: tuple[str, ...] = (
+    "lancedb",
+    "openai",
+    "tree-sitter-language-pack",
+)
+
 
 def base_e2b_template():
     template = (
@@ -55,6 +64,21 @@ def base_e2b_template():
         .run_cmd("mkdir -p /conversation_history")
     )
     return template
+
+
+def base_e2b_index_template():
+    """Indexing-pipeline base template.
+
+    Bakes the in-sandbox dependencies (``lancedb``, ``openai``,
+    ``tree-sitter-language-pack``) into the image so the per-run
+    pipeline does not pay the pip-install cost on every dispatch.
+    """
+    return (
+        Template()
+        .from_python_image()
+        .set_user("root")
+        .pip_install(list(INDEX_SANDBOX_PIP_PACKAGES))
+    )
 
 
 def log_e2b_template_build(data: LogEntry):
@@ -67,6 +91,19 @@ def build_e2b_template():
         CODE_SANDBOX_TEMPLATE_NAME,
         cpu_count=CODE_SANDBOX_CPU,
         memory_mb=CODE_SANDBOX_MEM_IN_MB,
+        api_key=settings.e2b_api_key,
+        on_build_logs=log_e2b_template_build,
+    )
+    return build_info
+
+
+def build_e2b_index_template():
+    """Build the indexing-pipeline E2B template (long-running, cached)."""
+    build_info = Template.build(
+        base_e2b_index_template(),
+        INDEX_SANDBOX_TEMPLATE_NAME,
+        cpu_count=INDEX_SANDBOX_CPU,
+        memory_mb=INDEX_SANDBOX_MEM_IN_MB,
         api_key=settings.e2b_api_key,
         on_build_logs=log_e2b_template_build,
     )
@@ -164,13 +201,14 @@ class E2BSandbox(BaseSandbox):
             self._spec.timeout_s,
         )
 
-        # Resolve the template name from the spec. The default is the
-        # E2B-hosted ``code-interpreter-v1`` template, which requires
-        # no build. Custom templates can be configured via
-        # ``E2B_TEMPLATE`` in the environment.
+        # Prefer the spec's template when set (lets callers route to a
+        # dedicated image, e.g. the indexing template baked with
+        # lancedb + openai + tree-sitter-language-pack). Fall back to
+        # the in-process default ``CODE_SANDBOX_TEMPLATE_NAME``.
+        template_name = self._spec.template or CODE_SANDBOX_TEMPLATE_NAME
 
         self._sandbox = await AsyncSandbox.create(
-            template=CODE_SANDBOX_TEMPLATE_NAME,
+            template=template_name,
             api_key=settings.e2b_api_key,
             timeout=20 * 60,
             lifecycle=SandboxLifecycle(on_timeout="pause", auto_resume=True),

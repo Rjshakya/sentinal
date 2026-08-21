@@ -18,7 +18,17 @@ Verifies the ``X-Hub-Signature-256`` HMAC against
 - ``pull_request`` (action ``opened``) -> delegate to
   :func:`app.services.review.webhook.handle_pull_request_opened`,
   which dispatches a durable DBOS workflow for the review. Other
-  ``pull_request`` actions are log + 202.
+  ``pull_request`` actions (including ``synchronize``) are
+  log + 202; reviews are no longer triggered by new pushes.
+- ``issue_comment`` (action ``created``) -> delegate to
+  :func:`app.services.pr_issue_comment.handle_issue_comment_created`,
+  which dispatches a durable DBOS workflow that classifies the
+  comment and (on match) dispatches the inner review workflow.
+- ``push`` -> delegate to
+  :func:`app.services.indexing.incremental.handle_push_event`, which
+  dispatches the incremental indexing workflow for default-branch
+  pushes (reconciles the repo's LanceDB dataset with the changed
+  files).
 - anything else -> 202 with a log line.
 
 The handler sits outside AuthMiddleware's protected prefixes: GitHub
@@ -43,6 +53,8 @@ from app.core.config import settings
 from app.core.db import async_session_maker
 from app.models.installation import Installation
 from app.models.repo import Repo
+from app.services.indexing.incremental import handle_push_event
+from app.services.pr_issue_comment import handle_issue_comment_created
 from app.services.review import webhook as review_webhook
 from app.utils.util import uuidToStr
 
@@ -72,23 +84,6 @@ def _verify_signature(secret: str, body: bytes, signature_header: str | None) ->
     provided = signature_header[len(SIGNATURE_PREFIX) :]
     expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(provided, expected)
-
-
-# --------------------------------------------------------------------------- #
-# summarizers                                                                  #
-# --------------------------------------------------------------------------- #
-
-
-def _summarize_pull_request(payload: dict[str, Any]) -> dict[str, Any]:
-    repo = payload.get("repository") or {}
-    owner = (repo.get("owner") or {}).get("login")
-    name = repo.get("name")
-    pr = payload.get("pull_request") or {}
-    return {
-        "repository": f"{owner}/{name}" if owner and name else None,
-        "number": pr.get("number"),
-        "sender": (payload.get("sender") or {}).get("login"),
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -193,8 +188,7 @@ async def _handle_installation_deleted(payload: dict[str, Any]) -> Response:
         await session.commit()
 
     log.info(
-        "github_webhook: installation.deleted dropped %d row(s) "
-        "(github_installation_id=%s)",
+        "github_webhook: installation.deleted dropped (github_installation_id=%s)",
         gh_installation_id,
     )
     return Response(status_code=202)
@@ -384,11 +378,41 @@ async def github_webhook(
 
     if event == "pull_request":
         action = payload.get("action")
-        # summary = _summarize_pull_request(payload)
 
-        if action == "opened" or action == "synchronize":
+        if action == "opened":
             ack = await review_webhook.handle_pull_request_opened(payload, delivery)
             log.info("github_webhook: pull_request handled: %s", ack.model_dump_json())
+        else:
+            # ``synchronize`` and other actions are no longer triggers
+            # — reviews are kicked off by a ``@<app_slug> review``
+            # comment instead. The DBOS workflow for the
+            # already-completed review (if any) is unaffected.
+            log.info(
+                "github_webhook: pull_request.%s ignored (delivery=%s)",
+                action,
+                delivery,
+            )
+        return Response(status_code=202)
+
+    if event == "issue_comment":
+        action = payload.get("action")
+        if action == "created":
+            ack = await handle_issue_comment_created(payload, delivery)
+            log.info(
+                "github_webhook: issue_comment handled: %s",
+                ack.model_dump_json(),
+            )
+        else:
+            log.info(
+                "github_webhook: issue_comment.%s ignored (delivery=%s)",
+                action,
+                delivery,
+            )
+        return Response(status_code=202)
+
+    if event == "push":
+        ack = await handle_push_event(payload, delivery)
+        log.info("github_webhook: push handled: %s", ack.model_dump_json())
         return Response(status_code=202)
 
     log.info(

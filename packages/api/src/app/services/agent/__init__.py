@@ -1,11 +1,10 @@
 """Sentinel review agent.
 
-The agent itself lives in :mod:`app.services.agent.review`. The
-submodules split concerns so the agent module stays a thin
-orchestrator:
+The submodules split concerns:
 
 - :mod:`app.services.agent.models`   — Pydantic response schemas.
-- :mod:`app.services.agent.prompts` — system prompts (orchestrator
-  + 4 subagents: summarizer, security, correctness, style).
-- :mod:`app.services.agent.review`  — factory + entry points.
+- :mod:`app.services.agent.prompts` — system prompts (summarizer +
+  comments agent).
+- :mod:`app.services.review.agent`  — review agent factories + entry
+  points.
 """

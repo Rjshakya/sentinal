@@ -6,28 +6,67 @@ import appCss from "../styles.css?url";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ThemeProvider } from "@/components/theme-provider";
 
-const THEME_INIT_SCRIPT = `(function(){try{var stored=window.localStorage.getItem('theme');var mode=(stored==='light'||stored==='dark'||stored==='auto')?stored:'auto';var prefersDark=window.matchMedia('(prefers-color-scheme: dark)').matches;var resolved=mode==='auto'?(prefersDark?'dark':'light'):mode;var root=document.documentElement;root.classList.remove('light','dark');root.classList.add(resolved);if(mode==='auto'){root.removeAttribute('data-theme')}else{root.setAttribute('data-theme',mode)}root.style.colorScheme=resolved;}catch(e){}})();`;
+const THEME_INIT_SCRIPT = `(function(){try{var stored=window.localStorage.getItem('theme');var mode=(stored==='light')?'light':'dark';var root=document.documentElement;root.classList.remove('light','dark');root.classList.add(mode);root.setAttribute('data-theme',mode);root.style.colorScheme=mode;}catch(e){}})();`;
 
 export const Route = createRootRoute({
   head: () => ({
     meta: [
+      { name: "viewport", content: "width=device-width, initial-scale=1" },
       {
         charSet: "utf-8",
       },
+      { title: "ReviewPR — AI code reviewer" },
       {
-        name: "viewport",
-        content: "width=device-width, initial-scale=1",
+        name: "description",
+        content: "AI-powered PR reviews , Catch bugs before you regret",
+      },
+
+      // Open Graph
+      { property: "og:type", content: "website" },
+      { property: "og:site_name", content: "ReviewPR" },
+      {
+        property: "og:title",
+        content: "ReviewPR — AI code reviewer",
       },
       {
-        title: "reviewpr",
+        property: "og:description",
+        content: "AI-powered PR reviews , Catch bugs before you regret",
       },
+      { property: "og:image", content: "https://reviewpr.app/reviewpr-og.png" },
+      { property: "og:image:width", content: "1200" },
+      { property: "og:image:height", content: "630" },
+      { property: "og:url", content: "https://reviewpr.app" },
+
+      // Twitter
+      { name: "twitter:card", content: "summary_large_image" },
+      {
+        name: "twitter:title",
+        content: "ReviewPR — AI code reviewer",
+      },
+      {
+        name: "twitter:description",
+        content: "AI-powered PR reviews , Catch bugs before you regret",
+      },
+      { name: "twitter:image", content: "https://reviewpr.app/reviewpr-og.png" },
+      // { name: "twitter:site", content: "@reviewpr" }, // add once you have a handle
+
+      // Robots / theme
+      { name: "robots", content: "index, follow" },
+      { name: "theme-color", content: "#0a0a0a" },
     ],
     links: [
       {
         rel: "stylesheet",
         href: appCss,
       },
+      {
+        rel: "icon",
+        type: "image/png",
+        href: "/reviewpr-icon.png",
+      },
+      { rel: "canonical", href: "https://reviewpr.app" },
     ],
   }),
   shellComponent: RootDocument,
@@ -44,8 +83,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       </head>
       <body className="">
         <QueryClientProvider client={queryClient}>
-          <TooltipProvider>{children}</TooltipProvider>
-          <Toaster />
+          <ThemeProvider>
+            <TooltipProvider>{children}</TooltipProvider>
+            <Toaster />
+          </ThemeProvider>
         </QueryClientProvider>
         <TanStackDevtools
           config={{

@@ -114,6 +114,68 @@ class DiffUnavailableError(StepError):
         super().__init__(f"diff unavailable ({base_sha}...{head_sha}): {cause}")
 
 
+class DiffSplitError(StepError):
+    """The diff could not be split into per-file review chunks.
+
+    Raised by :func:`app.services.review.steps.split_diff.split_diff_step`
+    when the in-sandbox ``split_diff.py`` script exits non-zero (other
+    than the ``-1`` runner dropout) or prints a missing / unparseable
+    summary on stdout. Business outcome — not retried.
+    """
+
+    def __init__(
+        self,
+        *,
+        repo_id: str,
+        pr_number: int,
+        head_sha: str,
+        cause: str,
+    ) -> None:
+        self.repo_id = repo_id
+        self.pr_number = pr_number
+        self.head_sha = head_sha
+        self.cause = cause
+        super().__init__(
+            f"diff split failed (pr={pr_number} head_sha={head_sha[:7]}): {cause}"
+        )
+
+
+class DiffSplitSetupError(TransientStepError):
+    """The split script could not be uploaded or its run was dropped.
+
+    Raised by :func:`app.services.review.steps.split_diff.split_diff_step`
+    on filesystem-write failures, runner dropouts (exit ``-1``), and
+    sandbox-execute blips. Transient — DBOS retries the step, which
+    re-uploads and re-runs the script.
+    """
+
+    def __init__(
+        self,
+        *,
+        repo_id: str,
+        pr_number: int,
+        head_sha: str,
+        cause: str,
+    ) -> None:
+        self.repo_id = repo_id
+        self.pr_number = pr_number
+        self.head_sha = head_sha
+        self.cause = cause
+        super().__init__(
+            f"diff split setup failed (pr={pr_number} head_sha={head_sha[:7]}): {cause}"
+        )
+
+
+class RepoUpdateError(StepError):
+    """The sandbox repo could not be refreshed to the default branch."""
+
+    def __init__(self, *, repo_id: str, branch: str, cause: str) -> None:
+        self.repo_id = repo_id
+        self.branch = branch
+        self.cause = cause
+        super().__init__(f"repo update failed (branch={branch!r}): {cause}")
+
+
 class ReviewAgentCrashedError(StepError):
     """The review agent raised an unexpected, non-transient exception."""
 
@@ -136,15 +198,47 @@ class ReviewAgentRateLimitedError(TransientStepError):
         super().__init__(cause)
 
 
-class ReviewAgentReturnedNoStructuredResponseError(StepError):
-    """The agent finished but produced no ``structured_response`` payload."""
+class ReviewRunUpdateError(TransientStepError):
+    """The ``review`` lifecycle row could not be written/updated.
 
-    def __init__(self, message_kinds: tuple[str, ...]) -> None:
-        self.message_kinds = message_kinds
-        super().__init__(
-            "review agent returned no structured response "
-            f"(messages={list(message_kinds)})"
-        )
+    Raised by the ``mark_review_*`` steps in
+    :mod:`app.services.review.steps.review_run_steps` when the DB write
+    (or the row lookup) fails. Transient — DBOS retries the step up to
+    3 attempts; after that the error propagates and the workflow is
+    marked ERROR.
+    """
+
+
+class SummaryExtractionError(StepError):
+    """The structured extractor could not produce a :class:`SummaryResult`.
+
+    Raised by
+    :func:`app.services.review.steps.extract_result.extract_summary_result_step`
+    when the OpenAI structured-output call fails or returns something
+    that does not validate against :class:`SummaryResult`. Business
+    outcome — not retried; the lane degrades via
+    :func:`app.services.review.steps.invoke_agent.combine_agent_outcomes`.
+    """
+
+    def __init__(self, *, cause: str) -> None:
+        self.cause = cause
+        super().__init__(f"summary extraction failed: {cause}")
+
+
+class CommentsExtractionError(StepError):
+    """The structured extractor could not produce a :class:`ReviewComments`.
+
+    Raised by
+    :func:`app.services.review.steps.extract_result.extract_comments_result_step`
+    when the OpenAI structured-output call fails or returns something
+    that does not validate against :class:`ReviewComments`. Business
+    outcome — not retried; the lane degrades via
+    :func:`app.services.review.steps.invoke_agent.combine_agent_outcomes`.
+    """
+
+    def __init__(self, *, cause: str) -> None:
+        self.cause = cause
+        super().__init__(f"comments extraction failed: {cause}")
 
 
 # --------------------------------------------------------------------------- #
@@ -158,7 +252,7 @@ class AgentInvocationError(StepError):
     Raised from the ``invoke_<name>_agent`` wrappers in
     :mod:`app.services.review.steps.invoke_agent`. Each subclass
     hard-codes the value of :attr:`name` so the failure can be
-    attributed to a specific specialist.
+    attributed to a specific agent.
 
     The :attr:`retryable` flag mirrors DBOS retry semantics — when
     ``True``, the wrapping step's ``should_retry`` predicate should
@@ -167,8 +261,7 @@ class AgentInvocationError(StepError):
     timeout).
 
     Attributes:
-        name: The subagent's name (``"summarizer"``, ``"security"``,
-            ``"correctness"``, or ``"style"``).
+        name: The subagent's name (``"summarizer"`` or ``"comments"``).
         cause_exception: The original exception raised by the
             subagent's ``ainvoke`` call or its post-processing.
         retryable: ``True`` iff DBOS should retry the wrapping step.
@@ -212,8 +305,8 @@ class SummaryAgentInvocationError(AgentInvocationError):
         )
 
 
-class SecurityAgentInvocationError(AgentInvocationError):
-    """The ``security`` subagent failed."""
+class CommentsAgentInvocationError(AgentInvocationError):
+    """The ``comments`` subagent failed."""
 
     def __init__(
         self,
@@ -223,60 +316,27 @@ class SecurityAgentInvocationError(AgentInvocationError):
         details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
-            name="security", cause=cause, retryable=retryable, details=details
+            name="comments", cause=cause, retryable=retryable, details=details
         )
 
 
-class CorrectnessAgentInvocationError(AgentInvocationError):
-    """The ``correctness`` subagent failed."""
-
-    def __init__(
-        self,
-        *,
-        cause: BaseException,
-        retryable: bool,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(
-            name="correctness", cause=cause, retryable=retryable, details=details
-        )
-
-
-class StyleAgentInvocationError(AgentInvocationError):
-    """The ``style`` subagent failed."""
-
-    def __init__(
-        self,
-        *,
-        cause: BaseException,
-        retryable: bool,
-        details: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(
-            name="style", cause=cause, retryable=retryable, details=details
-        )
-
-
-# Union of the four per-subagent error classes. Use this (or
+# Union of the two per-subagent error classes. Use this (or
 # ``type[SubagentInvocationError]``) when a callable accepts the class
 # itself — e.g. the per-subagent wrappers in
 # :mod:`app.services.review.steps.invoke_agent`.
 SubagentInvocationError: TypeAlias = (
-    SummaryAgentInvocationError
-    | SecurityAgentInvocationError
-    | CorrectnessAgentInvocationError
-    | StyleAgentInvocationError
+    SummaryAgentInvocationError | CommentsAgentInvocationError
 )
 
 
 class ReviewAgentsInvocationError(StepError):
-    """One or more subagents failed during parallel fan-out.
+    """All agent lanes failed during the parallel fan-out.
 
     Raised from
-    :func:`app.services.review.steps.invoke_agent.invoke_review_agents_step`
-    after :func:`asyncio.gather` partitions successes from failures.
-    Each per-subagent error is preserved in :attr:`failed_agents`; the
-    aggregate carries the full run context (user, repo, pr, head_sha,
+    :func:`app.services.review.steps.invoke_agent.combine_agent_outcomes`
+    (from the workflow body) after each lane's own step retries are
+    exhausted. Each per-lane error is preserved in :attr:`failed_agents`;
+    the aggregate carries the full run context (user, repo, pr, head_sha,
     LLM provider/model/base URL, workflow id, and the UTC timestamp of
     the failure) so production dashboards have everything needed to
     attribute a failure without cross-referencing logs.
@@ -286,6 +346,11 @@ class ReviewAgentsInvocationError(StepError):
     step received, so the Sentry tags (``llm.provider``,
     ``llm.model``) and ``llm.base_url`` extra keep their existing
     names.
+
+    :attr:`failed_agents` holds the per-lane failures — per-subagent
+    :class:`AgentInvocationError` instances from the research agents
+    or the extractor steps' :class:`StepError` variants. Consumers
+    read name / retryable / cause with attribute fallbacks.
     """
 
     user_id: str
@@ -296,7 +361,7 @@ class ReviewAgentsInvocationError(StepError):
     llm_model: str
     llm_base_url: str | None
     workflow_id: str
-    failed_agents: list[AgentInvocationError]
+    failed_agents: list[StepError]
     succeeded_agents: list[str]
     occurred_at: datetime
 
@@ -309,7 +374,7 @@ class ReviewAgentsInvocationError(StepError):
         head_sha: str,
         llm_config: LLMConfig,
         workflow_id: str,
-        failed_agents: list[AgentInvocationError],
+        failed_agents: list[StepError],
         succeeded_agents: list[str],
         occurred_at: datetime,
     ) -> None:
@@ -324,7 +389,7 @@ class ReviewAgentsInvocationError(StepError):
         self.failed_agents = list(failed_agents)
         self.succeeded_agents = list(succeeded_agents)
         self.occurred_at = occurred_at
-        names = [e.name for e in failed_agents]
+        names = [getattr(e, "name", None) or type(e).__name__ for e in failed_agents]
         super().__init__(
             f"review agents invocation failed for pr={pr_number} "
             f"head_sha={head_sha[:7]}: failed={names} "
@@ -472,20 +537,23 @@ def extract_retry_after_seconds(exc: BaseException) -> float | None:
 
 __all__ = [
     "AgentInvocationError",
-    "CorrectnessAgentInvocationError",
+    "CommentsAgentInvocationError",
+    "CommentsExtractionError",
+    "DiffSplitError",
+    "DiffSplitSetupError",
     "DiffUnavailableError",
     "NoActiveSandboxError",
     "RepoNotFoundError",
+    "RepoUpdateError",
     "ReviewAgentCrashedError",
     "ReviewAgentRateLimitedError",
-    "ReviewAgentReturnedNoStructuredResponseError",
     "ReviewAgentsInvocationError",
+    "ReviewRunUpdateError",
     "SandboxConnectError",
-    "SecurityAgentInvocationError",
     "StepError",
-    "StyleAgentInvocationError",
     "SubagentInvocationError",
     "SummaryAgentInvocationError",
+    "SummaryExtractionError",
     "TransientStepError",
     "extract_retry_after_seconds",
     "is_llm_retry_error",

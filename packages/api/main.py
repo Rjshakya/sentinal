@@ -20,8 +20,8 @@ from app.core.config import settings
 from app.core.db import create_db_and_tables
 from app.core.logging import configure_structured_logging
 from app.core.middleware import AuthMiddleware
-from app.core.sandbox.e2b import build_e2b_template
-from app.routers import ai, auth, github, health, llm_configs, users, webhooks
+from app.core.sandbox.e2b import build_e2b_index_template, build_e2b_template
+from app.routers import ai, auth, github, health, indexing, llm_configs, search, users, webhooks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,6 +91,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     DBOS(config=_dbos_config())
     DBOS.launch()
     build_e2b_template()
+    build_e2b_index_template()
     try:
         yield
     finally:
@@ -120,6 +121,8 @@ def create_app() -> FastAPI:
     app.include_router(ai.router, prefix=settings.api_prefix)
     app.include_router(users.router, prefix=settings.api_prefix)
     app.include_router(llm_configs.router, prefix=settings.api_prefix)
+    app.include_router(indexing.router, prefix=settings.api_prefix)
+    app.include_router(search.router, prefix=settings.api_prefix)
     app.include_router(webhooks.router, prefix=settings.api_prefix)
 
     return app

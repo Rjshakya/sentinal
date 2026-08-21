@@ -10,6 +10,11 @@ The ``input_token_details`` JSONB column carries the cache_read /
 cache_creation breakdown (``{"cache_read": int | None,
 "cache_creation": int | None}``) as reported by the provider; it is
 optional because not every provider surfaces cache metadata.
+
+The ``llm_model_id`` / ``llm_provider`` / ``llm_base_url`` columns
+snapshot the resolved :class:`app.core.llm.LLMConfig` at run time so
+per-model cost and quality analytics never depend on a config row
+that may later be edited or deleted. All three are nullable.
 """
 
 from __future__ import annotations
@@ -44,6 +49,12 @@ class ReviewUsage(SQLModel, table=True):
         sa_column_args=(ForeignKey("reviewsummary.id", ondelete="CASCADE"),),
         nullable=True,
     )
+    review_id: Optional[str] = Field(
+        default=None,
+        sa_column_args=(ForeignKey("review.id", ondelete="CASCADE"),),
+        nullable=True,
+        index=True,
+    )
 
     review_status: ReviewRunStatus = Field(
         default=ReviewRunStatus.SUCCESS,
@@ -56,6 +67,10 @@ class ReviewUsage(SQLModel, table=True):
         default=None,
         sa_column=Column(JSONB, nullable=True),
     )
+
+    llm_model_id: Optional[str] = Field(default=None, nullable=True)
+    llm_provider: Optional[str] = Field(default=None, nullable=True)
+    llm_base_url: Optional[str] = Field(default=None, nullable=True)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),

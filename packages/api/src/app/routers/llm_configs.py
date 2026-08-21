@@ -1,14 +1,17 @@
 """Per-user LLM config routes.
 
-- ``POST /api/llm_configs`` — test-and-create. Always returns
+- ``POST /api/llm_config/`` — test-and-create. Always returns
   ``200`` with the :class:`LLMConfigUpsertResponse` envelope so
   the frontend has a single shape to render regardless of pass /
   fail. The probe runs **before** the DB write; on success the
   row is upserted (one config per user).
-- ``GET /api/llm_configs`` — list the user's stored config with
+- ``POST /api/llm_config/test`` — test-only. Runs the same probe
+  as the upsert endpoint but never writes. Returns the
+  :class:`LLMConfigTestResponse` envelope (same shape, no ``data``).
+- ``GET /api/llm_config/`` — list the user's stored config with
   ``api_key`` redacted. Empty list when the user has none.
 
-Both routes are protected by :class:`app.core.middleware.AuthMiddleware`
+All routes are protected by :class:`app.core.middleware.AuthMiddleware`
 (see :data:`AuthMiddleware.PROTECTED_PREFIXES`).
 """
 
@@ -21,21 +24,23 @@ from fastapi import APIRouter, Request
 from app.schemas.llm_config import (
     CreateLLMConfigRequest,
     LLMConfigResponse,
+    LLMConfigTestResponse,
     LLMConfigUpsertResponse,
     to_llm_config_response,
 )
 from app.services.llm_config import (
     list_user_llm_configs,
+    test_user_llm_config,
     upsert_user_llm_config,
 )
 from app.services.llm_config.types import LLMTestResultPublic
 
 log = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/llm_configs", tags=["llm_configs"])
+router = APIRouter(prefix="/llm_config", tags=["llm_configs"])
 
 
-@router.post("", response_model=LLMConfigUpsertResponse)
+@router.post("/", response_model=LLMConfigUpsertResponse)
 async def create_or_replace_my_llm_config(
     request: Request,
     body: CreateLLMConfigRequest,
@@ -97,7 +102,61 @@ async def create_or_replace_my_llm_config(
     )
 
 
-@router.get("", response_model=list[LLMConfigResponse])
+@router.post("/test", response_model=LLMConfigTestResponse)
+async def test_my_llm_config(
+    request: Request,
+    body: CreateLLMConfigRequest,
+) -> LLMConfigTestResponse:
+    """Probe a candidate config without persisting it.
+
+    Mirrors the probe run inside the upsert endpoint. The service
+    layer promises :func:`test_user_llm_config` never raises, so
+    the only branch here is the successful / failed probe result.
+    The frontend renders the probe outcome directly from the
+    response — no HTTP-status branching required.
+    """
+    user_id: str = request.state.user_id
+
+    log.info(
+        "llm_configs: test start: user_id=%s provider=%s model_id=%s",
+        user_id,
+        body.provider,
+        body.model_id,
+    )
+
+    result = await test_user_llm_config(
+        provider=body.provider,
+        model_id=body.model_id,
+        base_url=body.base_url,
+        api_key=body.api_key,
+    )
+    public_test = LLMTestResultPublic(
+        response=result.get("response"),
+        exception=result.get("exception"),
+    )
+
+    if public_test.exception is not None:
+        log.info(
+            "llm_configs: test failed: user_id=%s exception=%s",
+            user_id,
+            public_test.exception,
+        )
+    else:
+        log.info(
+            "llm_configs: test ok: user_id=%s provider=%s model_id=%s",
+            user_id,
+            body.provider,
+            body.model_id,
+        )
+
+    return LLMConfigTestResponse(
+        success=public_test.exception is None,
+        error=public_test.exception,
+        test_result=public_test,
+    )
+
+
+@router.get("/", response_model=list[LLMConfigResponse])
 async def list_my_llm_config(request: Request) -> list[LLMConfigResponse]:
     """Return the user's stored config with ``api_key`` redacted.
 
@@ -109,4 +168,9 @@ async def list_my_llm_config(request: Request) -> list[LLMConfigResponse]:
     return [to_llm_config_response(row) for row in rows]
 
 
-__all__ = ["create_or_replace_my_llm_config", "list_my_llm_config", "router"]
+__all__ = [
+    "create_or_replace_my_llm_config",
+    "list_my_llm_config",
+    "router",
+    "test_my_llm_config",
+]

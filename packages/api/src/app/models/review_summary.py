@@ -21,6 +21,12 @@ class ReviewSummary(SQLModel, table=True):
         sa_column_args=(ForeignKey("pullrequest.id", ondelete="CASCADE"),),
         nullable=False,
     )
+    review_id: str | None = Field(
+        default=None,
+        sa_column_args=(ForeignKey("review.id", ondelete="CASCADE"),),
+        sa_column_kwargs={"unique": True},
+        nullable=True,
+    )
     commit_id: str = Field(nullable=False)
     github_review_id: str | None = Field(default=None, nullable=True)
     summary: str = Field(nullable=False)

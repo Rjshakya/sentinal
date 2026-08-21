@@ -8,11 +8,12 @@ Two routes:
   (or skip markers) immediately (``202 Accepted``). The dashboard
   polls the GET endpoint for terminal state.
 - ``GET /ai/repo/setup/{workflow_id}`` — returns the workflow's
-  current status and the persisted :class:`SetupResult` if the
-  workflow has reached a terminal state.
+  current status. On a terminal ``ERROR`` state the typed error name
+  + message are surfaced through ``error_name`` / ``error_message``;
+  no row is persisted beyond DBOS's own workflow state.
 
 The router is a thin shell. All setup logic lives in
-:mod:`app.services.agent.setup_workflow.workflow` and its step modules; the
+:mod:`app.services.setup.workflow` and its step modules; the
 router only handles request validation, the Repo-row skip check,
 and the DBOS dispatch / status read.
 """
@@ -35,8 +36,8 @@ from app.schemas.setup import (
     SetupWorkflowHandle,
     StartSetupResponse,
 )
-from app.services.agent.setup_workflow.types import SetupWorkflowInput
-from app.services.agent.setup_workflow.workflow import setup_workflow
+from app.services.setup.types import SetupWorkflowInput
+from app.services.setup.workflow import setup_workflow
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +149,8 @@ async def start_setup_repos(
             repo_name=r.name,
             installation_id=r.installation_id,
             llm_config=settings.llm_config,
+            default_branch=r.default_branch,
+            index_after_setup=settings.indexing_configured,
         )
 
         workflow_info = await DBOS.start_workflow_async(setup_workflow, workflow_input)
@@ -208,9 +211,8 @@ async def get_setup_status(
     :class:`SetupWorkflowResult` is deserialized from
     :attr:`WorkflowStatus.output` and projected onto the response.
     On a terminal ``ERROR`` state, the exception is read from
-    :attr:`WorkflowStatus.error` and the cached
-    :class:`SetupResult` (``ok=False``) is returned from the
-    persisted DB row.
+    :attr:`WorkflowStatus.error` and its class name + message are
+    projected onto ``error_name`` / ``error_message``.
 
     Auth: the workflow id encodes the user_id; the handler refuses
     cross-user reads with a 404 to avoid leaking workflow existence.
