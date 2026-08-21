@@ -440,7 +440,8 @@ class ExtractorLaneResults(TypedDict):
     """Per-lane outcomes of the research + extraction fan-out.
 
     Each value is either the lane's validated structured payload with
-    its token usage (from the extractor step) or a ``BaseException`` —
+    its token usage (the research agent's usage; the extractor step's
+    own tokens are not yet accounted) or a ``BaseException`` —
     a per-lane :class:`AgentInvocationError` from the research agent,
     or a :class:`SummaryExtractionError` /
     :class:`CommentsExtractionError` /
@@ -480,6 +481,9 @@ async def run_extractor_lanes(
     inside the steps, so a captured exception here is always terminal
     for that lane.
 
+    Each successful lane carries the research agent's token usage (the
+    extractor step's own tokens are not yet accounted).
+
     Returns a fully typed :class:`ExtractorLaneResults` mapping each
     lane to its outcome.
     """
@@ -490,27 +494,31 @@ async def run_extractor_lanes(
     if isinstance(summary_agent_outcome, BaseException):
         summary_lane = summary_agent_outcome
     else:
-        raw_text, _usage = summary_agent_outcome
+        raw_text, agent_usage = summary_agent_outcome
         try:
-            summary_lane = await extract_summary_result_step(
+            extracted, _extractor_usage = await extract_summary_result_step(
                 extractor_config=extractor_config,
                 raw_text=raw_text,
             )
         except BaseException as exc:
             summary_lane = exc
+        else:
+            summary_lane = (extracted, agent_usage)
 
     comments_lane: CommentsLaneOutcome
     if isinstance(comments_agent_outcome, BaseException):
         comments_lane = comments_agent_outcome
     else:
-        raw_text, _usage = comments_agent_outcome
+        raw_text, agent_usage = comments_agent_outcome
         try:
-            comments_lane = await extract_comments_result_step(
+            extracted, _extractor_usage = await extract_comments_result_step(
                 extractor_config=extractor_config,
                 raw_text=raw_text,
             )
         except BaseException as exc:
             comments_lane = exc
+        else:
+            comments_lane = (extracted, agent_usage)
 
     return ExtractorLaneResults(
         summarizer=summary_lane,
@@ -532,8 +540,8 @@ def combine_agent_outcomes(
 
     ``lane_outcomes`` is the fully typed :class:`ExtractorLaneResults`
     mapping each lane to either ``(result, usage)`` (a validated
-    structured payload from the extractor step, plus the aggregated
-    agent + extractor usage) or a ``BaseException`` (a per-lane
+    structured payload from the extractor step, plus the research
+    agent's usage) or a ``BaseException`` (a per-lane
     :class:`AgentInvocationError` from the research agent, or a
     :class:`SummaryExtractionError` /
     :class:`CommentsExtractionError` /
