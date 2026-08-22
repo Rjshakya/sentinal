@@ -31,7 +31,10 @@ class CodeCommentDraft(BaseModel):
         "as it appears in the diff header (e.g. 'src/app/routers/ai.py').",
     )
     comment: str = Field(
-        description="The review comment body. Plain text; markdown is fine.",
+        description="The review comment body, formatted per the "
+        "comment-body contract: a bold headline naming the issue, 2-4 "
+        "grounded issue bullets, and a **Fix:** line (GitHub renders "
+        "markdown).",
     )
     severity: CommentSeverityStr
     from_line: int = Field(ge=0, description="First line of the comment range.")

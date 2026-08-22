@@ -17,7 +17,11 @@ the research agent ended its run:
   walkthrough text becomes the ``summary`` field unchanged.
 - :func:`extract_comments_result_step` — transcribes the findings report's
   blocks into :class:`CodeCommentDraft` entries (exact anchors; findings
-  without usable anchors are dropped).
+  without usable anchors are dropped) and reformats each comment body to
+  the shared comment-body contract
+  (:data:`app.services.agent.prompts.COMMENT_BODY_FORMAT`) — headline →
+  grounded issue bullets → ``**Fix:**`` line — without adding or dropping
+  substance.
 
 Both are durable :func:`@DBOS.step` steps: transient LLM failures (429 / 5xx
 / timeout, classified by :func:`app.services.review.errors.is_llm_retry_error`)
@@ -43,7 +47,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, UsageMetadata
 from app.core.config import settings
 from app.core.llm import LLMConfig, build_chat_model
 from app.services.agent.models import ReviewComments, SummaryResult
-from app.services.agent.prompts import _render_schema
+from app.services.agent.prompts import COMMENT_BODY_FORMAT, _render_schema
 from app.services.review._internal import _SHOULD_RETRY_TRANSIENT
 from app.services.review.errors import (
     CommentsExtractionError,
@@ -96,16 +100,23 @@ COMMENTS_EXTRACTION_SYSTEM_PROMPT: str = (
     "Convert it into CodeCommentDraft entries:\n"
     "- Transcribe file_name, side, from_line, to_line, node_type and "
     "severity EXACTLY as written in the report.\n"
-    "- The comment field is the finding's comment text, verbatim.\n"
+    "- The comment field is the finding's comment body, reformatted to "
+    "the comment-body contract below: preserve every fact, claim, and "
+    "line/symbol reference, but restructure the text into the contract's "
+    "headline / issue-bullets / fix shape. Never add findings, claims, "
+    "or line numbers the report does not contain; never drop substance "
+    "(only filler such as 'I noticed' or 'please consider' may be "
+    "removed).\n"
     "- Never invent anchors: if a finding block lacks usable file / side / "
     "line values, drop that finding.\n"
     "- If the report is empty or contains only NO_FINDINGS, return an "
     "empty List.\n"
     "- Return the entries ordered by severity, P1 first.\n\n"
-    "OUTPUT SCHEMA — respond with exactly one JSON object of this shape:\n"
+    + COMMENT_BODY_FORMAT
+    + "\n\nOUTPUT SCHEMA — respond with exactly one JSON object of this shape:\n"
     + _render_schema(ReviewComments)
 )
-"""System prompt for the comments extractor (faithful transcription)."""
+"""System prompt for the comments extractor (transcription + contract formatting)."""
 
 
 # --------------------------------------------------------------------------- #
@@ -238,7 +249,8 @@ async def extract_comments_result_step(
     ``raw_text`` is the comments agent's final message (the findings
     report). The extractor re-invokes :data:`_EXTRACTOR_MODEL` with the
     schema bound and transcribes each finding block into a
-    :class:`CodeCommentDraft`; findings without usable anchors are
+    :class:`CodeCommentDraft`, reformatting the comment body to the
+    shared comment-body contract; findings without usable anchors are
     dropped, and an empty / ``NO_FINDINGS`` report yields an empty list.
 
     Raises:
