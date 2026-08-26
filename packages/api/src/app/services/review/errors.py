@@ -96,6 +96,65 @@ class SandboxConnectError(TransientStepError):
         super().__init__(f"failed to connect sandbox {sandbox_id!r}: {cause}")
 
 
+class SandboxCreateStepError(TransientStepError):
+    """E2B sandbox creation failed for a review run; DBOS should retry.
+
+    Raised by
+    :func:`app.services.review.steps.create_sandbox.create_review_sandbox_step`
+    when ``E2BSandbox.create`` raises (missing API key, transient E2B
+    blip, template issue). Transient — DBOS retries the step, which
+    creates a fresh sandbox.
+    """
+
+    def __init__(self, *, user_id: str, repo_id: str, cause: str) -> None:
+        self.user_id = user_id
+        self.repo_id = repo_id
+        self.cause = cause
+        super().__init__(f"failed to create review sandbox (repo={repo_id}): {cause}")
+
+
+class RepoCloneError(StepError):
+    """The repo could not be cloned into the review sandbox.
+
+    Raised by :func:`app.services.review.steps.clone_repo.clone_repo_step`
+    when ``git clone`` exits non-zero (bad token, missing repo, transport
+    error). Business outcome — not retried.
+    """
+
+    def __init__(
+        self,
+        *,
+        repo_id: str,
+        repo_name: str,
+        exit_code: int,
+        output_tail: str,
+    ) -> None:
+        self.repo_id = repo_id
+        self.repo_name = repo_name
+        self.exit_code = exit_code
+        self.output_tail = output_tail
+        super().__init__(
+            f"repo clone failed (repo={repo_name!r}): git exited {exit_code}: "
+            f"{output_tail}"
+        )
+
+
+class RepoCloneTransientError(TransientStepError):
+    """The clone could not run (token mint / reconnect / runner dropout).
+
+    Raised by :func:`app.services.review.steps.clone_repo.clone_repo_step`
+    for failures that are expected to clear up on a retry: installation
+    token mint failures, E2B reconnect blips, and sandbox-side runner
+    dropouts (``exit_code == -1``). Transient — DBOS retries.
+    """
+
+    def __init__(self, *, repo_id: str, repo_name: str, cause: str) -> None:
+        self.repo_id = repo_id
+        self.repo_name = repo_name
+        self.cause = cause
+        super().__init__(f"repo clone transient failure (repo={repo_name!r}): {cause}")
+
+
 class DiffUnavailableError(StepError):
     """We could not obtain a unified diff to review."""
 
@@ -543,6 +602,8 @@ __all__ = [
     "DiffSplitSetupError",
     "DiffUnavailableError",
     "NoActiveSandboxError",
+    "RepoCloneError",
+    "RepoCloneTransientError",
     "RepoNotFoundError",
     "RepoUpdateError",
     "ReviewAgentCrashedError",
@@ -550,6 +611,7 @@ __all__ = [
     "ReviewAgentsInvocationError",
     "ReviewRunUpdateError",
     "SandboxConnectError",
+    "SandboxCreateStepError",
     "StepError",
     "SubagentInvocationError",
     "SummaryAgentInvocationError",

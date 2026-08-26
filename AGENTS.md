@@ -365,7 +365,12 @@ them on `SQLModel.metadata`.
     lifecycle steps).
   - `steps/` — one file per I/O boundary, each exposing a pure helper and a
     DBOS-wrapped variant: `resolve_repo`/`resolve_repo_tx`,
-    `resolve_sandbox`/`resolve_sandbox_step`, `fetch_diff_step`,
+    `create_sandbox`/`create_review_sandbox_step` (per-run **ephemeral**
+    sandbox; no `sandboxes` row),
+    `clone_repo`/`clone_repo_step` (mints an installation token, clones
+    the default branch into the sandbox — token via `envs`, never argv —
+    and best-effort fetches `refs/pull/{pr}/head` so fork-PR heads are
+    diffable), `fetch_diff_step`,
     `split_diff_step` (uploads + runs the split script, returns the
     `SplitDiffResult` summary), `upsert_pr`/`upsert_pull_request_tx`,
     `invoke_agent` (the two parallel agent steps + `combine_agent_outcomes`),
@@ -376,7 +381,10 @@ them on `SQLModel.metadata`.
     `mark_review_is_stopped_step` / `mark_review_is_errored_step` +
     `build_error_context` — the durable `review` lifecycle-row steps,
     retried 3x on `ReviewRunUpdateError`),
-    `stop_sandbox_step`.
+    `stop_sandbox` (`kill_sandbox_step` destroys the ephemeral sandbox in
+    the workflow's `finally`; legacy `stop_sandbox_step` pause kept).
+    The dormant `resolve_sandbox` / `update_repo` modules are retained
+    but no longer called by the workflow.
 - `pr_issue_comment/` — the comment-trigger path.
   - `workflow.py` — `trigger_issue_comment_workflow` (id
     `trigger_issue_comment:{comment_id}`): validate → classify
@@ -684,16 +692,20 @@ Both start the workflow with the deterministic id
 the same head SHA do not re-run the agent. `review_workflow` then runs:
 
 1. `resolve_repo_tx` — look up the `Repos` row (`@dbos_datasource.transaction`).
-2. `resolve_sandbox_step` — look up the active `Sandbox` row and connect to
-   the E2B sandbox (`@DBOS.step`). Only the sandbox **id** travels onward;
-   each step reconnects.
-3. `upsert_pull_request_tx` — insert/update the `PullRequest` row.
-4. `mark_review_is_running_step` — create (or reset on restart) the
+2. `create_review_sandbox_step` — create a fresh **ephemeral** E2B
+   sandbox for this run (no `sandboxes` row; the run's
+   `review.sandbox_id` records it). Only the sandbox **id** travels
+   onward; each step reconnects.
+3. `clone_repo_step` — mint an installation token, clone the default
+   branch into the sandbox (token via `envs`, never argv), and
+   best-effort fetch `refs/pull/{pr}/head` so fork-PR heads are
+   diffable.
+4. `upsert_pull_request_tx` — insert/update the `PullRequest` row.
+5. `mark_review_is_running_step` — create (or reset on restart) the
    `review` lifecycle row in `RUNNING`, keyed by the deterministic
    `workflow_id` (unique index), with the PR link, sandbox, and LLM
    snapshot; returns the row id. The step is **durable**: retried 3x on
    transient DB failures and raises `ReviewRunUpdateError` otherwise.
-5. `update_repo_step` — refresh the sandbox repo to the default branch.
 6. `fetch_diff_step` — `git diff {diff_base_sha or base_sha}...head_sha`
    written to the sandbox (`file.diff`). `diff_base_sha` narrows the
    range on an incremental re-review; `base_sha` (the PR's true base)
@@ -734,10 +746,12 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
 11. `mark_review_is_stopped_step` — flip the `review` row to `SUCCESS`
     with the surviving comment count and the GitHub review id (from the
     awaited post workflow). Durable like the running step.
-12. `stop_sandbox_step` — always, in a `finally`.
+12. `kill_sandbox_step` — always, in a `finally`: destroys the ephemeral
+    per-run sandbox (best-effort; a kill failure never masks the run's
+    outcome).
 
-Steps 3–4 run **inside** the `try`, so the `finally` sandbox stop also
-covers a raising `upsert_pull_request_tx` / running step. The `except`
+Steps 2–5 run **inside** the `try`, so the `finally` sandbox kill also
+covers a raising clone / `upsert_pull_request_tx` / running step. The `except`
 block flips the `review` row to `FAILED` via
 `mark_review_is_errored_step` (guarded by its own try/except so a
 failure while recording the error never masks the original exception —

@@ -20,6 +20,13 @@ Design notes:
 - The E2B sandbox object is never passed between steps. Only the
   sandbox id travels through the workflow; each step reconnects by
   id.
+- The pipeline is **stateless**: each run creates a fresh ephemeral
+  sandbox (:func:`app.services.review.steps.create_sandbox.create_review_sandbox_step`),
+  clones the repo at review time
+  (:func:`app.services.review.steps.clone_repo.clone_repo_step`), and
+  destroys the sandbox in the ``finally``
+  (:func:`app.services.review.steps.stop_sandbox.kill_sandbox_step`).
+  No dependency on the setup-time per-repo ``sandboxes`` row.
 - The ``review`` lifecycle row
   (:func:`app.services.review.steps.review_run_steps`) records one
   row per run: ``RUNNING`` once the PR row exists, ``SUCCESS`` after
@@ -65,15 +72,15 @@ from app.models.enums import ReviewRunStatus
 from app.services.github.workflow import post_review_to_github_workflow
 from app.services.review.helpers import compute_review_limits
 from app.services.review.steps import (
+    clone_repo_step,
+    create_review_sandbox_step,
     fetch_diff_step,
+    kill_sandbox_step,
     persist_code_comments_tx,
     persist_review_summary_tx,
     persist_review_usage_tx,
     resolve_repo_tx,
-    resolve_sandbox_step,
     split_diff_step,
-    stop_sandbox_step,
-    update_repo_step,
     upsert_pull_request_tx,
 )
 from app.services.review.steps.extract_result import build_extractor_config
@@ -95,6 +102,7 @@ from app.services.review.workflow_types import (
     PostReviewResult,
     ReviewRunResult,
     ReviewWorkflowInput,
+    SandboxMeta,
 )
 
 log = logging.getLogger(__name__)
@@ -112,11 +120,11 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
     exceptions, and the typed exception propagates to any caller
     awaiting the result.
 
-    The :func:`app.services.review.steps.stop_sandbox_step` cleanup
-    runs in a ``finally`` block that covers every step that follows a
-    successful :func:`app.services.review.steps.resolve_sandbox_step`.
-    If :func:`app.services.review.steps.resolve_sandbox_step` itself
-    raises, there is no connected sandbox to stop.
+    The :func:`app.services.review.steps.stop_sandbox.kill_sandbox_step`
+    cleanup runs in a ``finally`` block that covers every step that
+    follows a successful
+    :func:`app.services.review.steps.create_sandbox.create_review_sandbox_step`.
+    If the create step itself raises, there is no sandbox to kill.
 
     The ``review`` lifecycle row runs alongside: the row is created
     in ``RUNNING`` after the PR row exists, flipped to ``SUCCESS`` by
@@ -131,12 +139,29 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
     exception.
     """
     repo = await resolve_repo_tx(input.gh_repo_id)
-    sandbox = await resolve_sandbox_step(user_id=input.user_id, repo_id=repo.id)
 
     workflow_id = DBOS.workflow_id or "<no-workflow-id>"
     review_id: str | None = None
+    sandbox: SandboxMeta | None = None
 
     try:
+        sandbox = await create_review_sandbox_step(
+            user_id=input.user_id,
+            repo_id=repo.id,
+            repo_name=repo.repo_name,
+        )
+
+        await clone_repo_step(
+            sandbox_id=sandbox.sandbox_id,
+            sandbox_name=sandbox.sandbox_name,
+            user_id=input.user_id,
+            repo_id=repo.id,
+            repo_owner=repo.repo_owner,
+            repo_name=repo.repo_name,
+            pr_number=input.pr_number,
+            github_installation_id=input.github_installation_id,
+        )
+
         pr_id = await upsert_pull_request_tx(
             repo_id=repo.id,
             github_pr_id=input.pr_id,
@@ -165,15 +190,6 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
             llm_provider=input.llm_config.provider,
             llm_model=input.llm_config.model_id,
             llm_base_url=input.llm_config.base_url,
-        )
-
-        await update_repo_step(
-            sandbox_id=sandbox.sandbox_id,
-            sandbox_name=sandbox.sandbox_name,
-            repo_id=repo.id,
-            repo_name=repo.repo_name,
-            user_id=input.user_id,
-            default_branch=input.default_branch or repo.default_branch,
         )
 
         await fetch_diff_step(
@@ -350,12 +366,13 @@ async def review_workflow(input: ReviewWorkflowInput) -> ReviewRunResult:
         raise
 
     finally:
-        await stop_sandbox_step(
-            sandbox_id=sandbox.sandbox_id,
-            sandbox_name=sandbox.sandbox_name,
-            repo_id=repo.id,
-            user_id=input.user_id,
-        )
+        if sandbox is not None:
+            await kill_sandbox_step(
+                sandbox_id=sandbox.sandbox_id,
+                sandbox_name=sandbox.sandbox_name,
+                repo_id=repo.id,
+                user_id=input.user_id,
+            )
 
 
 __all__ = ["review_workflow"]

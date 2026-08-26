@@ -37,8 +37,8 @@ research agent succeeded; failed agent lanes carry their error through.
 
 The invoke steps never stop the sandbox: two concurrent steps share
 one sandbox, so only the workflow's ``finally``
-:func:`app.services.review.steps.stop_sandbox.stop_sandbox_step`
-stops it.
+:func:`app.services.review.steps.stop_sandbox.kill_sandbox_step`
+destroys it.
 """
 
 from __future__ import annotations

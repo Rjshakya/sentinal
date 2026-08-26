@@ -75,7 +75,16 @@ class ReviewWorkflowInput(BaseModel):
     trigger: str = "opened"
     llm_config: LLMConfig
     post_to_github: bool
-    github_installation_id: int | None = None
+    github_installation_id: int
+    """GitHub installation id for this run.
+
+    Used to mint the installation token that clones the repo into the
+    per-run sandbox (:func:`app.services.review.steps.clone_repo.clone_repo_step`)
+    and to post the review to GitHub. Both triggers supply it: the
+    ``pull_request`` webhook adapter (``app.services.review.webhook``)
+    and the comment-trigger path
+    (``app.services.pr_issue_comment.helpers``).
+    """
     pr_size: PRSizeStats = Field(default_factory=_empty_pr_size)
     diff_base_sha: str | None = None
     """Incremental-re-review override for the git-diff range.
@@ -137,7 +146,7 @@ class RepoSnapshot(BaseModel):
     default_branch: str | None = None
 
 
-class ResolvedSandbox(BaseModel):
+class SandboxMeta(BaseModel):
     """Serializable subset of a resolved sandbox."""
 
     model_config = ConfigDict(frozen=True)
@@ -200,9 +209,9 @@ __all__ = [
     "PostReviewInput",
     "PostReviewResult",
     "RepoSnapshot",
-    "ResolvedSandbox",
     "ReviewRunResult",
     "ReviewWorkflowInput",
+    "SandboxMeta",
     "TotalUsages",
     "TotalUsagesPerPR",
 ]

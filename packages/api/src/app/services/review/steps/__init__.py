@@ -11,7 +11,8 @@ caller can reuse them.
 Modules:
 
 - :mod:`.resolve_repo`        — find the local :class:`Repo` row.
-- :mod:`.resolve_sandbox`     — find + connect the E2B sandbox.
+- :mod:`.create_sandbox`      — create the per-run ephemeral E2B sandbox.
+- :mod:`.clone_repo`          — clone the repo into the sandbox at review time.
 - :mod:`.fetch_diff`          — write the unified diff into the sandbox.
 - :mod:`.split_diff`          — split ``file.diff`` into per-file chunks.
 - :mod:`.upsert_pr`           — insert / update the :class:`PullRequest` row.
@@ -24,12 +25,14 @@ Modules:
 - :mod:`.persist_usage`       — insert the :class:`ReviewUsage` row.
 - :mod:`.review_run_steps`    — the ``review`` lifecycle mirror
   (running / stopped / errored transitions + ``build_error_context``).
-- :mod:`.stop_sandbox`        — best-effort sandbox stop.
-- :mod:`.update_repo`         — refresh the sandbox repo to the default branch.
+- :mod:`.stop_sandbox`        — best-effort sandbox pause (legacy)
+  and destroy (:func:`.kill_sandbox_step`, used by the workflow's ``finally``).
 """
 
 from __future__ import annotations
 
+from app.services.review.steps.clone_repo import clone_repo_step
+from app.services.review.steps.create_sandbox import create_review_sandbox_step
 from app.services.review.steps.fetch_diff import fetch_diff_step
 from app.services.review.steps.extract_result import (
     build_extractor_config,
@@ -69,7 +72,7 @@ from app.services.review.steps.review_run_steps import (
     mark_review_is_stopped_step,
 )
 from app.services.review.steps.split_diff import split_diff_step
-from app.services.review.steps.stop_sandbox import stop_sandbox_step
+from app.services.review.steps.stop_sandbox import kill_sandbox_step, stop_sandbox_step
 from app.services.review.steps.update_repo import update_repo, update_repo_step
 from app.services.review.steps.upsert_pr import (
     upsert_pull_request,
@@ -79,7 +82,9 @@ from app.services.review.steps.upsert_pr import (
 __all__ = [
     "build_error_context",
     "build_extractor_config",
+    "clone_repo_step",
     "combine_agent_outcomes",
+    "create_review_sandbox_step",
     "extract_comments_result_step",
     "extract_summary_result_step",
     "fetch_diff_step",
@@ -87,6 +92,7 @@ __all__ = [
     "invoke_comments_agent_step",
     "invoke_summary_agent",
     "invoke_summary_agent_step",
+    "kill_sandbox_step",
     "mark_review_is_errored_step",
     "mark_review_is_running_step",
     "mark_review_is_stopped_step",

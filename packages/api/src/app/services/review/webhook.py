@@ -185,7 +185,7 @@ def build_review_workflow_input(
     *,
     user_id: str,
     llm_config: LLMConfig,
-    github_installation_id: int | None = None,
+    github_installation_id: int,
     post_to_github: bool = False,
 ) -> ReviewWorkflowInput:
     """Translate the webhook pr_payload into a serializable workflow input."""
