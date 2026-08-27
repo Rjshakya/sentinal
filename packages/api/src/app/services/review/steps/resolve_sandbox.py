@@ -8,7 +8,7 @@ Two layers, following the Functional Core / Imperative Shell split:
   :class:`E2BSandbox` handle. No DBOS, no workflow boundary.
 - :func:`resolve_sandbox_step` — the **DBOS-wrapped** step. Looks up
   the same row, reconnects to E2B, and returns a
-  :class:`app.services.review.workflow_types.ResolvedSandbox` (the
+  :class:`app.services.review.workflow_types.SandboxMeta` (the
   serialisable subset that can cross a workflow boundary). Retries up
   to three times on transient connect failures.
 
@@ -34,7 +34,7 @@ from app.services.review.errors import (
     NoActiveSandboxError,
     SandboxConnectError,
 )
-from app.services.review.workflow_types import ResolvedSandbox
+from app.services.review.workflow_types import SandboxMeta
 
 log = logging.getLogger(__name__)
 
@@ -93,10 +93,10 @@ async def resolve_sandbox(
     max_attempts=3,
     should_retry=_SHOULD_RETRY_TRANSIENT,
 )
-async def resolve_sandbox_step(*, user_id: str, repo_id: str) -> ResolvedSandbox:
+async def resolve_sandbox_step(*, user_id: str, repo_id: str) -> SandboxMeta:
     """Durable DBOS step: find the active sandbox row and connect to E2B.
 
-    Returns a :class:`ResolvedSandbox` (the serialisable subset) so
+    Returns a :class:`SandboxMeta` (the serialisable subset) so
     the workflow can carry the handle across steps without holding a
     live E2B connection.
 
@@ -141,7 +141,7 @@ async def resolve_sandbox_step(*, user_id: str, repo_id: str) -> ResolvedSandbox
             sandbox_id=sb_record.id,
             cause=f"{type(exc).__name__}: {exc}",
         ) from exc
-    return ResolvedSandbox(
+    return SandboxMeta(
         sandbox_id=connected.id,
         sandbox_name=sb_record.sandbox_name,
     )

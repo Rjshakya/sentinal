@@ -12,9 +12,9 @@ Entry points:
   (no delegation to :mod:`app.core.llm`).
 
 Error contract: **no function in this module raises.** Every expected
-failure is a returned value: the creators return
-``LLMCtx | LLMContextError`` (LLM unset, no stored row, DB read failure)
-and :func:`createLLMModel` returns ``BaseChatModel | LLMConfigError``
+failure is a returned value: the per-user creator returns
+``LLMCtx | LLMContextError`` (no stored row, DB read failure) and
+:func:`createLLMModel` returns ``BaseChatModel | LLMConfigError``
 (malformed ``"provider:model"`` string or provider-construction
 failure). Callers discriminate with ``isinstance``.
 
@@ -48,19 +48,14 @@ from app.services.llm.types import (
 )
 
 
-def createDefaultLLMContext() -> LLMCtx | LLMContextError:
+def createDefaultLLMContext() -> LLMCtx:
     """Build a :class:`LLMCtx` from the global :class:`Settings`.
 
     Picks up ``LLM_MODEL`` / ``LLM_API_KEY`` / ``LLM_BASE_URL`` /
     ``LLM_DEFAULT_HEADERS`` / ``LLM_MAX_RETRIES`` / ``LLM_RATE_LIMIT_RPS``.
-
-    Returns:
-        ``LLMCtx`` on success; ``LLMContextError`` when ``LLM_MODEL`` is
-        unset (the review-agent LLM is not configured). Never raises.
+    The LLM env vars are validated at app startup, so no gate lives
+    here.
     """
-    if not settings.llm_model:
-        return LLMContextError(message="llm not configured: LLM_MODEL is unset")
-
     return LLMCtx(
         model=settings.llm_model,
         apiKey=ApiKey(settings.llm_api_key) if settings.llm_api_key else None,

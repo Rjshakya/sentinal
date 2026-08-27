@@ -1,61 +1,35 @@
-"""Sandbox service: provider map over LangChain's sandbox backends.
+"""Sandbox service: ctx assembly + provider map.
 
 Two entry points:
 
-- :func:`createSandboxCtx` — assemble the serializable run context. Provider,
-  api key, sandbox name, and root path all fall back to sensible defaults
-  (settings-driven) so callers only pass what they actually know.
-- :func:`createSandbox` — the provider map: build the LangChain sandbox
-  backend (``deepagents.backends.sandbox.BaseSandbox``) for a ctx's
-  ``providerId``. This is the **only** place providers are wired: each map
-  entry delegates to LangChain's sandbox backend for that provider
-  (``langchain_e2b``'s ``AsyncE2BSandbox``) plus the few lifecycle calls
-  (create/connect/kill) the backend protocol does not cover, so no custom
-  provider classes live in this repo. Callers talk to the ``BaseSandbox``
-  interface, never a concrete provider class.
+- :func:`createSandboxCtx` — assemble the serializable run context.
+  The settings-driven defaults (:func:`getDefaulProvider`,
+  :func:`getDefaulSandboxName`, per-provider root path) are resolved
+  at the edge so callers only pass what they actually know.
+- :data:`Providers` — the provider map: each entry is a concrete
+  provider class (:mod:`app.services.sandbox.e2b`) owning the
+  lifecycle (create / connect / kill) for a ``providerId``.
+  :func:`get_provider` resolves the class for a ctx's ``providerId``.
 
-Credentials: :attr:`SandboxCtx.apiKey` is resolved from settings by
-:func:`createSandboxCtx` (``E2B_API_KEY`` / ``DAYTONA_API_KEY``) and
-passed to the provider SDK on every lifecycle call — the ctx stays the
-single source of truth.
-
-Lifecycle: ``BaseSandbox`` is a backend wrapper — it executes commands and
-file operations against an already-running sandbox. Creation/connect and
-teardown are owned by the provider map entries: :func:`createSandbox`
-creates a fresh sandbox (or reconnects when the ctx carries a
-``sandboxId``) and wraps it in the LangChain backend, and
-:func:`killSandbox` destroys it. Pausing is not part of LangChain's
-sandbox protocol and is intentionally absent.
+Credentials: :attr:`SandboxCtx.apiKey` is resolved from settings at
+the edge (``E2B_API_KEY`` / ``DAYTONA_API_KEY``) and passed to the
+provider SDK on every lifecycle call — the ctx stays the single
+source of truth.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-import logging
-from collections.abc import Awaitable, Callable
 from typing import cast
 
-import e2b
-from deepagents.backends.sandbox import BaseSandbox
-from e2b.sandbox.sandbox_api import SandboxLifecycle as E2BSandboxLifecycle
-from langchain_e2b import AsyncE2BSandbox
-
-from app.core.config import settings
-from app.core.sandbox.e2b import CODE_SANDBOX_TEMPLATE_NAME
 from app.services.sandbox.e2b import E2BService
-from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.types import (
     ProviderId,
     ProviderMap,
     RepoId,
     SanboxProviderApiKey,
     SandboxCtx,
-    SandboxId,
     UserId,
 )
-from abc import ABC, abstractmethod
-
-log = logging.getLogger(__name__)
 
 DEFAULT_ROOT_PATH: dict[ProviderId, str] = {
     "e2b": "/home/user",
@@ -81,15 +55,11 @@ def createSandboxCtx(
     sandboxName: str,
     rootPath: str,
 ) -> SandboxCtx:
-    """Assemble a :class:`SandboxCtx` with settings-driven defaults.
+    """Assemble a :class:`SandboxCtx`.
 
-    Defaults:
-    - ``providerId`` — :attr:`app.core.config.Settings.sandbox_provider`.
-    - ``apiKey``     — the provider's env key (``E2B_API_KEY`` /
-      ``DAYTONA_API_KEY``); ``None`` when unset. The map entries pass this
-      key to the provider SDK on every lifecycle call.
-    - ``rootPath``   — the provider's default workdir (``/home/user`` for
-      e2b, ``/sentinel-workspace`` for daytona).
+    Provider, api key, sandbox name, and root path are resolved at the
+    edge (settings-driven defaults via :func:`getDefaulProvider` /
+    :func:`getDefaulSandboxName` / :data:`DEFAULT_ROOT_PATH`).
     """
     return SandboxCtx(
         userId=userId,
@@ -114,4 +84,6 @@ def get_provider(providerId: ProviderId):
 
 __all__ = [
     "createSandboxCtx",
+    "getDefaulProvider",
+    "getDefaulSandboxName",
 ]

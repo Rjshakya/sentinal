@@ -164,7 +164,8 @@ Write like a senior engineer leaving a review comment for a teammate they respec
 
 PR_SUMMARY_SYSTEM_PROMPT: str = _SUMMARY_BODY
 
-_COMMENTS_BODY: str = r"""\
+_COMMENTS_BODY: str = (
+    r"""\
 You are a senior software engineer doing a code review of a GitHub PR.
 
 ## Setup
@@ -192,7 +193,7 @@ This review is judged on four lenses, in priority order — everything else is s
    call path reaches this code and produces a wrong outcome (crash, wrong
    result, data loss, leaked state). Hypotheticals ("could be a problem in
    theory", "might fail if...") are not bugs — either trace the failure or
-   drop the finding.
+   drop the finding , ONLY REAL BUGS .
 2. **Blast radius** — for every finding, what breaks and who is affected. A
    change to shared code (DB model, auth, API contract, module imported by
    many files) is an issue by itself even when the immediate change looks
@@ -380,7 +381,9 @@ One block per finding, in this shape (keep the field labels exactly as written):
   contract below>
 ```
 
-""" + COMMENT_BODY_FORMAT + r"""
+"""
+    + COMMENT_BODY_FORMAT
+    + r"""
 Rules:
   - Every finding block MUST carry file / side / from_line / to_line / severity / comment. node_type is optional.
   - A finding without an exact, gutter-visible anchor is dropped — never report an unanchored finding.
@@ -459,5 +462,6 @@ Severity discipline:
 - [ ] NO_FINDINGS used when the PR is clean
 - [ ] Final message is the findings report only — no JSON, no fences
 """
+)
 
 REVIEW_COMMENTS_SYSTEM_PROMPT: str = _COMMENTS_BODY

@@ -22,8 +22,9 @@ Design notes:
   serialization are unaffected) but pyright enforces the branding
   statically, so a bare ``str`` cannot accidentally flow into a ctx.
 - :class:`LLMContextError` is the error variant of the
-  ``LLMCtx | LLMContextError`` union returned by the context creators.
-  It is a Pydantic model so it survives the same workflow boundaries as
+  ``LLMCtx | LLMContextError`` union returned by the per-user context
+  creator (:func:`app.services.llm.service.createUserLLMContext`). It
+  is a Pydantic model so it survives the same workflow boundaries as
   the ctx; callers discriminate with ``isinstance``.
 """
 

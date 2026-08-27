@@ -8,16 +8,18 @@ Entry points:
 - :func:`createLLMModel` — build the LangChain chat model
   (:class:`langchain_core.language_models.BaseChatModel`) for a ctx.
 
-Error contract: **no function in this package raises.** The creators
-return ``LLMCtx | LLMContextError`` and :func:`createLLMModel` returns
-``BaseChatModel | LLMConfigError`` — expected failures are values, never
-exceptions.
+Error contract: **no function in this package raises.** The default
+creator returns :class:`LLMCtx` directly (the LLM env vars are
+validated at app startup); the per-user creator returns
+``LLMCtx | LLMContextError`` (no stored row, DB read failure); and
+:func:`createLLMModel` returns ``BaseChatModel | LLMConfigError`` —
+expected failures are values, never exceptions.
 
 Naming convention: this package intentionally uses **camelCase**
 identifiers — the same convention as :mod:`app.services.sandbox`.
 """
 
-from app.services.llm.errors import LLMConfigError
+from app.services.llm.errors import LLMConfigError, LLMContextError
 from app.services.llm.service import (
     createDefaultLLMContext,
     createLLMModel,
@@ -27,7 +29,6 @@ from app.services.llm.types import (
     ApiKey,
     BaseUrl,
     LLMCtx,
-    LLMContextError,
     UserId,
 )
 

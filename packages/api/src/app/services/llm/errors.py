@@ -7,10 +7,10 @@
   :class:`ValueError` so callers can still ``raise`` it if they ever need
   to escalate a returned error into an exception.
 
-Expected failure modes of the context creators (LLM unset in settings,
-no stored row, DB read failure) are also **values**: the creators return
+Expected failure modes of the per-user context creator (no stored row,
+DB read failure) are also **values**: it returns
 :class:`app.services.llm.types.LLMContextError` as the error variant of
-their ``LLMCtx | LLMContextError`` union.
+its ``LLMCtx | LLMContextError`` union.
 """
 
 from __future__ import annotations
@@ -33,11 +33,10 @@ class LLMContextError(BaseModel):
     """Error variant of the ``LLMCtx | LLMContextError`` creator union.
 
     Returned (never raised) by
-    :func:`app.services.llm.service.createDefaultLLMContext` and
     :func:`app.services.llm.service.createUserLLMContext` for every
-    expected failure: LLM unset in settings, no stored row for the user,
-    or a DB read failure. ``userId`` is populated by the per-user
-    creator so callers can correlate without re-reading it.
+    expected failure: no stored row for the user, or a DB read failure.
+    ``userId`` is populated by the creator so callers can correlate
+    without re-reading it.
     """
 
     message: str

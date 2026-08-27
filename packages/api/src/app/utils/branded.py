@@ -18,3 +18,21 @@ SandboxId = NewType("SandboxId", str)
 
 SanboxProviderApiKey = NewType("SanboxProviderApiKey", str)
 """Branded provider API key; resolved from settings by the factory when unset."""
+
+InstallationId = NewType("InstallationId", int)
+"""Branded GitHub App installation id (``github_installation_id``)."""
+
+RepoOwner = NewType("RepoOwner", str)
+"""Branded GitHub repository owner (user or org login)."""
+
+RepoName = NewType("RepoName", str)
+"""Branded GitHub repository name."""
+
+PRNumber = NewType("PRNumber", int)
+"""Branded GitHub pull request number."""
+
+CommitId = NewType("CommitId", str)
+"""Branded git commit SHA (the full hex string)."""
+
+AccessToken = NewType("AccessToken", str)
+"""Branded GitHub installation access token."""

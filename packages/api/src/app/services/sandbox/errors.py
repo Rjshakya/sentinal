@@ -1,3 +1,10 @@
+"""Typed errors for the sandbox service.
+
+All errors are :class:`BaseModel` values **returned** (never raised)
+by the sandbox service entry points; callers discriminate with
+``isinstance``.
+"""
+
 from __future__ import annotations
 from typing import Literal
 
@@ -6,35 +13,11 @@ from pydantic import BaseModel
 from app.utils.branded import RepoId, UserId
 
 
-class SandboxServiceError(BaseModel):
-    """Error variant of the ``LLMCtx | LLMContextError`` creator union.
-
-    Returned (never raised) by
-    :func:`app.services.llm.service.createDefaultLLMContext` and
-    :func:`app.services.llm.service.createUserLLMContext` for every
-    expected failure: LLM unset in settings, no stored row for the user,
-    or a DB read failure. ``userId`` is populated by the per-user
-    creator so callers can correlate without re-reading it.
-    """
-
-    message: str
-    userId: UserId | None = None
-    repoId: RepoId | None = None
-    id: str | None = None
-
-    def __str__(self) -> str:
-        return self.message
-
-
 class SandboxProviderError(BaseModel):
-    """Error variant of the ``LLMCtx | LLMContextError`` creator union.
+    """Provider-level failure (create / connect / kill).
 
-    Returned (never raised) by
-    :func:`app.services.llm.service.createDefaultLLMContext` and
-    :func:`app.services.llm.service.createUserLLMContext` for every
-    expected failure: LLM unset in settings, no stored row for the user,
-    or a DB read failure. ``userId`` is populated by the per-user
-    creator so callers can correlate without re-reading it.
+    Returned by the provider classes (:mod:`app.services.sandbox.e2b`)
+    as the error variant of their ``T | SandboxProviderError`` unions.
     """
 
     message: str
@@ -47,4 +30,4 @@ class SandboxProviderError(BaseModel):
         return self.message
 
 
-__all__ = ["SandboxProviderError", "SandboxServiceError"]
+__all__ = ["SandboxProviderError"]

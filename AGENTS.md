@@ -990,3 +990,101 @@ corresponding route file does not exist yet.
 - Pages → `web/src/routes/`
 - API client + auth hooks → `web/src/lib/{api,auth,installation,repos,llm,stats}.ts`
 - Env files → `ai-code-review/.env` (API), `web/.env` (Vite)
+
+## 9. New Refactoring services patterns
+
+The `app/services/{github,llm,sandbox}` packages are being refactored
+into a shared service pattern. This section is the contract for those
+packages (and any future service refactors); the older services
+(`review`, `indexing`, `setup`, `pr_issue_comment`) still follow the
+older conventions and will migrate over time.
+
+### 9.1 Package layout
+
+Each service package owns one domain and lives under
+`app/services/<name>/`:
+
+- `types.py` — the contract: ctx models (identity + injected
+  dependency), result projections, type aliases. Ids/keys are
+  **branded types** from `app/utils/branded.py` (erase at runtime,
+  enforced statically by pyright).
+- `errors.py` — BaseModel error classes, one per sub-service.
+- `service.py` — the entry points (camelCase, the camelCase island in
+  the codebase). Every function takes a ctx and returns a value.
+- `_client.py` — optional private module: the single node that builds
+  the process-wide provider client (e.g. the githubkit App client)
+  from settings. Never imported outside its package.
+- Sub-domain services are their own subpackages, e.g.
+  `github/installation/`, `github/repo/`, `github/pr/` — each with
+  its own `types.py` / `errors.py` / `service.py` / `__init__.py`.
+
+### 9.2 No unnecessary validation
+
+- **Env vars are validated at app startup.** A startup function will
+  fail the app when any required env var is missing — so services
+  never gate on `*_configured` settings flags. Once settings load,
+  the values are trusted.
+- **Identity is validated upstream** (auth middleware, webhook
+  receiver, caller). ctx creators are plain constructors — no
+  existence or permission re-checks downstream.
+- Functions check only what the function itself strictly needs to
+  produce its own output (e.g. `postReview` requires `commitId`
+  because the request body needs it).
+
+### 9.3 No logging in services
+
+Services do not import `logging`. They just return — success values
+or error values. Logging (and Sentry capture) happens at the edge:
+routers, webhook receivers, DBOS steps.
+
+### 9.4 Errors are values, never exceptions
+
+Expected failures are returned as BaseModel error classes (e.g.
+`GitHubPRError`, `SandboxProviderError`, `LLMContextError`) in
+`T | ErrorType` unions; callers discriminate with `isinstance`.
+Raising is reserved for programmer/config errors (e.g. a missing
+private key — which startup validation prevents).
+
+### 9.5 ctx object dependency injection
+
+- A ctx carries the identity a call needs plus its injected
+  dependency (e.g. the installation-scoped githubkit `GitHub`
+  client). Services consume `ctx.client`; they never build clients
+  internally.
+- **Deps live on the ctx unless it must serialize.** Attach injected
+  dependencies (clients, providers, services) directly on the ctx —
+  e.g. the installation-scoped githubkit client on `InstallationCtx` /
+  `RepoCtx` / `PRCtx`. The one exception: a ctx that crosses a DBOS
+  boundary (workflow input, step argument) **must** be serializable,
+  so it stays pure data with no live deps (`SandboxCtx`, `LLMCtx`).
+  Rule of thumb: if the ctx doesn't need to be serialized, its deps go
+  on the ctx.
+- The ctx **factory** is the I/O boundary ("edge"): `createRepoCtx`
+  mints the client via the shared factory and stores it on the ctx.
+- Ctxs carrying a live client are **not** serializable
+  (`model_config = ConfigDict(arbitrary_types_allowed=True)`) and do
+  not cross workflow boundaries; tests build them directly with mock
+  clients. Ctxs that must cross DBOS boundaries stay pure data (see
+  `SandboxCtx`, `LLMCtx`).
+- App-level operations that a per-installation client cannot perform
+  (token minting, installation fetch) use the process-wide client
+  from the package's private `_client.py`.
+
+### 9.6 I/O at the edge
+
+- DB sessions are owned by the caller: functions that touch the DB
+  take an `AsyncSession` parameter (e.g.
+  `listInstallations(session, ctx)`).
+- Logging, retries, and workflow dispatch belong to the edge
+  (routers / webhooks / DBOS steps), not the service.
+
+### 9.7 Status
+
+- `github` — refactored: three sub-services (`installation`, `repo`,
+  `pr`), ctx-carried client, no gates, no logging. The legacy
+  `post_review.py` / `workflow.py` modules are kept untouched and are
+  still exported from the package for the existing pipeline.
+- `llm` / `sandbox` — ctx-based services; `llm` drops env gates (env
+  validated at startup), `sandbox` keeps its provider map + provider
+  classes as the wiring seam. Both are built but not yet consumed by
+  the pipeline.
