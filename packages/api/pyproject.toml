@@ -43,3 +43,8 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+
+
+[tool.black]
+line-length = 88
+target-version = ["py313"]

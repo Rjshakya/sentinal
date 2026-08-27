@@ -29,24 +29,30 @@ Design notes:
 
 from __future__ import annotations
 
-from typing import Literal, NewType
+from abc import ABC, abstractmethod
+from typing import Any, Coroutine, Literal, Type
 
+from deepagents.backends.sandbox import BaseSandbox
 from pydantic import BaseModel
 
-UserId = NewType("UserId", str)
-"""Branded WorkOS ``user_id`` that owns the run."""
+from app.services.sandbox.errors import SandboxProviderError
+from app.utils.branded import RepoId, SanboxProviderApiKey, SandboxId, UserId
 
-RepoId = NewType("RepoId", str)
-"""Branded local ``repos.id`` (UUID string) the sandbox belongs to."""
 
-SandboxId = NewType("SandboxId", str)
-"""Branded provider-assigned sandbox identifier; ``None`` until created."""
+class BaseSandboxService(ABC):
+    @abstractmethod
+    def create(self) -> Coroutine[Any, Any, BaseSandbox | SandboxProviderError]: ...
 
-ApiKey = NewType("ApiKey", str)
-"""Branded provider API key; resolved from settings by the factory when unset."""
+    @abstractmethod
+    def connect(
+        self, sandbox_id: str
+    ) -> Coroutine[Any, Any, None | SandboxProviderError]: ...
+
 
 ProviderId = Literal["e2b", "daytona"]
 """The supported sandbox providers."""
+
+ProviderMap = dict[ProviderId, Type[BaseSandboxService]]
 
 
 class SandboxCtx(BaseModel):
@@ -64,7 +70,7 @@ class SandboxCtx(BaseModel):
     repoId: RepoId
     repoName: str
     providerId: ProviderId = "e2b"
-    apiKey: ApiKey | None = None
+    apiKey: SanboxProviderApiKey | None = None
     sandboxId: SandboxId | None = None
     sandboxName: str
     rootPath: str = "/home/user"
@@ -72,9 +78,9 @@ class SandboxCtx(BaseModel):
 
 
 __all__ = [
-    "ApiKey",
     "ProviderId",
     "RepoId",
+    "SanboxProviderApiKey",
     "SandboxCtx",
     "SandboxId",
     "UserId",

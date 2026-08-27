@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from githubkit import GitHub
 from githubkit.exception import RequestFailed
@@ -29,9 +28,6 @@ from app.core.result import Err, Ok, Result
 from app.models.code_comment import CodeComment
 from app.models.review_summary import ReviewSummary
 from app.services.agent.models import CodeCommentDraft, ReviewResult, ReviewVerdictStr
-
-if TYPE_CHECKING:
-    pass
 
 log = logging.getLogger(__name__)
 
@@ -407,7 +403,9 @@ async def post_review_and_update_db(
                 github_comments=comments_response.parsed_data or [],
             )
         except Exception as exc:
-            error_cause = f"Failed to fetch review comments: {type(exc).__name__}: {exc}"
+            error_cause = (
+                f"Failed to fetch review comments: {type(exc).__name__}: {exc}"
+            )
 
             status_code: int | None = None
             response_body: str | None = None
@@ -461,17 +459,17 @@ async def post_review_and_update_db(
 
 
 __all__: list[str] = [
-    "GitHubPosterError",
-    "GitHubReviewPostFailed",
     "GitHubAuthFailed",
-    "GitHubRateLimited",
-    "GitHubPRNotFound",
     "GitHubCommentPostFailed",
-    "convert_to_github_event",
-    "convert_to_github_comments",
+    "GitHubPRNotFound",
+    "GitHubPosterError",
+    "GitHubRateLimited",
+    "GitHubReviewPostFailed",
     "build_github_review_body",
-    "post_review_to_github",
-    "update_github_review_id",
-    "update_github_comment_ids",
+    "convert_to_github_comments",
+    "convert_to_github_event",
     "post_review_and_update_db",
+    "post_review_to_github",
+    "update_github_comment_ids",
+    "update_github_review_id",
 ]
