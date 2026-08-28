@@ -18,7 +18,7 @@ from uuid import UUID
 from app.core.db import dbos_datasource
 from app.models.enums import ReviewVerdict
 from app.models.review_summary import ReviewSummary
-from app.services.agent.models import ReviewResult
+from app.utils.schema import ReviewResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)

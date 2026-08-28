@@ -18,7 +18,7 @@ from app.models.enums import (
     CommentSide,
     CommentState,
 )
-from app.services.agent.models import CodeCommentDraft
+from app.utils.schema import CodeCommentDraft
 from app.services.review.workflow_types import PRSizeStats
 from app.utils.util import repo_path, uuidToStr
 

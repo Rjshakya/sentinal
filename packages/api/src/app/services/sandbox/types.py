@@ -40,6 +40,10 @@ from app.utils.branded import RepoId, SanboxProviderApiKey, SandboxId, UserId
 
 
 class BaseSandboxService(ABC):
+
+    @abstractmethod
+    def __init__(self, ctx: SandboxCtx) -> None: ...
+
     @abstractmethod
     def create(self) -> Coroutine[Any, Any, BaseSandbox | SandboxProviderError]: ...
 
@@ -47,6 +51,9 @@ class BaseSandboxService(ABC):
     def connect(
         self, sandbox_id: str
     ) -> Coroutine[Any, Any, None | SandboxProviderError]: ...
+
+    @abstractmethod
+    def kill(self) -> Coroutine[Any, Any, None | SandboxProviderError]: ...
 
 
 ProviderId = Literal["e2b", "daytona"]

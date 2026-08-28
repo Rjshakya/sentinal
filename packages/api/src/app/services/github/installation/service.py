@@ -56,9 +56,9 @@ def signState(userId: str, secret: str) -> str:
     Shape: ``base64url(payload) "." base64url(hmac_sha256(secret, payload))``
     with payload ``"{user_id}|{exp_unix_seconds}"``.
     """
-    payload = f"{userId}|{int(time.time()) + _STATE_TTL_S}"
-    raw = base64.urlsafe_b64encode(payload.encode("utf-8")).rstrip(b"=").decode("ascii")
-    mac = hmac.new(secret.encode("utf-8"), raw.encode("ascii"), hashlib.sha256).digest()
+    payload = f"{userId}|{int(time.time()) + _STATE_TTL_S}".encode("utf-8")
+    raw = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+    mac = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).digest()
     sig = base64.urlsafe_b64encode(mac).rstrip(b"=").decode("ascii")
     return f"{raw}.{sig}"
 

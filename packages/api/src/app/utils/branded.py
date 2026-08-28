@@ -13,6 +13,12 @@ BaseUrl = NewType("BaseUrl", str)
 RepoId = NewType("RepoId", str)
 """Branded local ``repos.id`` (UUID string) the sandbox belongs to."""
 
+PrRowId = NewType("PrRowId", str)
+"""Branded local ``pull_requests.id`` (UUID string)."""
+
+ReviewRowId = NewType("ReviewRowId", str)
+"""Branded local ``review.id`` (UUID string), the per-run lifecycle row."""
+
 SandboxId = NewType("SandboxId", str)
 """Branded provider-assigned sandbox identifier; ``None`` until created."""
 

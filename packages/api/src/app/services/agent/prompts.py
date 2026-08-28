@@ -39,7 +39,7 @@ from __future__ import annotations
 import json
 from typing import TypeVar
 
-from app.services.agent.models import ReviewComments, SummaryResult
+from app.utils.schema import ReviewComments, SummaryResult
 
 _OutputModel = TypeVar("_OutputModel", SummaryResult, ReviewComments)
 

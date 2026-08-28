@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.llm import LLMConfig
 from app.models.enums import PRStatus
-from app.services.agent.models import ReviewResult
+from app.utils.schema import ReviewResult
 
 
 class PRSizeStats(TypedDict):

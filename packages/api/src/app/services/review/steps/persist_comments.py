@@ -18,7 +18,7 @@ from typing import Any
 
 from app.core.db import dbos_datasource
 from app.models.code_comment import CodeComment
-from app.services.agent.models import CodeCommentDraft
+from app.utils.schema import CodeCommentDraft
 from app.services.review.helpers import map_drafts_to_comment_rows
 from sqlalchemy.ext.asyncio import AsyncSession
 

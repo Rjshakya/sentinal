@@ -46,7 +46,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, UsageMetadata
 
 from app.core.config import settings
 from app.core.llm import LLMConfig, build_chat_model
-from app.services.agent.models import ReviewComments, SummaryResult
+from app.utils.schema import ReviewComments, SummaryResult
 from app.services.agent.prompts import COMMENT_BODY_FORMAT, _render_schema
 from app.services.review._internal import _SHOULD_RETRY_TRANSIENT
 from app.services.review.errors import (

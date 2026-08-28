@@ -75,7 +75,7 @@ def createSandboxCtx(
 Providers: ProviderMap = {"e2b": E2BService}
 
 
-def get_provider(providerId: ProviderId):
+def getProvider(providerId: ProviderId):
     provider = Providers.get(providerId)
     if provider is None:
         raise Exception("Unknown provider")
@@ -86,4 +86,5 @@ __all__ = [
     "createSandboxCtx",
     "getDefaulProvider",
     "getDefaulSandboxName",
+    "getProvider",
 ]

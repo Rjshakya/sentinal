@@ -27,7 +27,7 @@ from app.core.logging import structured_log
 from app.core.result import Err, Ok, Result
 from app.models.code_comment import CodeComment
 from app.models.review_summary import ReviewSummary
-from app.services.agent.models import CodeCommentDraft, ReviewResult, ReviewVerdictStr
+from app.utils.schema import CodeCommentDraft, ReviewResult, ReviewVerdictStr
 
 log = logging.getLogger(__name__)
 

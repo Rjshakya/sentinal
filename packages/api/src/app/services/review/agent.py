@@ -45,7 +45,7 @@ from langchain_e2b import AsyncE2BSandbox
 from app.core.llm import LLMConfig, build_chat_model
 from app.core.sandbox import BaseSandbox
 from app.core.sandbox.e2b import E2BSandbox
-from app.services.agent.models import (
+from app.utils.schema import (
     CodeCommentDraft,
     ReviewComments,
     ReviewResult,
