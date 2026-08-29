@@ -219,7 +219,11 @@ async def handlePullRequestOpened(ctx: WebhookCtx, session: AsyncSession):
     """Forward a ``pull_request`` ``opened`` delivery to the review trigger."""
     from app.workflows.review.triggers import handlePullRequestOpened as trigger
 
-    ack = await trigger(ctx.payload, ctx.delivery)
+    ack = await trigger(
+        payload=ctx.payload,
+        delivery=ctx.delivery,
+        session=session,
+    )
     ctx.accepted = ack.accepted
     ctx.skipReason = ack.skip_reason
     return None

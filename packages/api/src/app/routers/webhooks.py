@@ -83,10 +83,6 @@ async def github_webhook(
 ) -> Response:
     body = await request.body()
 
-    if not settings.github_webhook_configured:
-        log.warning("github_webhook: rejected (GITHUB_WEBHOOK_SECRET not set)")
-        return Response(status_code=401)
-
     if not _verify_signature(
         settings.github_webhook_secret,
         body,

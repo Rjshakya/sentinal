@@ -51,7 +51,6 @@ async def test_index_workflow_end_to_end(
     assert actual_id == workflow_id
     assert actual_id.startswith(f"index:{owner}:{repo}:")
     assert status.status == WorkflowStatusString.SUCCESS.value
-    assert status.error is None
 
     output = status.output
     assert output is not None

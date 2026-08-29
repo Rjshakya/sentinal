@@ -34,12 +34,13 @@ Both are called by the github webhook sub-service delegation handlers
 from __future__ import annotations
 
 import logging
+from operator import rshift
 from typing import Any, cast
 
 from dbos import DBOS, SetWorkflowID
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.engine import result
 from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.db import async_session_maker
@@ -76,12 +77,18 @@ from app.utils.branded import (
     RepoOwner,
     UserId,
 )
-from app.workflows.review.types import PRSizeStats, ReviewWorkflowCtx, ReviewWorkflowInput
+from app.workflows.review.types import (
+    PRSizeStats,
+    ReviewWorkflowCtx,
+    ReviewWorkflowInput,
+)
 from app.workflows.review.workflow import (
     buildReviewWorkflowInput,
     createReviewWorkflowId,
     reviewWorkflow,
 )
+
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 log = logging.getLogger(__name__)
 
@@ -221,7 +228,7 @@ def buildSandboxCtx(*, userId: str, repoId: str, repoName: str) -> SandboxCtx:
     )
 
 
-async def resolveUserId(
+async def getUserIdFromInstallation(
     session: AsyncSession, *, githubInstallationId: int
 ) -> str | None:
     """Return the WorkOS ``user_id`` that owns the installation, or ``None``."""
@@ -232,10 +239,11 @@ async def resolveUserId(
     return (await session.exec(stmt)).first()
 
 
-async def resolveRepo(session: AsyncSession, *, ghRepoId: int) -> Repo | None:
+async def getRepoRecord(session: AsyncSession, *, ghRepoId: int) -> Repo | None:
     """Return the local :class:`Repo` row for a GitHub repo id, or ``None``."""
     stmt = select(Repo).where(Repo.github_repo_id == ghRepoId)
-    return (await session.exec(stmt)).first()
+    result = await session.exec(stmt)
+    return result.first()
 
 
 async def loadLastReview(
@@ -290,7 +298,7 @@ async def dispatchReview(
 
 
 async def handlePullRequestOpened(
-    payload: dict[str, Any], delivery: str
+    payload: dict[str, Any], delivery: str, session: AsyncSession
 ) -> ReviewTriggerAck:
     """Dispatch a verified ``pull_request`` ``opened`` delivery to the workflow.
 
@@ -299,14 +307,10 @@ async def handlePullRequestOpened(
     ``unowned_installation``, ``repo_not_configured``. Never raises for
     business outcomes.
     """
+
+    sandboxApiKey = settings.e2b_api_key
+    sandboxDefaultProvider: ProviderId = "e2b"
     action = payload.get("action")
-    if action != "opened":
-        return ReviewTriggerAck(
-            accepted=False,
-            action=str(action) if action is not None else "unknown",
-            delivery=delivery,
-            skip_reason="not_opened",
-        )
 
     pr_payload = extractPrPayload(payload)
     if pr_payload is None:
@@ -318,74 +322,66 @@ async def handlePullRequestOpened(
         )
 
     installation = payload.get("installation") or {}
-    installation_id = installation.get("id")
-    if not isinstance(installation_id, int):
+    installation_id = cast(int, installation.get("id"))
+
+    userId = await getUserIdFromInstallation(
+        session, githubInstallationId=installation_id
+    )
+    if userId is None:
         return ReviewTriggerAck(
             accepted=False,
             action="opened",
             delivery=delivery,
-            skip_reason="malformed_installation",
+            skip_reason="unowned_installation",
         )
 
-    if not reviewConfigured():
+    repo = await getRepoRecord(session, ghRepoId=pr_payload.ghRepoId)
+    if repo is None:
         return ReviewTriggerAck(
             accepted=False,
             action="opened",
             delivery=delivery,
-            skip_reason="review_not_configured",
+            skip_reason="repo_not_configured",
         )
 
-    async with async_session_maker() as session:
-        user_id = await resolveUserId(session, githubInstallationId=installation_id)
-        if user_id is None:
-            return ReviewTriggerAck(
-                accepted=False,
-                action="opened",
-                delivery=delivery,
-                skip_reason="unowned_installation",
-            )
+    llm_ctx = await resolveLlmCtx(session, userId=userId)
+    sandbox_ctx = createSandboxCtx(
+        userId=UserId(userId),
+        repoId=RepoId(repo.id),
+        repoName=repo.repo_name,
+        providerId=sandboxDefaultProvider,
+        apiKey=SanboxProviderApiKey(sandboxApiKey),
+        sandboxName=getDefaulSandboxName(repo.repo_name),
+        rootPath=DEFAULT_ROOT_PATH[sandboxDefaultProvider],
+    )
 
-        repo = await resolveRepo(session, ghRepoId=pr_payload.ghRepoId)
-        if repo is None:
-            return ReviewTriggerAck(
-                accepted=False,
-                action="opened",
-                delivery=delivery,
-                skip_reason="repo_not_configured",
-            )
-
-        llm_ctx = await resolveLlmCtx(session, userId=user_id)
-        sandbox_ctx = buildSandboxCtx(
-            userId=user_id, repoId=repo.id, repoName=repo.repo_name
-        )
-
-        workflow_input = buildReviewWorkflowInput(
-            userId=UserId(user_id),
-            ghRepoId=pr_payload.ghRepoId,
-            ghPrId=pr_payload.ghPrId,
-            prNumber=pr_payload.number,
-            baseBranch=pr_payload.baseBranch,
-            defaultBranch=pr_payload.defaultBranch,
-            baseSha=pr_payload.baseSha,
-            headBranch=pr_payload.headBranch,
-            headSha=pr_payload.headSha,
-            author=pr_payload.author,
-            title=pr_payload.title,
-            body=pr_payload.body,
-            status=pr_payload.status,
-            prSize=pr_payload.prSize,
-            githubInstallationId=InstallationId(installation_id),
-            postToGithub=True,
-            trigger="opened",
-        )
-        workflow_ctx = ReviewWorkflowCtx(llmCtx=llm_ctx, sandboxCtx=sandbox_ctx)
-        workflow_id = await dispatchReview(
-            repoId=repo.id,
-            prNumber=pr_payload.number,
-            headSha=pr_payload.headSha,
-            workflowCtx=workflow_ctx,
-            workflowInput=workflow_input,
-        )
+    workflow_input = buildReviewWorkflowInput(
+        userId=UserId(userId),
+        ghRepoId=pr_payload.ghRepoId,
+        ghPrId=pr_payload.ghPrId,
+        prNumber=pr_payload.number,
+        baseBranch=pr_payload.baseBranch,
+        defaultBranch=pr_payload.defaultBranch,
+        baseSha=pr_payload.baseSha,
+        headBranch=pr_payload.headBranch,
+        headSha=pr_payload.headSha,
+        author=pr_payload.author,
+        title=pr_payload.title,
+        body=pr_payload.body,
+        status=pr_payload.status,
+        prSize=pr_payload.prSize,
+        githubInstallationId=InstallationId(installation_id),
+        postToGithub=True,
+        trigger="opened",
+    )
+    workflow_ctx = ReviewWorkflowCtx(llmCtx=llm_ctx, sandboxCtx=sandbox_ctx)
+    workflow_id = await dispatchReview(
+        repoId=repo.id,
+        prNumber=pr_payload.number,
+        headSha=pr_payload.headSha,
+        workflowCtx=workflow_ctx,
+        workflowInput=workflow_input,
+    )
 
     log.info(
         "review.trigger: started workflow: delivery=%s workflow_id=%s "
@@ -444,7 +440,9 @@ async def handleIssueCommentCreated(
         )
 
     async with async_session_maker() as session:
-        user_id = await resolveUserId(session, githubInstallationId=trigger.installation_id)
+        user_id = await getUserIdFromInstallation(
+            session, githubInstallationId=trigger.installation_id
+        )
         if user_id is None:
             return ReviewTriggerAck(
                 accepted=False,
@@ -453,7 +451,7 @@ async def handleIssueCommentCreated(
                 skip_reason="unowned_installation",
             )
 
-        repo = await resolveRepo(session, ghRepoId=trigger.gh_repo_id)
+        repo = await getRepoRecord(session, ghRepoId=trigger.gh_repo_id)
         if repo is None:
             return ReviewTriggerAck(
                 accepted=False,
