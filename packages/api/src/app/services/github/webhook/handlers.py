@@ -12,11 +12,14 @@ Two families:
   — the local-DB bookkeeping for events the install-flow setup callback
   does not cover.
 - **Delegation handlers** (``pull_request`` / ``issue_comment`` /
-  ``push``) — forward the domain events to the existing DBOS dispatch
-  adapters unchanged. The adapter imports are **deferred to call time**:
-  the adapters pull in the review / pr_issue_comment / indexing
-  pipelines, which in turn import :mod:`app.services.github` — a
-  module-level import here would cycle through the partially
+  ``push``) — forward the domain events to the DBOS dispatch adapters.
+  ``pull_request`` ``opened`` and ``issue_comment`` ``created`` run the
+  refactored review workflow via
+  :mod:`app.workflows.review.triggers`; ``push`` keeps the legacy
+  incremental-indexing adapter. The adapter imports are **deferred to
+  call time**: the adapters pull in the review / pr_issue_comment /
+  indexing pipelines, which in turn import :mod:`app.services.github` —
+  a module-level import here would cycle through the partially
   initialized package.
 
 Handlers never raise; malformed payloads record
@@ -213,23 +216,22 @@ async def handleInstallationReposRemoved(ctx: WebhookCtx, session: AsyncSession)
 
 
 async def handlePullRequestOpened(ctx: WebhookCtx, session: AsyncSession):
-    """Forward a ``pull_request`` ``opened`` delivery to the review adapter."""
-    from app.services.review import webhook as review_webhook
+    """Forward a ``pull_request`` ``opened`` delivery to the review trigger."""
+    from app.workflows.review.triggers import handlePullRequestOpened as trigger
 
-    ack = await review_webhook.handle_pull_request_opened(ctx.payload, ctx.delivery)
+    ack = await trigger(ctx.payload, ctx.delivery)
     ctx.accepted = ack.accepted
     ctx.skipReason = ack.skip_reason
     return None
 
 
 async def handleIssueCommentCreated(ctx: WebhookCtx, session: AsyncSession):
-    """Forward an ``issue_comment`` ``created`` delivery to the trigger adapter."""
-    from app.services.pr_issue_comment import handle_issue_comment_created
+    """Forward an ``issue_comment`` ``created`` delivery to the review trigger."""
+    from app.workflows.review.triggers import handleIssueCommentCreated as trigger
 
-    ack = await handle_issue_comment_created(ctx.payload, ctx.delivery)
+    ack = await trigger(ctx.payload, ctx.delivery)
     ctx.accepted = ack.accepted
     ctx.skipReason = ack.skip_reason
-
     return None
 
 

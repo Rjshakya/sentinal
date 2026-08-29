@@ -1,9 +1,11 @@
 """Review workflow package.
 
 The refactored, convention-compliant review pipeline — built on the
-refactored service layer (``agent`` / ``github`` / ``llm`` / ``sandbox``)
-and **not yet wired** to the webhook triggers, which keep dispatching
-the legacy :mod:`app.services.review` pipeline.
+refactored service layer (``agent`` / ``github`` / ``llm`` / ``sandbox``).
+The webhook triggers dispatch it via :mod:`.triggers` (the edge
+adapters wired into the github webhook sub-service's delegation
+handlers); the legacy :mod:`app.services.review` pipeline stays intact
+alongside it.
 
 Submodules:
 
@@ -16,6 +18,9 @@ Submodules:
   step-exception wrappers used by the DBOS step edges.
 - :mod:`.workflow`  — the :func:`reviewWorkflow` DBOS orchestrator and
   its pure helpers (workflow id, limits, input builder).
+- :mod:`.triggers`  — the webhook edge adapters (``pull_request``
+  ``opened`` + ``issue_comment`` ``created``) that resolve the run
+  environment and dispatch :func:`reviewWorkflow`.
 - :mod:`.steps`     — one file per I/O boundary: value-returning
   workers + DBOS edges.
 - :file:`scripts/`   — in-sandbox files uploaded as bytes (never

@@ -1,35 +1,22 @@
 """GitHub App webhook receiver.
 
 Verifies the ``X-Hub-Signature-256`` HMAC against
-``settings.github_webhook_secret`` and routes the delivery by
-``X-GitHub-Event``:
+``settings.github_webhook_secret`` and hands the verified delivery to
+the github webhook sub-service
+(:func:`app.services.github.webhook.handleWebhookEvent`), which
+dispatches the ``(event, action)`` pair through its registry:
 
-- ``ping`` -> 200, no DB.
-- ``installation`` (action ``created``) -> no-op (the install-flow
-  setup callback is the source of truth; see :mod:`app.routers.github`).
-- ``installation`` (action ``deleted`` / ``suspend`` / ``unsuspend``)
-  -> soft-delete or toggle the matching :class:`Installation` rows.
-- ``installation_repositories`` (action ``added``) -> upsert one
-  :class:`Repo` row per added repo. The owning ``user_id`` is
-  recovered from the local :class:`Installation` row by
-  ``github_installation_id`` (set up by the setup callback).
-- ``installation_repositories`` (action ``removed``) -> delete the
-  matching :class:`Repo` rows.
-- ``pull_request`` (action ``opened``) -> delegate to
-  :func:`app.services.review.webhook.handle_pull_request_opened`,
-  which dispatches a durable DBOS workflow for the review. Other
-  ``pull_request`` actions (including ``synchronize``) are
-  log + 202; reviews are no longer triggered by new pushes.
-- ``issue_comment`` (action ``created``) -> delegate to
-  :func:`app.services.pr_issue_comment.handle_issue_comment_created`,
-  which dispatches a durable DBOS workflow that classifies the
-  comment and (on match) dispatches the inner review workflow.
-- ``push`` -> delegate to
-  :func:`app.services.indexing.incremental.handle_push_event`, which
-  dispatches the incremental indexing workflow for default-branch
-  pushes (reconciles the repo's LanceDB dataset with the changed
-  files).
-- anything else -> 202 with a log line.
+- ``installation`` / ``installation_repositories`` -> local-DB mirror
+  handlers (install-flow bookkeeping the setup callback does not
+  cover).
+- ``pull_request`` (``opened``) -> dispatches the review workflow
+  (:func:`app.workflows.review.workflow.reviewWorkflow`).
+- ``issue_comment`` (``created``) -> dispatches the review workflow
+  (incremental re-review when the head moved since the last run).
+- ``push`` -> dispatches the incremental indexing workflow (legacy
+  adapter).
+- anything else -> an ``accepted=False`` ack with
+  ``skip_reason="unhandled_event"``.
 
 The handler sits outside AuthMiddleware's protected prefixes: GitHub
 calls this endpoint, not a logged-in user.
@@ -41,22 +28,14 @@ import hashlib
 import hmac
 import json
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
-from sqlmodel import delete, select
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.db import async_session_maker
-from app.models.installation import Installation
-from app.models.repo import Repo
-from app.services.indexing.incremental import handle_push_event
-from app.services.pr_issue_comment import handle_issue_comment_created
-from app.services.review import webhook as review_webhook
-from app.utils.util import uuidToStr
+from app.services.github.webhook import handleWebhookEvent
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 log = logging.getLogger(__name__)
@@ -66,10 +45,10 @@ GITHUB_EVENT_HEADER = "X-GitHub-Event"
 GITHUB_DELIVERY_HEADER = "X-GitHub-Delivery"
 SIGNATURE_PREFIX = "sha256="
 
-
-# --------------------------------------------------------------------------- #
-# verification                                                                 #
-# --------------------------------------------------------------------------- #
+_EVENTS_WITH_ACTION = frozenset(
+    {"installation", "installation_repositories", "pull_request", "issue_comment"}
+)
+"""Events whose payloads carry an ``action`` field; ``push`` does not."""
 
 
 def _verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
@@ -86,223 +65,16 @@ def _verify_signature(secret: str, body: bytes, signature_header: str | None) ->
     return hmac.compare_digest(provided, expected)
 
 
-# --------------------------------------------------------------------------- #
-# user resolution                                                              #
-# --------------------------------------------------------------------------- #
+def _action_for(event: str, payload: dict[str, Any]) -> str | None:
+    """Return the payload's ``action`` for actioned events, else ``None``.
 
-
-async def _resolve_user_id_by_installation_id(
-    github_installation_id: int,
-) -> str | None:
-    """Return the WorkOS ``user_id`` that owns the local installation row.
-
-    The setup callback writes one :class:`Installation` row per
-    ``(user_id, github_installation_id)`` pair, so a lookup by the
-    GitHub-side id uniquely identifies the owner.
+    ``push`` deliveries carry no ``action``; the registry keys them as
+    ``("push", None)``.
     """
-    async with async_session_maker() as session:
-        stmt = select(Installation.user_id).where(
-            Installation.github_installation_id == github_installation_id,
-            Installation.user_id.is_not(None),  # type: ignore[union-attr]
-        )
-        return (await session.exec(stmt)).first()
-
-
-# --------------------------------------------------------------------------- #
-# repo upsert                                                                  #
-# --------------------------------------------------------------------------- #
-
-
-async def _upsert_repo(
-    session: AsyncSession, *, user_id: str, repo_payload: dict[str, Any]
-) -> str:
-    """Insert-or-fetch a Repo row for one GitHub repo object. Returns repo.id."""
-    github_repo_id = repo_payload["id"]
-    full_name = repo_payload["full_name"]
-    owner, _, name = full_name.partition("/")
-
-    stmt = select(Repo).where(Repo.github_repo_id == github_repo_id)
-    repo = (await session.exec(stmt)).first()
-    if repo is not None:
-        return repo.id
-
-    repo = Repo(
-        id=uuidToStr(),
-        user_id=user_id,
-        github_repo_id=github_repo_id,
-        repo_name=name,
-        repo_owner=owner,
-        clone_url=repo_payload.get("clone_url")
-        or f"https://github.com/{full_name}.git",
-        url=repo_payload.get("html_url"),
-        private=repo_payload.get("private", False),
-        default_branch=repo_payload.get("default_branch"),
-    )
-    session.add(repo)
-    await session.flush()
-    return repo.id
-
-
-def _extract_repositories(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
-    """Pull the repo-object list from ``payload[key]``, dropping malformed entries."""
-    raw = payload.get(key) or []
-    return [
-        r
-        for r in raw
-        if isinstance(r, dict)
-        and isinstance(r.get("id"), int)
-        and isinstance(r.get("full_name"), str)
-    ]
-
-
-# --------------------------------------------------------------------------- #
-# installation event handlers                                                  #
-# --------------------------------------------------------------------------- #
-
-
-async def _handle_installation_created(payload: dict[str, Any]) -> Response:
-    installation = payload.get("installation") or {}
-    gh_installation_id = installation.get("id")
-    account = (installation.get("account") or {}).get("login")
-    log.info(
-        "github_webhook: installation.created ignored (setup callback is source of truth) "
-        "(github_installation_id=%s, account=%s)",
-        gh_installation_id,
-        account,
-    )
-    return Response(status_code=202)
-
-
-async def _handle_installation_deleted(payload: dict[str, Any]) -> Response:
-    installation = payload.get("installation") or {}
-    gh_installation_id = installation.get("id")
-    if not isinstance(gh_installation_id, int):
-        log.warning("github_webhook: installation.deleted missing id")
-        return Response(status_code=202)
-
-    async with async_session_maker() as session:
-        stmt = delete(Installation).where(
-            Installation.github_installation_id == gh_installation_id  # pyright: ignore
-        )
-        await session.exec(stmt)
-        await session.commit()
-
-    log.info(
-        "github_webhook: installation.deleted dropped (github_installation_id=%s)",
-        gh_installation_id,
-    )
-    return Response(status_code=202)
-
-
-async def _handle_installation_suspend(payload: dict[str, Any]) -> Response:
-    installation = payload.get("installation") or {}
-    gh_installation_id = installation.get("id")
-    if not isinstance(gh_installation_id, int):
-        return Response(status_code=202)
-    now = datetime.now(UTC)
-    async with async_session_maker() as session:
-        stmt = select(Installation).where(
-            Installation.github_installation_id == gh_installation_id,
-        )
-        rows = list((await session.exec(stmt)).all())
-        for row in rows:
-            row.suspended_at = now
-            row.updated_at = now
-            session.add(row)
-        await session.commit()
-    return Response(status_code=202)
-
-
-async def _handle_installation_unsuspend(payload: dict[str, Any]) -> Response:
-    installation = payload.get("installation") or {}
-    gh_installation_id = installation.get("id")
-    if not isinstance(gh_installation_id, int):
-        return Response(status_code=202)
-    now = datetime.now(UTC)
-    async with async_session_maker() as session:
-        stmt = select(Installation).where(
-            Installation.github_installation_id == gh_installation_id,
-        )
-        rows = list((await session.exec(stmt)).all())
-        for row in rows:
-            row.suspended_at = None
-            row.updated_at = now
-            session.add(row)
-        await session.commit()
-    return Response(status_code=202)
-
-
-async def _handle_installation_repositories_added(payload: dict[str, Any]) -> Response:
-    installation = payload.get("installation") or {}
-    gh_installation_id = installation.get("id")
-    if not isinstance(gh_installation_id, int):
-        return Response(status_code=202)
-
-    repositories = _extract_repositories(payload, "repositories_added")
-    if not repositories:
-        return Response(status_code=202)
-
-    user_id = await _resolve_user_id_by_installation_id(gh_installation_id)
-    if user_id is None:
-        log.info(
-            "github_webhook: installation_repositories.added unowned "
-            "(github_installation_id=%s, repos=%d)",
-            gh_installation_id,
-            len(repositories),
-        )
-        return Response(status_code=202)
-
-    count = 0
-    async with async_session_maker() as session:
-        for repo_payload in repositories:
-            await _upsert_repo(session, user_id=user_id, repo_payload=repo_payload)
-            count += 1
-        await session.commit()
-
-    log.info(
-        "github_webhook: installation_repositories.added upserted "
-        "user_id=%s github_installation_id=%s repos=%d",
-        user_id,
-        gh_installation_id,
-        count,
-    )
-    return Response(status_code=202)
-
-
-async def _handle_installation_repositories_removed(
-    payload: dict[str, Any],
-) -> Response:
-    installation = payload.get("installation") or {}
-    gh_installation_id = installation.get("id")
-    if not isinstance(gh_installation_id, int):
-        return Response(status_code=202)
-
-    removed = _extract_repositories(payload, "repositories_removed")
-    if not removed:
-        return Response(status_code=202)
-
-    github_repo_ids = {r["id"] for r in removed}
-
-    async with async_session_maker() as session:
-        stmt = select(Repo).where(Repo.github_repo_id.in_(github_repo_ids))  # type: ignore[attr-defined]
-        repos = list((await session.exec(stmt)).all())
-        for repo in repos:
-            await session.delete(repo)
-        await session.commit()
-
-    log.info(
-        "github_webhook: installation_repositories.removed dropped %d repo row(s) "
-        "(github_installation_id=%s, repos=%d)",
-        len(repos),
-        gh_installation_id,
-        len(removed),
-    )
-    return Response(status_code=202)
-
-
-# --------------------------------------------------------------------------- #
-# main handler                                                                 #
-# --------------------------------------------------------------------------- #
+    if event not in _EVENTS_WITH_ACTION:
+        return None
+    action = payload.get("action")
+    return action if isinstance(action, str) else None
 
 
 @router.post("/github")
@@ -343,82 +115,22 @@ async def github_webhook(
         )
         return Response(status_code=202)
 
-    if event == "installation":
-        action = payload.get("action")
-        log.info(
-            "github_webhook: installation.%s (delivery=%s, account=%s, "
-            "github_installation_id=%s)",
-            action,
-            delivery,
-            ((payload.get("installation") or {}).get("account") or {}).get("login"),
-            (payload.get("installation") or {}).get("id"),
+    async with async_session_maker() as session:
+        result = await handleWebhookEvent(
+            session=session,
+            event=event,
+            action=_action_for(event, payload),
+            delivery=delivery,
+            payload=payload,
         )
-        if action == "created":
-            return await _handle_installation_created(payload)
-        if action == "deleted":
-            return await _handle_installation_deleted(payload)
-        if action == "suspend":
-            return await _handle_installation_suspend(payload)
-        if action == "unsuspend":
-            return await _handle_installation_unsuspend(payload)
-        return Response(status_code=202)
-
-    if event == "installation_repositories":
-        action = payload.get("action")
-        log.info(
-            "github_webhook: installation_repositories.%s (delivery=%s)",
-            action,
-            delivery,
-        )
-        if action == "added":
-            return await _handle_installation_repositories_added(payload)
-        if action == "removed":
-            return await _handle_installation_repositories_removed(payload)
-        return Response(status_code=202)
-
-    if event == "pull_request":
-        action = payload.get("action")
-
-        if action == "opened":
-            ack = await review_webhook.handle_pull_request_opened(payload, delivery)
-            log.info("github_webhook: pull_request handled: %s", ack.model_dump_json())
-        else:
-            # ``synchronize`` and other actions are no longer triggers
-            # — reviews are kicked off by a ``@<app_slug> review``
-            # comment instead. The DBOS workflow for the
-            # already-completed review (if any) is unaffected.
-            log.info(
-                "github_webhook: pull_request.%s ignored (delivery=%s)",
-                action,
-                delivery,
-            )
-        return Response(status_code=202)
-
-    if event == "issue_comment":
-        action = payload.get("action")
-        if action == "created":
-            ack = await handle_issue_comment_created(payload, delivery)
-            log.info(
-                "github_webhook: issue_comment handled: %s",
-                ack.model_dump_json(),
-            )
-        else:
-            log.info(
-                "github_webhook: issue_comment.%s ignored (delivery=%s)",
-                action,
-                delivery,
-            )
-        return Response(status_code=202)
-
-    if event == "push":
-        ack = await handle_push_event(payload, delivery)
-        log.info("github_webhook: push handled: %s", ack.model_dump_json())
-        return Response(status_code=202)
 
     log.info(
-        "github_webhook: ignored event=%s (delivery=%s, bytes=%d)",
-        event,
-        delivery,
-        len(body),
+        "github_webhook: handled event=%s action=%s delivery=%s accepted=%s "
+        "skip_reason=%s",
+        result.event,
+        result.action,
+        result.delivery,
+        result.accepted,
+        result.skipReason,
     )
     return Response(status_code=202)

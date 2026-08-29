@@ -23,6 +23,18 @@ from app.core.middleware import AuthMiddleware
 from app.core.sandbox.e2b import build_e2b_index_template, build_e2b_template
 from app.routers import ai, auth, github, health, indexing, llm_configs, search, users, webhooks
 
+# DBOS workflow registration. The webhook receiver now dispatches
+# through the github webhook sub-service, whose delegation handlers
+# import their adapters lazily (cycle avoidance) — so the workflows
+# must be imported here to register their @DBOS.workflow decorated
+# entry points before DBOS.launch(). The legacy review / trigger /
+# incremental-indexing pipelines stay registered (and alive) alongside
+# the refactored review workflow.
+from app.services.indexing.incremental import handle_push_event  # noqa: E402,F401
+from app.services.pr_issue_comment import handle_issue_comment_created  # noqa: E402,F401
+from app.services.review import webhook as review_webhook  # noqa: E402,F401
+import app.workflows.review  # noqa: E402,F401
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",

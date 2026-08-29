@@ -4,24 +4,26 @@ The review pipeline is stateless: :func:`cloneRepoStep` clones the repo
 at review time into the fresh sandbox created by
 :func:`app.workflows.review.steps.create_sandbox.createSandboxStep`.
 
-Security posture: the installation token is delivered to the sandbox as
-a sourced env file (``upload_files`` writes it, so the token never
-appears in a command string — the sandbox provider logs commands). The
-clone command references ``${GITHUB_TOKEN}``, expanded by the sandbox
-shell from the sourced file. Every interpolated command part is
-``shlex.quote``d.
+The clone and the PR-head ref fetch run as a small **in-sandbox Python
+script** (:data:`_CLONE_SCRIPT_SRC`): the host runs the script source
+inline via ``python3 -c`` with the installation token as an inline
+``GITHUB_TOKEN=...`` env assignment in the same command — no files are
+uploaded. The script reads the token from its environment, builds the
+authenticated clone URL in-process, and hands it to ``git clone`` as an
+argv entry; git redacts credentials in its own output. Every
+interpolated command part is ``shlex.quote``d.
 
-Exit-code contract: ``0`` success, ``124`` (timeout) / ``-1`` (runner
-dropout) transient — DBOS retries — and ``>0`` final ``git`` failure
-(:class:`CloneError`).
+Exit-code contract: ``0`` success (stdout is the summary JSON parsed by
+:func:`parseCloneResult`), ``124`` (timeout) / ``-1`` (runner dropout)
+transient — DBOS retries — and ``>0`` script failure (business outcome —
+the repo cannot be cloned; :class:`CloneError`).
 
 Layers per step file:
 
-- :func:`buildCloneCommand` / :func:`buildPrRefFetchCommand` /
-  :func:`cloneError` — pure builders and the exit-code mapper.
+- :func:`parseCloneResult` — the pure stdout parser.
 - :func:`cloneRepo` — the value-returning worker: takes the token and
-  sandbox handle as explicit inputs, returns ``None`` or a typed error
-  value.
+  sandbox handle as explicit inputs, returns :class:`CloneResult` or a
+  typed error value.
 - :func:`cloneRepoStep` — the DBOS step edge: mints the installation
   token, connects the sandbox, runs :func:`cloneRepo`, and raises for
   retryable / final failures.
@@ -29,11 +31,11 @@ Layers per step file:
 
 from __future__ import annotations
 
+import json
 import logging
 import shlex
 
 from dbos import DBOS
-from deepagents.backends.protocol import ExecuteResponse
 from deepagents.backends.sandbox import BaseSandbox
 from pydantic import BaseModel
 
@@ -73,84 +75,121 @@ CLONE_TIMEOUT_S: int = 300
 PR_REF_FETCH_TIMEOUT_S: int = 120
 """Upper bound on the wall-clock duration of the PR-head ref fetch."""
 
-TOKEN_FILE: str = "/home/user/.sentinel_git_token"
-"""Sandbox path of the sourced env file carrying the installation token.
-
-Written via ``upload_files`` (file content is not command-logged) and
-``source``d by the clone command so the token never appears in a
-command string.
-"""
+_RUN_TIMEOUT_S: int = CLONE_TIMEOUT_S + PR_REF_FETCH_TIMEOUT_S
+"""Total wall-clock budget for the in-sandbox clone script run."""
 
 _TOKEN_ENV_VAR: str = "GITHUB_TOKEN"
-"""Env var name the sourced token file exports."""
+"""Env var name the inline env assignment exports for the script."""
+
+_CLONE_SCRIPT_SRC: str = r'''"""Clone the repo's default branch and fetch the PR head ref.
+
+In-sandbox script: the host runs this source inline via ``python3 -c``
+with the installation token as an inline ``GITHUB_TOKEN=...`` env
+assignment. It is never imported on the host, so it is fully
+self-contained (stdlib only, no ``app.*`` imports).
+
+Reads the installation token from the ``GITHUB_TOKEN`` environment
+variable, builds the authenticated clone URL in-process, and passes it
+to ``git clone`` as an argv entry — the token never appears in a
+command string, and git redacts credentials in its own output.
+
+Exit-code contract: ``0`` success (stdout is the summary JSON), ``>0``
+failure (missing env, workspace prep, or ``git clone`` failed — stderr
+carries the tail). The PR-head ref fetch is best-effort: a failure (or
+its 120s timeout) is reported in the summary, never fatal.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+_FETCH_TIMEOUT_S: int = 120
 
 
-def buildTokenFileContent(token: str) -> bytes:
-    """The env-file payload exporting :data:`_TOKEN_ENV_VAR`."""
-    return f"export {_TOKEN_ENV_VAR}={shlex.quote(token)}\n".encode("utf-8")
+def _run(argv: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
 
 
-def buildCloneCommand(*, repoOwner: str, repoName: str) -> str:
-    """Build the shell command cloning the repo's default branch.
+def main() -> int:
+    parser = argparse.ArgumentParser(description="clone repo script")
+    parser.add_argument("--owner", required=True, help="repo owner")
+    parser.add_argument("--repo", required=True, help="repo name")
+    parser.add_argument("--pr", type=int, required=True, help="PR number")
+    parser.add_argument("--dest", required=True, help="clone destination path")
+    parser.add_argument("--workspace", required=True, help="workspace dir path")
+    args = parser.parse_args()
 
-    The token is referenced as ``${GITHUB_TOKEN}`` inside the HTTPS URL
-    and resolved by the sandbox shell from the sourced
-    :data:`TOKEN_FILE` — never interpolated into the command string.
-    The destination path is shell-quoted.
-    """
-    url = (
-        f"https://x-access-token:${{{_TOKEN_ENV_VAR}}}"
-        f"@github.com/{repoOwner}/{repoName}.git"
-    )
-    dest = getRepoPath(repoName)
-    return f". {shlex.quote(TOKEN_FILE)} && git clone {url} {shlex.quote(dest)}"
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        print("clone_repo.py: GITHUB_TOKEN not set", file=sys.stderr)
+        return 1
 
+    try:
+        os.makedirs(args.workspace, exist_ok=True)
+    except OSError as exc:
+        print(f"clone_repo.py: workspace prep failed: {exc}", file=sys.stderr)
+        return 1
+    shutil.rmtree(args.dest, ignore_errors=True)
 
-def buildPrRefFetchCommand(*, repoName: str, prNumber: int) -> str:
-    """Build the shell command fetching the PR head ref (best-effort).
+    url = f"https://x-access-token:{token}@github.com/{args.owner}/{args.repo}.git"
+    clone = _run(["git", "clone", url, args.dest])
+    if clone.returncode != 0:
+        print(clone.stderr.strip() or "git clone failed", file=sys.stderr)
+        return clone.returncode or 1
 
-    ``refs/pull/{pr}/head`` is advertised for every open PR — same-repo
-    and fork PRs alike — so the fetched head commit is diffable even
-    when the PR branch was never pushed to origin.
-    """
-    repoPath = getRepoPath(repoName)
-    return (
-        f"cd {shlex.quote(repoPath)} && "
-        f"git fetch origin refs/pull/{prNumber}/head:"
-        f"refs/remotes/origin/pr-{prNumber}"
-    )
-
-
-def cloneError(
-    result: ExecuteResponse,
-    *,
-    userId: UserId,
-    repoId: RepoId,
-    repoName: str,
-) -> None | CloneError | CloneTransientError:
-    """Map a clone :class:`ExecuteResponse` to the typed error hierarchy.
-
-    ``0`` → ``None`` (success); ``124`` (timeout) / ``-1`` (runner
-    dropout) → :class:`CloneTransientError` (DBOS retries); ``>0`` →
-    :class:`CloneError` (real ``git`` failure — final).
-    """
-    if result.exit_code == 0:
-        return None
-    tail = truncateOutput(result.output)
-    if result.exit_code in (-1, 124):
-        return CloneTransientError(
-            message=f"sandbox command runner failure: {tail or 'no output'}",
-            userId=userId,
-            repoId=repoId,
+    pr_ref_fetch_failed = False
+    try:
+        fetch = _run(
+            [
+                "git",
+                "-C",
+                args.dest,
+                "fetch",
+                "origin",
+                f"refs/pull/{args.pr}/head:refs/remotes/origin/pr-{args.pr}",
+            ],
+            timeout=_FETCH_TIMEOUT_S,
         )
-    return CloneError(
-        message=f"git clone failed (repo={repoName!r}): "
-        f"git exited {result.exit_code}: {tail}",
-        userId=userId,
-        repoId=repoId,
-        exitCode=result.exit_code,
-        outputTail=tail,
-    )
+        if fetch.returncode != 0:
+            pr_ref_fetch_failed = True
+            print(fetch.stderr.strip() or "git fetch failed", file=sys.stderr)
+    except Exception as exc:
+        pr_ref_fetch_failed = True
+        print(f"clone_repo.py: pr ref fetch failed: {exc}", file=sys.stderr)
+
+    print(json.dumps({"pr_ref_fetch_failed": pr_ref_fetch_failed}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def parseCloneResult(stdout: str) -> CloneResult:
+    """Parse and validate the script's single stdout JSON line.
+
+    Raises:
+        ValueError: the stdout is not a single JSON object with a
+            boolean ``pr_ref_fetch_failed``.
+    """
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"clone summary is not valid JSON: {stdout[:200]!r}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"clone summary is not a JSON object: {stdout[:200]!r}")
+
+    pr_ref_fetch_failed = data.get("pr_ref_fetch_failed")
+    if not isinstance(pr_ref_fetch_failed, bool):
+        raise ValueError(
+            f"clone summary has no boolean pr_ref_fetch_failed: {stdout[:200]!r}"
+        )
+
+    return CloneResult(prRefFetchFailed=pr_ref_fetch_failed)
 
 
 class CloneResult(BaseModel):
@@ -179,61 +218,64 @@ async def cloneRepo(
 
     Sequence:
 
-    1. Upload the token env file (``upload_files`` — the token never
-       appears in a command string).
-    2. Create the workspace folder and remove any stale clone
-       directory (keeps the step idempotent across a DBOS retry).
-    3. ``git clone`` the default branch with the token via the sourced
-       env file.
-    4. Best-effort fetch of ``refs/pull/{pr}/head`` so fork-PR heads
-       are diffable; a failed fetch is reported on the result, not
-       fatal.
+    1. Run the in-sandbox script source inline (``python3 -c``) with
+       the installation token as an inline ``GITHUB_TOKEN=...`` env
+       assignment — no files are uploaded. The script creates the
+       workspace folder, removes any stale clone directory (keeps the
+       step idempotent across a DBOS retry), ``git clone``s the default
+       branch with the token, and best-effort fetches
+       ``refs/pull/{pr}/head`` so fork-PR heads are diffable. A failed
+       fetch is reported on the result, not fatal.
     """
-
     backend = asAsyncSandbox(sandbox)
-    uploads = await backend.aupload_files(
-        [(TOKEN_FILE, buildTokenFileContent(str(token)))]
-    )
-    upload_error = next((u.error for u in uploads if u.error is not None), None)
-    if upload_error is not None:
-        return CloneTransientError(
-            message=f"failed to upload git token file to sandbox: {upload_error}",
-            userId=userId,
-            repoId=repoId,
-        )
-
     repoPath = getRepoPath(repoName)
     workspace = workspace_path()
-
-    setup = await backend.aexecute(
-        f"mkdir -p {shlex.quote(workspace)} && rm -rf {shlex.quote(repoPath)}",
-        timeout=60,
+    command = (
+        f"{_TOKEN_ENV_VAR}={shlex.quote(str(token))} "
+        f"python3 -c {shlex.quote(_CLONE_SCRIPT_SRC)} "
+        f"--owner {shlex.quote(str(repoOwner))} "
+        f"--repo {shlex.quote(str(repoName))} "
+        f"--pr {prNumber} "
+        f"--dest {shlex.quote(repoPath)} "
+        f"--workspace {shlex.quote(workspace)}"
     )
-    if setup.exit_code != 0:
+
+    try:
+        result = await backend.aexecute(command, timeout=_RUN_TIMEOUT_S)
+    except Exception as exc:
         return CloneTransientError(
-            message=f"workspace setup failed: {truncateOutput(setup.output)}",
+            message=f"failed to run clone script: {type(exc).__name__}: {exc}",
             userId=userId,
             repoId=repoId,
         )
 
-    clone = await backend.aexecute(
-        buildCloneCommand(repoOwner=str(repoOwner), repoName=str(repoName)),
-        timeout=CLONE_TIMEOUT_S,
-    )
-    error = cloneError(
-        clone,
-        userId=userId,
-        repoId=repoId,
-        repoName=str(repoName),
-    )
-    if error is not None:
-        return error
+    if result.exit_code in (-1, 124):
+        return CloneTransientError(
+            message=(
+                f"sandbox command runner failure: "
+                f"{truncateOutput(result.output) or 'no output'}"
+            ),
+            userId=userId,
+            repoId=repoId,
+        )
+    if result.exit_code != 0:
+        tail = truncateOutput(result.output)
+        return CloneError(
+            message=f"clone script exited {result.exit_code}: {tail}",
+            userId=userId,
+            repoId=repoId,
+            exitCode=result.exit_code,
+            outputTail=tail,
+        )
 
-    fetch = await backend.aexecute(
-        buildPrRefFetchCommand(repoName=str(repoName), prNumber=prNumber),
-        timeout=PR_REF_FETCH_TIMEOUT_S,
-    )
-    return CloneResult(prRefFetchFailed=fetch.exit_code != 0)
+    try:
+        return parseCloneResult(result.output.strip())
+    except ValueError as exc:
+        return CloneError(
+            message=f"clone summary unparseable: {exc}",
+            userId=userId,
+            repoId=repoId,
+        )
 
 
 @DBOS.step(
@@ -256,12 +298,13 @@ async def cloneRepoStep(
 
     The installation token is minted at the edge via
     :func:`app.services.github.repo.mintAccessToken` (a value-returning
-    service call), then delivered to the sandbox as a sourced env file.
+    service call), then passed to the sandbox as an inline env
+    assignment in the clone command.
 
     Raises:
         TransientReviewStepFailure: token mint / sandbox reconnect /
             runner dropout failed. DBOS retries.
-        ReviewStepFailure: ``git clone`` itself failed. Final — not
+        ReviewStepFailure: the clone script failed. Final — not
             retried.
     """
     repoCtx = createRepoCtx(
@@ -322,10 +365,7 @@ async def cloneRepoStep(
 
 __all__ = [
     "CloneResult",
-    "buildCloneCommand",
-    "buildPrRefFetchCommand",
-    "buildTokenFileContent",
-    "cloneError",
     "cloneRepo",
     "cloneRepoStep",
+    "parseCloneResult",
 ]
