@@ -60,6 +60,7 @@ async def markReviewRunning(
     sandboxId: str,
     workflowId: str,
     llmProvider: str,
+    llmClient: str | None,
     llmModel: str,
     llmBaseUrl: str | None,
 ) -> ReviewRowId | LifecycleUpdateError:
@@ -87,6 +88,7 @@ async def markReviewRunning(
             existing.pr_id = prRowId
             existing.sandbox_id = sandboxId
             existing.llm_provider = llmProvider
+            existing.llm_client = llmClient
             existing.llm_model = llmModel
             existing.llm_base_url = llmBaseUrl
             existing.error_name = None
@@ -111,6 +113,7 @@ async def markReviewRunning(
             state=ReviewState.RUNNING,
             sandbox_id=sandboxId,
             llm_provider=llmProvider,
+            llm_client=llmClient,
             llm_model=llmModel,
             llm_base_url=llmBaseUrl,
             started_at=_utcnow(),
@@ -243,10 +246,15 @@ async def markReviewRunningStep(
     sandboxId: str,
     workflowId: str,
     llmProvider: str,
+    llmClient: str | None,
     llmModel: str,
     llmBaseUrl: str | None,
 ) -> ReviewRowId:
     """Durable step: find-or-create the ``RUNNING`` row for this run.
+
+    ``llmProvider`` is the config source (``"system"`` / ``"user"``);
+    ``llmClient`` the actual provider from the ``"provider:model"``
+    string.
 
     Raises:
         TransientReviewStepFailure: the row could not be written (or
@@ -263,6 +271,7 @@ async def markReviewRunningStep(
             sandboxId=sandboxId,
             workflowId=workflowId,
             llmProvider=llmProvider,
+            llmClient=llmClient,
             llmModel=llmModel,
             llmBaseUrl=llmBaseUrl,
         )

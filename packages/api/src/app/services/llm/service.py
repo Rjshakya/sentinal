@@ -58,6 +58,7 @@ def createDefaultLLMContext() -> LLMCtx:
     """
     return LLMCtx(
         model=settings.llm_model,
+        origin="system",
         apiKey=ApiKey(settings.llm_api_key) if settings.llm_api_key else None,
         baseUrl=BaseUrl(settings.llm_base_url) if settings.llm_base_url else None,
         defaultHeaders=dict(settings.llm_default_headers),
@@ -101,6 +102,7 @@ async def createUserLLMContext(
 
     return LLMCtx(
         model=f"{row.provider}:{row.model_id}",
+        origin="user",
         apiKey=ApiKey(row.api_key) if row.api_key else None,
         baseUrl=BaseUrl(row.base_url) if row.base_url else None,
         defaultHeaders=dict(settings.llm_default_headers),

@@ -281,7 +281,8 @@ async def reviewWorkflow(
             prRowId=pr_row_id,
             sandboxId=sandbox_id,
             workflowId=workflow_id,
-            llmProvider=ctx.llmCtx.provider,
+            llmProvider=ctx.llmCtx.origin,
+            llmClient=ctx.llmCtx.provider,
             llmModel=ctx.llmCtx.modelId,
             llmBaseUrl=ctx.llmCtx.baseUrl,
         )

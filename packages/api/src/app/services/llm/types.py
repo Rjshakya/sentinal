@@ -30,6 +30,8 @@ Design notes:
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.services.llm.errors import LLMConfigError
@@ -55,6 +57,11 @@ class LLMCtx(BaseModel):
             "'google_genai:gemini-3.6-flash'."
         ),
     )
+    origin: Literal["system", "user"] = "system"
+    """Which config source produced this ctx: ``"system"`` (settings
+    default) or ``"user"`` (the user's stored ``llm_configs`` row).
+    Set by the context creators; used to record the source on
+    ``review.llm_provider`` at run time."""
     apiKey: ApiKey | None = None
     """API key for the active provider; ``None`` defers to the provider's
     native env-var resolution."""

@@ -517,8 +517,11 @@ review                       (per-run lifecycle row; one row per review_workflow
 ├── error_name / error_message  str?
 ├── error_context     jsonb?         (agent failure context; see build_error_context)
 ├── sandbox_id        str?
-├── llm_provider / llm_model / llm_base_url  str?  (snapshot of the
-│                                        resolved LLMConfig at run time)
+├── llm_provider / llm_client / llm_model / llm_base_url  str?  (snapshot of the
+│                                        resolved LLMConfig at run time;
+│                                        llm_provider = config source
+│                                        'system' | 'user'; llm_client =
+│                                        provider from 'provider:model')
 ├── started_at / completed_at  timestamptz?
 └── created_at / updated_at
 
