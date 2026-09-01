@@ -4,15 +4,20 @@ The refactored, convention-compliant review pipeline — built on the
 refactored service layer (``agent`` / ``github`` / ``llm`` / ``sandbox``).
 The webhook triggers dispatch it via :mod:`.triggers` (the edge
 adapters wired into the github webhook sub-service's delegation
-handlers); the legacy :mod:`app.services.review` pipeline stays intact
-alongside it.
+handlers).
 
 Submodules:
 
 - :mod:`.types`     — the contract: :class:`ReviewWorkflowCtx`
   (resolved LLM + sandbox environment) and :class:`ReviewWorkflowInput`
-  (PR-specific trigger data), plus result projections and the usage
-  envelopes. Ids are branded types from :mod:`app.utils.branded`.
+  (PR-specific trigger data), plus result projections, the usage
+  envelopes, and the comment-trigger contract
+  (:class:`CommentTriggerInput` / :class:`ClassifyCommentResult` /
+  :class:`LastReviewSnapshot`). Ids are branded types from
+  :mod:`app.utils.branded`.
+- :mod:`.helpers`   — pure comment-trigger logic: payload validation,
+  ``@<app_slug> review`` classification, and the incremental
+  re-review diff-base decision.
 - :mod:`.errors`    — error values (BaseModel, ``retryable`` flag +
   branded identity) returned by pure step functions, plus the raised
   step-exception wrappers used by the DBOS step edges.

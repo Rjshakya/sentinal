@@ -17,10 +17,9 @@ Two families:
   refactored review workflow via
   :mod:`app.workflows.review.triggers`; ``push`` keeps the legacy
   incremental-indexing adapter. The adapter imports are **deferred to
-  call time**: the adapters pull in the review / pr_issue_comment /
-  indexing pipelines, which in turn import :mod:`app.services.github` —
-  a module-level import here would cycle through the partially
-  initialized package.
+  call time**: the adapters pull in the review / indexing pipelines,
+  which in turn import :mod:`app.services.github` — a module-level
+  import here would cycle through the partially initialized package.
 
 Handlers never raise; malformed payloads record
 ``skipReason="malformed_installation"`` on the ctx so the ack stays
@@ -233,7 +232,7 @@ async def handleIssueCommentCreated(ctx: WebhookCtx, session: AsyncSession):
     """Forward an ``issue_comment`` ``created`` delivery to the review trigger."""
     from app.workflows.review.triggers import handleIssueCommentCreated as trigger
 
-    ack = await trigger(ctx.payload, ctx.delivery)
+    ack = await trigger(ctx.payload, ctx.delivery, session)
     ctx.accepted = ack.accepted
     ctx.skipReason = ack.skip_reason
     return None

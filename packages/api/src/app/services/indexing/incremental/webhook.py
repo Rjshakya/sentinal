@@ -2,7 +2,7 @@
 
 Dispatches a verified default-branch push delivery to the DBOS
 incremental workflow. Mirrors the ring structure of
-:mod:`app.services.review.webhook`:
+:mod:`app.workflows.review.triggers`:
 
 - **Ring 1 (pure)**       — :func:`push_skip_reason`,
   :func:`extract_push_files`, :func:`incremental_workflow_id`. No I/O.

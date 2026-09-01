@@ -5,7 +5,7 @@ One module per I/O boundary. Each step is a :func:`@DBOS.step` (or
 :func:`app.services.setup.workflow.setup_workflow`.
 
 The split mirrors the review pipeline's
-:mod:`app.services.review.steps` package: one file, one concern, no
+:mod:`app.workflows.review.steps` package: one file, one concern, no
 cross-imports between siblings.
 """
 

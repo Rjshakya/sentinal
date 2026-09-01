@@ -13,7 +13,7 @@ output. Each agent's final message is free text:
 
 The structured payloads (``SummaryResult`` / ``ReviewComments``) are
 produced afterwards by the extractor steps in
-:mod:`app.services.review.steps.extract_result`, which re-invoke a
+:mod:`app.workflows.review.steps.extract_result`, which re-invoke a
 small structured-output-capable OpenAI model with the agent's text and
 the target schema bound via ``with_structured_output``.
 
@@ -24,13 +24,13 @@ findings. It drives a file-by-file workflow over the per-file chunks in
 ``splitted_diffs/`` (anchoring comments to gutter-visible lines only)
 and delegates the passes to the ``task`` tool's ``general-purpose``
 subagent when the PR is large. The verdict field is computed in code by
-:func:`app.services.review.agent.verdict_for` after the extractor
+:func:`app.services.agent.service.verdictFor` after the extractor
 returns, so the LLM never sets it.
 
 Every inline comment body is shaped by the shared
 :data:`COMMENT_BODY_FORMAT` contract (bold headline → grounded issue
 bullets → ``**Fix:**`` line): the comments agent writes to it and the
-extractor in :mod:`app.services.review.steps.extract_result` enforces
+extractor in :mod:`app.workflows.review.steps.extract_result` enforces
 it, so the two prompts cannot drift apart.
 """
 

@@ -18,9 +18,10 @@ records the config source (``"system"`` for the settings default,
 ``"user"`` for the user's stored ``llm_configs`` row); ``llm_client``
 records the actual provider from the ``"provider:model"`` string (e.g.
 ``"openai"``, ``"anthropic"``). ``error_context``
-carries the JSON payload of :class:`app.services.review.errors.ReviewAgentsInvocationError`
-(failed/succeeded agent names, retryable flags, cause) when it was the
-failure source.
+carries the JSON payload built by
+:func:`app.workflows.review.steps.review_lifecycle.buildErrorContext`
+(error name, cause, failed/succeeded agent lanes) when the workflow
+errored.
 """
 
 from __future__ import annotations

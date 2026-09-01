@@ -21,9 +21,8 @@ Both are called by the github webhook sub-service delegation handlers
   rows — returns a :class:`ReviewTriggerAck`; the adapters never raise
   for business outcomes (infrastructure failures propagate so GitHub
   redelivers the delivery).
-- DB access is scoped to one :func:`app.core.db.async_session_maker`
-  session per delivery; GitHub API calls go through the pr sub-service
-  ctx.
+- DB access uses the caller's :class:`AsyncSession` (I/O at the edge);
+  GitHub API calls go through the pr sub-service ctx.
 - The run environment (:class:`ReviewWorkflowCtx` — per-user
   :class:`LLMCtx` with a settings fallback, settings-driven
   :class:`SandboxCtx`) is resolved here, at the edge.
@@ -34,16 +33,13 @@ Both are called by the github webhook sub-service delegation handlers
 from __future__ import annotations
 
 import logging
-from operator import rshift
 from typing import Any, cast
 
 from dbos import DBOS, SetWorkflowID
 from pydantic import BaseModel, ValidationError
-from sqlalchemy.engine import result
 from sqlmodel import select
 
 from app.core.config import settings
-from app.core.db import async_session_maker
 from app.models.enums import PRStatus
 from app.models.installation import Installation
 from app.models.repo import Repo
@@ -56,12 +52,6 @@ from app.services.llm import (
     createDefaultLLMContext,
     createUserLLMContext,
 )
-from app.services.pr_issue_comment.helpers import (
-    classify_comment,
-    effective_diff_base,
-    validate_comment_payload,
-)
-from app.services.pr_issue_comment.types import LastReviewSnapshot
 from app.services.sandbox.service import (
     DEFAULT_ROOT_PATH,
     createSandboxCtx,
@@ -73,11 +63,15 @@ from app.utils.branded import (
     InstallationId,
     PRNumber,
     RepoId,
-    RepoName,
-    RepoOwner,
     UserId,
 )
+from app.workflows.review.helpers import (
+    classifyComment,
+    effectiveDiffBase,
+    validateCommentPayload,
+)
 from app.workflows.review.types import (
+    LastReviewSnapshot,
     PRSizeStats,
     ReviewWorkflowCtx,
     ReviewWorkflowInput,
@@ -267,9 +261,9 @@ async def loadLastReview(
     if row is None:
         return None
     return LastReviewSnapshot(
-        commit_id=row.commit_id,
-        base_sha=row.base_sha,
-        created_at=row.created_at,
+        commitId=CommitId(row.commit_id),
+        baseSha=row.base_sha,
+        createdAt=row.created_at,
     )
 
 
@@ -298,7 +292,9 @@ async def dispatchReview(
 
 
 async def handlePullRequestOpened(
-    payload: dict[str, Any], delivery: str, session: AsyncSession
+    payload: dict[str, Any],
+    delivery: str,
+    session: AsyncSession,
 ) -> ReviewTriggerAck:
     """Dispatch a verified ``pull_request`` ``opened`` delivery to the workflow.
 
@@ -307,10 +303,6 @@ async def handlePullRequestOpened(
     ``unowned_installation``, ``repo_not_configured``. Never raises for
     business outcomes.
     """
-
-    sandboxApiKey = settings.e2b_api_key
-    sandboxDefaultProvider: ProviderId = "e2b"
-    action = payload.get("action")
 
     pr_payload = extractPrPayload(payload)
     if pr_payload is None:
@@ -345,14 +337,10 @@ async def handlePullRequestOpened(
         )
 
     llm_ctx = await resolveLlmCtx(session, userId=userId)
-    sandbox_ctx = createSandboxCtx(
-        userId=UserId(userId),
-        repoId=RepoId(repo.id),
+    sandbox_ctx = buildSandboxCtx(
+        userId=userId,
+        repoId=repo.id,
         repoName=repo.repo_name,
-        providerId=sandboxDefaultProvider,
-        apiKey=SanboxProviderApiKey(sandboxApiKey),
-        sandboxName=getDefaulSandboxName(repo.repo_name),
-        rootPath=DEFAULT_ROOT_PATH[sandboxDefaultProvider],
     )
 
     workflow_input = buildReviewWorkflowInput(
@@ -396,12 +384,14 @@ async def handlePullRequestOpened(
 
 
 async def handleIssueCommentCreated(
-    payload: dict[str, Any], delivery: str
+    payload: dict[str, Any],
+    delivery: str,
+    session: AsyncSession,
 ) -> ReviewTriggerAck:
     """Dispatch a verified ``issue_comment`` ``created`` delivery to the workflow.
 
     The comment must mention ``@<app_slug> review`` (classification
-    from :mod:`app.services.pr_issue_comment.helpers`). The PR state is
+    from :mod:`app.workflows.review.helpers`). The PR state is
     fetched from the GitHub API; when the head moved since the last
     successful review, ``diffBaseSha`` narrows the diff to the commits
     pushed since (incremental re-review).
@@ -412,9 +402,8 @@ async def handleIssueCommentCreated(
     ``repo_not_configured``, ``pr_fetch_failed``. Never raises for
     business outcomes.
     """
-    try:
-        trigger = validate_comment_payload(payload, delivery=delivery)
-    except ValidationError:
+    trigger = validateCommentPayload(payload, delivery=delivery)
+    if trigger is None:
         return ReviewTriggerAck(
             accepted=False,
             action="issue_comment",
@@ -422,13 +411,13 @@ async def handleIssueCommentCreated(
             skip_reason="malformed_payload",
         )
 
-    classified = classify_comment(payload, app_slug=settings.github_app_slug)
-    if not classified.should_proceed:
+    classified = classifyComment(payload, appSlug=settings.github_app_slug)
+    if not classified.shouldProceed:
         return ReviewTriggerAck(
             accepted=False,
             action="issue_comment",
             delivery=delivery,
-            skip_reason=classified.skip_reason or "not_created",
+            skip_reason=classified.skipReason or "not_created",
         )
 
     if not reviewConfigured():
@@ -439,108 +428,107 @@ async def handleIssueCommentCreated(
             skip_reason="review_not_configured",
         )
 
-    async with async_session_maker() as session:
-        user_id = await getUserIdFromInstallation(
-            session, githubInstallationId=trigger.installation_id
-        )
-        if user_id is None:
-            return ReviewTriggerAck(
-                accepted=False,
-                action="issue_comment",
-                delivery=delivery,
-                skip_reason="unowned_installation",
-            )
-
-        repo = await getRepoRecord(session, ghRepoId=trigger.gh_repo_id)
-        if repo is None:
-            return ReviewTriggerAck(
-                accepted=False,
-                action="issue_comment",
-                delivery=delivery,
-                skip_reason="repo_not_configured",
-            )
-
-        pr_ctx = createPRCtx(
-            userId=UserId(user_id),
-            installationId=InstallationId(trigger.installation_id),
-            owner=RepoOwner(trigger.repo_owner),
-            repo=RepoName(trigger.repo_name),
-            prNumber=PRNumber(trigger.pr_number),
-        )
-        state = await getPrState(pr_ctx)
-        if isinstance(state, GitHubPRError):
-            log.info(
-                "review.trigger: skip (pr fetch failed): delivery=%s "
-                "gh_repo_id=%s number=%s cause=%s",
-                delivery,
-                trigger.gh_repo_id,
-                trigger.pr_number,
-                state.message,
-            )
-            return ReviewTriggerAck(
-                accepted=False,
-                action="issue_comment",
-                delivery=delivery,
-                skip_reason="pr_fetch_failed",
-            )
-
-        last_review = await loadLastReview(
-            session, repoId=repo.id, prNumber=trigger.pr_number
-        )
-        diff_base_sha = effective_diff_base(
-            api_base_sha=state.baseSha,
-            api_head_sha=state.headSha,
-            last_review=last_review,
+    user_id = await getUserIdFromInstallation(
+        session, githubInstallationId=trigger.installationId
+    )
+    if user_id is None:
+        return ReviewTriggerAck(
+            accepted=False,
+            action="issue_comment",
+            delivery=delivery,
+            skip_reason="unowned_installation",
         )
 
-        llm_ctx = await resolveLlmCtx(session, userId=user_id)
-        sandbox_ctx = buildSandboxCtx(
-            userId=user_id, repoId=repo.id, repoName=repo.repo_name
+    repo = await getRepoRecord(session, ghRepoId=trigger.ghRepoId)
+    if repo is None:
+        return ReviewTriggerAck(
+            accepted=False,
+            action="issue_comment",
+            delivery=delivery,
+            skip_reason="repo_not_configured",
         )
 
-        workflow_input = buildReviewWorkflowInput(
-            userId=UserId(user_id),
-            ghRepoId=trigger.gh_repo_id,
-            ghPrId=state.ghPrId,
-            prNumber=PRNumber(trigger.pr_number),
-            baseBranch=state.baseBranch,
-            defaultBranch=trigger.default_branch,
-            baseSha=state.baseSha,
-            headBranch=state.headBranch,
-            headSha=CommitId(state.headSha),
-            author=state.author,
-            title=state.title,
-            body=state.body,
-            status=_prStatusFromState(state.state, state.merged),
-            prSize={
-                "additions": state.additions,
-                "deletions": state.deletions,
-                "changedFiles": state.changedFiles,
-            },
-            githubInstallationId=InstallationId(trigger.installation_id),
-            postToGithub=True,
-            trigger="comment",
-            diffBaseSha=CommitId(diff_base_sha) if diff_base_sha is not None else None,
+    pr_ctx = createPRCtx(
+        userId=UserId(user_id),
+        installationId=trigger.installationId,
+        owner=trigger.repoOwner,
+        repo=trigger.repoName,
+        prNumber=trigger.prNumber,
+    )
+    state = await getPrState(pr_ctx)
+    if isinstance(state, GitHubPRError):
+        log.info(
+            "review.trigger: skip (pr fetch failed): delivery=%s "
+            "gh_repo_id=%s number=%s cause=%s",
+            delivery,
+            trigger.ghRepoId,
+            trigger.prNumber,
+            state.message,
         )
-        workflow_ctx = ReviewWorkflowCtx(llmCtx=llm_ctx, sandboxCtx=sandbox_ctx)
-
-        await addReaction(pr_ctx, trigger.comment_id)  # best-effort ack
-
-        workflow_id = await dispatchReview(
-            repoId=repo.id,
-            prNumber=trigger.pr_number,
-            headSha=state.headSha,
-            workflowCtx=workflow_ctx,
-            workflowInput=workflow_input,
+        return ReviewTriggerAck(
+            accepted=False,
+            action="issue_comment",
+            delivery=delivery,
+            skip_reason="pr_fetch_failed",
         )
+
+    last_review = await loadLastReview(
+        session, repoId=repo.id, prNumber=trigger.prNumber
+    )
+    diff_base_sha = effectiveDiffBase(
+        apiBaseSha=state.baseSha,
+        apiHeadSha=state.headSha,
+        lastReview=last_review,
+    )
+
+    llm_ctx = await resolveLlmCtx(session, userId=user_id)
+    sandbox_ctx = buildSandboxCtx(
+        userId=user_id, repoId=repo.id, repoName=repo.repo_name
+    )
+
+    workflow_input = buildReviewWorkflowInput(
+        userId=UserId(user_id),
+        ghRepoId=trigger.ghRepoId,
+        ghPrId=state.ghPrId,
+        prNumber=trigger.prNumber,
+        baseBranch=state.baseBranch,
+        defaultBranch=trigger.defaultBranch,
+        baseSha=state.baseSha,
+        headBranch=state.headBranch,
+        headSha=CommitId(state.headSha),
+        author=state.author,
+        title=state.title,
+        body=state.body,
+        status=_prStatusFromState(state.state, state.merged),
+        prSize={
+            "additions": state.additions,
+            "deletions": state.deletions,
+            "changedFiles": state.changedFiles,
+        },
+        githubInstallationId=trigger.installationId,
+        postToGithub=True,
+        trigger="comment",
+        diffBaseSha=diff_base_sha,
+    )
+    workflow_ctx = ReviewWorkflowCtx(llmCtx=llm_ctx, sandboxCtx=sandbox_ctx)
+
+    await addReaction(pr_ctx, trigger.commentId)  # best-effort ack
+
+    workflow_id = await dispatchReview(
+        repoId=repo.id,
+        prNumber=trigger.prNumber,
+        headSha=state.headSha,
+        workflowCtx=workflow_ctx,
+        workflowInput=workflow_input,
+    )
 
     log.info(
         "review.trigger: started workflow: delivery=%s workflow_id=%s "
         "gh_repo_id=%s number=%s head_sha=%s diff_base_sha=%s",
         delivery,
         workflow_id,
-        trigger.gh_repo_id,
-        trigger.pr_number,
+        trigger.ghRepoId,
+        trigger.prNumber,
         state.headSha,
         diff_base_sha,
     )

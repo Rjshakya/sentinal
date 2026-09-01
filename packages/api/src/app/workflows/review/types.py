@@ -18,6 +18,11 @@ Design notes:
 - :class:`ReviewWorkflowInput` — the PR-specific trigger data (ids,
   SHAs, PR metadata, size stats). The trigger-specific knobs
   (``postToGithub``, ``diffBaseSha``) live here, not on the ctx.
+- The comment-trigger contract (:class:`CommentTriggerInput`,
+  :class:`ClassifyCommentResult`, :class:`LastReviewSnapshot`) — the
+  typed payload view, the classification outcome, and the previous-run
+  snapshot consumed by
+  :func:`app.workflows.review.helpers.effectiveDiffBase`.
 - Result projections (:class:`RepoSnapshot`, :class:`ReviewRunResult`,
   :class:`PostReviewResult`) and the token-usage envelopes mirror the
   legacy shapes so the persistence layer translates them unchanged.
@@ -25,6 +30,7 @@ Design notes:
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -109,6 +115,63 @@ class ReviewWorkflowInput(BaseModel):
     last successfully reviewed head. ``baseSha`` itself always keeps
     the PR's true base on the lifecycle rows.
     """
+
+
+class CommentTriggerInput(BaseModel):
+    """Flat, typed view of a verified ``issue_comment`` payload.
+
+    Every field is required; the trigger adapter
+    (:func:`app.workflows.review.helpers.validateCommentPayload`)
+    returns ``None`` when the raw webhook does not satisfy the
+    pydantic schema, which the caller folds into a
+    ``malformed_payload`` skip.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    delivery: str
+    installationId: InstallationId
+    repoOwner: RepoOwner
+    repoName: RepoName
+    ghRepoId: int
+    defaultBranch: str | None = None
+    prNumber: PRNumber
+    prAuthorLogin: str
+    commenterLogin: str
+    authorAssociation: str
+    commentId: int
+    commentBody: str
+
+
+class ClassifyCommentResult(BaseModel):
+    """Outcome of the pure classification helper.
+
+    ``shouldProceed`` is ``True`` iff every check (action / is_pr /
+    is_self / has_mention / is_authorized) passed. The first failing
+    check sets ``skipReason`` to a stable string the edge can log.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    shouldProceed: bool
+    skipReason: str | None = None
+
+
+class LastReviewSnapshot(BaseModel):
+    """Serializable subset of the latest successful :class:`Review` row.
+
+    Lets the comment trigger decide the git-diff base for an
+    incremental re-review: ``commitId`` is the head SHA the previous
+    run reviewed; ``baseSha`` is the PR base that run started from
+    (kept for observability). Both are the values recorded on the
+    ``review`` lifecycle row, never re-fetched from GitHub.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    commitId: CommitId
+    baseSha: str | None = None
+    createdAt: datetime
 
 
 class RepoSnapshot(BaseModel):
@@ -209,7 +272,10 @@ class TotalUsagesPerPR(TypedDict):
 
 
 __all__ = [
+    "ClassifyCommentResult",
+    "CommentTriggerInput",
     "InputTokenDetails",
+    "LastReviewSnapshot",
     "PRSizeStats",
     "PostReviewResult",
     "RepoSnapshot",
