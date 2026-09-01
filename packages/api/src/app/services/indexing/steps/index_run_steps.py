@@ -30,6 +30,7 @@ import logging
 from datetime import UTC, datetime
 
 from dbos import DBOS
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import async_session_maker
@@ -56,37 +57,60 @@ async def create_index_run_step(
     default_branch: str | None,
     s3_bucket: str | None,
 ) -> str | None:
-    """Insert a ``STARTING`` row for the current workflow. Best-effort.
+    """Upsert the ``STARTING`` row for the current workflow. Best-effort.
 
     Uses :data:`DBOS.workflow_id` as the deterministic DBOS id so the
     row can be looked up later via the same id the router returned.
-    Returns the new row's ``id`` so the workflow can carry it across
+    On conflict (same ``workflow_id`` reused by a retry or replay)
+    the row's lifecycle fields are reset to ``STARTING`` so a new
+    attempt starts from a clean slate while preserving the original
+    ``id`` / ``created_at`` / repo identity columns.
+    Returns the row's ``id`` so the workflow can carry it across
     step boundaries; ``None`` on any failure (logged, never raised).
     """
     workflow_id = DBOS.workflow_id or ""
     try:
         async with async_session_maker() as session:
-            run = IndexRun(
-                user_id=user_id,
-                workflow_id=workflow_id,
-                repo_owner=repo_owner,
-                repo_name=repo_name,
-                repo_url=repo_url,
-                default_branch=default_branch,
-                state=IndexRunState.STARTING,
-                s3_bucket=s3_bucket,
+            stmt = (
+                pg_insert(IndexRun)
+                .values(
+                    user_id=user_id,
+                    workflow_id=workflow_id,
+                    repo_owner=repo_owner,
+                    repo_name=repo_name,
+                    repo_url=repo_url,
+                    default_branch=default_branch,
+                    state=IndexRunState.STARTING,
+                    s3_bucket=s3_bucket,
+                )
+                .on_conflict_do_update(
+                    index_elements=[IndexRun.workflow_id],
+                    set_={
+                        "state": IndexRunState.STARTING,
+                        "error_name": None,
+                        "error_message": None,
+                        "chunk_count": None,
+                        "file_count": None,
+                        "sandbox_id": None,
+                        "started_at": None,
+                        "finished_at": None,
+                        "updated_at": _utcnow(),
+                    },
+                )
+                .returning(IndexRun.id)  # pyright: ignore
             )
-            session.add(run)
+            result = await session.execute(stmt)
+            row = result.first()
+            run_id = row[0] if row is not None else None
             await session.commit()
-            await session.refresh(run)
         log.info(
             "create_index_run_step: ok run_id=%s workflow_id=%s owner=%s repo=%s",
-            run.id,
+            run_id,
             workflow_id,
             repo_owner,
             repo_name,
         )
-        return run.id
+        return run_id
     except Exception:
         log.warning(
             "create_index_run_step: failed workflow_id=%s owner=%s repo=%s",

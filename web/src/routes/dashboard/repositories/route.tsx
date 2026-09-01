@@ -11,6 +11,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { Input } from "@/components/ui/input";
 
 export const Route = createFileRoute("/dashboard/repositories")({
   component: RepositoriesPage,
@@ -41,6 +42,7 @@ function ConnectedView() {
   const indexRepo = useIndexRepo();
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState("")
 
   const selectedPayload = useMemo<SetupRepo[]>(() => {
     if (!repos) return [];
@@ -58,7 +60,7 @@ function ConnectedView() {
 
   const sortedRepos = useMemo(() => {
     if (!repos) return [];
-    return [...repos].sort((a, b) => {
+    const sorted = [...repos].sort((a, b) => {
       const aConfigured = a.is_configured ? 0 : 1;
       const bConfigured = b.is_configured ? 0 : 1;
       if (aConfigured !== bConfigured) return aConfigured - bConfigured;
@@ -71,7 +73,20 @@ function ConnectedView() {
       const bHasDesc = b.description ? 0 : 1;
       return aHasDesc - bHasDesc;
     });
-  }, [repos]);
+
+
+    if (query) {
+
+      const q = query.toLowerCase()
+      return sorted.filter((r) => {
+        return r.name.toLowerCase().includes(q)
+          || r.full_name.toLowerCase().includes(q)
+          || r.description?.toLowerCase().includes(q)
+      })
+    }
+
+    return sorted
+  }, [repos, query]);
 
   // ``selected`` is constrained at the source: the RepoList
   // disables the checkbox on configured rows, so ``handleToggle``
@@ -91,20 +106,21 @@ function ConnectedView() {
   function handleConfigure() {
     if (selectedPayload.length === 0) return;
     setup.mutate(selectedPayload, {
-      onSuccess: (data) => {
-        const ok = data.results.filter((r) => r.setup.ok).length;
-        const failed = data.results.length - ok;
+
+      onSuccess: () => {
         setSelected(new Set());
-        if (failed === 0) {
-          toast.success(`Configured ${ok} ${ok === 1 ? "repo" : "repos"}`);
-        } else {
-          toast.warning(`Configured ${ok}, ${failed} failed`);
-        }
+        setQuery("")
+
+        toast.success(`Configuring repos`);
         queryClient.invalidateQueries({ queryKey: ["github", "repos"] });
       },
+
+
       onError: (err) => {
         toast.error(err.message);
       },
+
+
     });
   }
 
@@ -166,7 +182,7 @@ function ConnectedView() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-end justify-between">
+      <div className="  flex flex-col sm:flex-row gap-4  sm:items-end sm:justify-between">
         <div className="">
           <h1 className="text-2xl font-semibold tracking-tight">Repositories</h1>
           <p className="text-muted-foreground mt-1 text-sm">
@@ -174,7 +190,10 @@ function ConnectedView() {
           </p>
         </div>
 
-        <div className="">
+        <div className="flex gap-2 items-center">
+
+
+          <Input placeholder="SEARCH" value={query} onChange={(e) => setQuery(e.target.value)} />
           {allConfigured ? (
             <p className="text-muted-foreground text-sm">
               All repositories are already configured.
