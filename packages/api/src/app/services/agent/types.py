@@ -93,8 +93,8 @@ class ReviewAgentCtx(BaseModel):
     """The lane's chat model. One instance per agent so each can carry
     its own per-agent callback handler."""
     sandboxCtx: SandboxCtx
-    """The run's sandbox handle; the ``get_diff`` tool reads the PR
-    diff artefacts from it."""
+    """The run's sandbox handle; the agent's backend reads the PR
+    diff artefacts (``overview.md`` / ``splitted_diffs/``) from it."""
     modelCallRunLimit: int = Field(
         default=_DEFAULT_MODEL_CALL_RUN_LIMIT,
         ge=1,

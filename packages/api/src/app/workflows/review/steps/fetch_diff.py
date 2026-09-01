@@ -1,8 +1,8 @@
 """Fetch the unified PR diff into the sandbox.
 
 The diff is written to ``/home/user/tmp/{pr_number}/{head_sha}/file.diff``
-so the review agents can read it via the ``get_diff`` tool. The split
-step then turns it into the per-file annotated chunks.
+as the split step's input; the agents never read it. The split step
+turns it into the per-file annotated chunks.
 
 Layers:
 

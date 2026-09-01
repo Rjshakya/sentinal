@@ -199,7 +199,9 @@ async def invokeAgentStep(
 
     Reconnects to the sandbox by id (via the agent service's backend
     build), builds the lane's deep-agent with its own chat model and
-    the shared ``get_diff`` tool, and runs it with the shared user
+    an empty custom-tool list (diff context comes strictly from the
+    ``overview.md`` / ``splitted_diffs/`` artefacts read through the
+    backend's built-in tools), and runs it with the shared user
     prompt. Transient failures retry this lane alone; the sandbox is
     never stopped here.
 

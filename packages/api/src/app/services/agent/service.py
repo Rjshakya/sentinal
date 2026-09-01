@@ -53,7 +53,7 @@ from app.services.agent.prompts import (
     PR_SUMMARY_SYSTEM_PROMPT,
     REVIEW_COMMENTS_SYSTEM_PROMPT,
 )
-from app.services.agent.tools import getReviewDiffDirPath, makeGetDiffTool
+from app.services.agent.tools import getReviewDiffDirPath
 from app.services.agent.types import DeepAgentGraph, ReviewAgentCtx
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.service import getProvider
@@ -126,20 +126,15 @@ def buildAgentTools(
 ) -> list[BaseTool]:
     """Return the tool list every review agent receives.
 
-    ``get_diff`` reads the unified PR diff from the sandbox. The split
-    step also writes ``overview.md`` and the per-file annotated chunks
-    under ``splitted_diffs/`` next to ``file.diff``; the agents read
-    those via the deepagents backend's ``read_file`` / ``ls`` tools
-    (inherited separately).
+    Currently empty: the agents get **no custom tools**. Their diff
+    context comes strictly from the ``overview.md`` and
+    ``splitted_diffs/`` artefacts written by the split step, which
+    they read with the deepagents backend's built-in ``read_file`` /
+    ``ls`` tools (inherited separately). Kept as the wiring seam for
+    future tools; the unused parameters stay so the signature does
+    not churn.
     """
-    return [
-        makeGetDiffTool(
-            sandbox=sandbox,
-            workDir=workDir,
-            prNumber=prNumber,
-            headSha=headSha,
-        )
-    ]
+    return []
 
 
 async def buildAgent(
@@ -236,9 +231,9 @@ def createUserPrompt(ctx: ReviewAgentCtx) -> str:
     """Build the user message sent to each of the two review agents.
 
     Pure formatting — no I/O, no LLM. The diff is not inlined; the
-    message carries the concrete Diff dir path (with ``overview.md``,
-    ``splitted_diffs/``, and ``file.diff``) so the agents never have
-    to discover it.
+    message carries the concrete Diff dir path so the agents read
+    ``overview.md`` first, then the per-file chunks under
+    ``splitted_diffs/`` (their strictly-scoped diff context).
     """
     diff_dir = getReviewDiffDirPath(
         workDir=ctx.sandboxCtx.rootPath,
@@ -253,10 +248,9 @@ def createUserPrompt(ctx: ReviewAgentCtx) -> str:
         f"Head SHA: {ctx.headSha}\n"
         f"Diff dir: {diff_dir}/\n"
         f"\n"
-        f"The PR diff artefacts live in the Diff dir above: read "
-        f"overview.md first, then the per-file chunks under "
-        f"splitted_diffs/ (file.diff is the raw unified diff; the "
-        f"get_diff(limit:int , offset:int) tool reads it).\n"
+        f"The PR diff artefacts live in the Diff dir above. Use "
+        f"strictly overview.md and the per-file chunks under "
+        f"splitted_diffs/ for diff context — nothing else.\n"
     )
 
 

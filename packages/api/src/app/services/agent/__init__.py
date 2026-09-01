@@ -14,8 +14,8 @@ Submodules:
 - :mod:`.errors`    — typed error values (:class:`AgentBuildError`).
 - :mod:`.middleware` — the shared middleware stack
   (:func:`buildAgentMiddleware`).
-- :mod:`.tools`     — agent tools (:func:`makeGetDiffTool` +
-  :func:`getReviewDiffDirPath`).
+- :mod:`.tools`     — the shared diff-dir path helper
+  (:func:`getReviewDiffDirPath`); agents receive no custom tools.
 - :mod:`.service`   — the entry points (camelCase): ctx factory +
   per-lane agent builders + pure combine/verdict/prompt helpers.
 """
@@ -30,7 +30,7 @@ from app.services.agent.service import (
     createUserPrompt,
     verdictFor,
 )
-from app.services.agent.tools import getReviewDiffDirPath, makeGetDiffTool
+from app.services.agent.tools import getReviewDiffDirPath
 from app.services.agent.types import (
     AgentMiddlewareStack,
     DeepAgentGraph,
@@ -49,6 +49,5 @@ __all__ = [
     "createReviewAgentCtx",
     "createSummaryAgent",
     "getReviewDiffDirPath",
-    "makeGetDiffTool",
     "verdictFor",
 ]
