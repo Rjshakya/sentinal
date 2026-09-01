@@ -22,9 +22,10 @@ import logging
 from collections.abc import Sequence
 from uuid import UUID
 
+from dbos import DBOS
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import dbos_datasource
+from app.core.db import async_session_maker
 from app.models.code_comment import CodeComment
 from app.models.enums import (
     CommentSeverity,
@@ -139,7 +140,7 @@ async def persistReviewSummary(
             verdict=ReviewVerdict(review.verdict),
         )
         session.add(summary)
-        await session.flush()
+        await session.commit()
         await session.refresh(summary)
         return summary.id
     except Exception as exc:
@@ -167,7 +168,7 @@ async def persistCodeComments(
         if not rows:
             return []
         session.add_all(rows)
-        await session.flush()
+        await session.commit()
         for row in rows:
             await session.refresh(row)
         return [row.id for row in rows]
@@ -213,7 +214,7 @@ async def persistReviewUsage(
             llm_base_url=llmBaseUrl,
         )
         session.add(row)
-        await session.flush()
+        await session.commit()
         await session.refresh(row)
         return row.id
     except Exception as exc:
@@ -225,7 +226,7 @@ async def persistReviewUsage(
         )
 
 
-@dbos_datasource.transaction()
+@DBOS.step()
 async def persistReviewSummaryTx(
     *,
     prRowId: PrRowId,
@@ -239,20 +240,20 @@ async def persistReviewSummaryTx(
         ReviewStepFailure: the row could not be written (wrapping a
             :class:`PersistError`).
     """
-    session = dbos_datasource.sql_session()
-    result = await persistReviewSummary(
-        session,
-        prRowId=prRowId,
-        reviewRowId=reviewRowId,
-        commitId=commitId,
-        review=review,
-    )
-    if isinstance(result, PersistError):
-        raise ReviewStepFailure(result)
-    return result
+    async with async_session_maker() as session:
+        result = await persistReviewSummary(
+            session,
+            prRowId=prRowId,
+            reviewRowId=reviewRowId,
+            commitId=commitId,
+            review=review,
+        )
+        if isinstance(result, PersistError):
+            raise ReviewStepFailure(result)
+        return result
 
 
-@dbos_datasource.transaction()
+@DBOS.step()
 async def persistCodeCommentsTx(
     *,
     prRowId: PrRowId,
@@ -266,20 +267,20 @@ async def persistCodeCommentsTx(
         ReviewStepFailure: a row could not be written (wrapping a
             :class:`PersistError`).
     """
-    session = dbos_datasource.sql_session()
-    result = await persistCodeComments(
-        session,
-        prRowId=prRowId,
-        reviewRowId=reviewRowId,
-        commitId=commitId,
-        comments=comments,
-    )
-    if isinstance(result, PersistError):
-        raise ReviewStepFailure(result)
-    return result
+    async with async_session_maker() as session:
+        result = await persistCodeComments(
+            session,
+            prRowId=prRowId,
+            reviewRowId=reviewRowId,
+            commitId=commitId,
+            comments=comments,
+        )
+        if isinstance(result, PersistError):
+            raise ReviewStepFailure(result)
+        return result
 
 
-@dbos_datasource.transaction()
+@DBOS.step()
 async def persistReviewUsageTx(
     *,
     userId: UserId,
@@ -302,26 +303,26 @@ async def persistReviewUsageTx(
         ReviewStepFailure: the row could not be written (wrapping a
             :class:`PersistError`).
     """
-    session = dbos_datasource.sql_session()
-    result = await persistReviewUsage(
-        session,
-        userId=userId,
-        prRowId=prRowId,
-        prNumber=prNumber,
-        repoId=repoId,
-        reviewRowId=reviewRowId,
-        reviewSummaryId=reviewSummaryId,
-        inputTokens=inputTokens,
-        outputTokens=outputTokens,
-        totalTokens=totalTokens,
-        inputTokenDetails=inputTokenDetails,
-        llmModelId=llmModelId,
-        llmProvider=llmProvider,
-        llmBaseUrl=llmBaseUrl,
-    )
-    if isinstance(result, PersistError):
-        raise ReviewStepFailure(result)
-    return result
+    async with async_session_maker() as session:
+        result = await persistReviewUsage(
+            session,
+            userId=userId,
+            prRowId=prRowId,
+            prNumber=prNumber,
+            repoId=repoId,
+            reviewRowId=reviewRowId,
+            reviewSummaryId=reviewSummaryId,
+            inputTokens=inputTokens,
+            outputTokens=outputTokens,
+            totalTokens=totalTokens,
+            inputTokenDetails=inputTokenDetails,
+            llmModelId=llmModelId,
+            llmProvider=llmProvider,
+            llmBaseUrl=llmBaseUrl,
+        )
+        if isinstance(result, PersistError):
+            raise ReviewStepFailure(result)
+        return result
 
 
 __all__ = [

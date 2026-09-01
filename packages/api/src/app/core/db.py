@@ -28,17 +28,39 @@ def _selector_loop_factory() -> asyncio.AbstractEventLoop:
     return asyncio.SelectorEventLoop(selectors.SelectSelector())
 
 
-dbos_datasource: AsyncSQLAlchemyDatasource = asyncio.run(
-    AsyncSQLAlchemyDatasource.create(
-        _DBOS_DATABASE_URL, engine_kwargs={"poolclass": NullPool}
-    ),
-    loop_factory=_selector_loop_factory,
-)
+# dbos_datasource: AsyncSQLAlchemyDatasource = asyncio.run(
+#     AsyncSQLAlchemyDatasource.create(
+#         _DBOS_DATABASE_URL, engine_kwargs={"poolclass": NullPool}
+#     ),
+#     loop_factory=_selector_loop_factory,
+# )
+
+
+_dbos_datasource: AsyncSQLAlchemyDatasource | None = None
+
+
+async def get_dbos_datasource() -> AsyncSQLAlchemyDatasource:
+    """Lazily create the DBOS datasource on the caller's running loop.
+
+    Must be awaited once, after DBOS.launch(), before any
+    @dbos_datasource.transaction()-decorated code runs. Call it from
+    the app lifespan and from the test dbos_lifecycle fixture — never
+    at import time, so we never need a throwaway event loop.
+    """
+    global _dbos_datasource
+    if _dbos_datasource is None:
+        _dbos_datasource = await AsyncSQLAlchemyDatasource.create(
+            _DBOS_DATABASE_URL, engine_kwargs={"poolclass": NullPool}
+        )
+    return _dbos_datasource
 
 
 async def get_session():
     async with async_session_maker() as session:
-        yield session
+        try:
+            yield session
+        finally:
+            await session.close()
 
 
 async def create_db_and_tables() -> None:

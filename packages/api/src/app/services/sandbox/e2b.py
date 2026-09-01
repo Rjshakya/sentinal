@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Coroutine, Literal
 
 from deepagents.backends.sandbox import BaseSandbox
 import e2b
@@ -60,6 +60,22 @@ class E2BService(BaseSandboxService):
                 id="/services/sandbox/e2b",
                 provider="e2b",
             )
+
+    async def connect(
+        self,
+    ) -> None | SandboxProviderError:
+
+        if self.sandbox is None:
+            return SandboxProviderError(
+                provider="e2b",
+                message="sandox is not initialised.",
+                userId=self.ctx.userId,
+                repoId=self.ctx.repoId,
+                id="/services/sandbox/e2b",
+            )
+        await e2b.AsyncSandbox.connect(sandbox_id=self.sandbox.id)
+
+        return None
 
     async def kill(self) -> None | SandboxProviderError:
         ctx = self.ctx

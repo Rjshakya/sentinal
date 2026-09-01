@@ -15,10 +15,11 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+from dbos import DBOS
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.core.db import dbos_datasource
+from app.core.db import async_session_maker
 from app.models.enums import PRStatus
 from app.models.pull_request import PullRequest
 from app.utils.branded import PrRowId, RepoId
@@ -66,7 +67,7 @@ async def upsertPullRequest(
             existing.status = input.status
             existing.updated_at = datetime.now(UTC)
             session.add(existing)
-            await session.flush()
+            await session.commit()
             return PrRowId(existing.id)
 
         pr = PullRequest(
@@ -83,7 +84,7 @@ async def upsertPullRequest(
             head_sha=input.headSha,
         )
         session.add(pr)
-        await session.flush()
+        await session.commit()
         await session.refresh(pr)
         return PrRowId(pr.id)
     except Exception as exc:
@@ -96,7 +97,7 @@ async def upsertPullRequest(
         )
 
 
-@dbos_datasource.transaction()
+@DBOS.step()
 async def upsertPullRequestTx(
     *,
     repoId: RepoId,
@@ -108,11 +109,11 @@ async def upsertPullRequestTx(
         ReviewStepFailure: the row could not be written (wrapping a
             :class:`UpsertPRError`).
     """
-    session = dbos_datasource.sql_session()
-    result = await upsertPullRequest(session, repoId=repoId, input=input)
-    if isinstance(result, UpsertPRError):
-        raise ReviewStepFailure(result)
-    return result
+    async with async_session_maker() as session:
+        result = await upsertPullRequest(session, repoId=repoId, input=input)
+        if isinstance(result, UpsertPRError):
+            raise ReviewStepFailure(result)
+        return result
 
 
 __all__ = ["upsertPullRequest", "upsertPullRequestTx"]

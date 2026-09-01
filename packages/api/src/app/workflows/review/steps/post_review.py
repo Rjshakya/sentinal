@@ -1,7 +1,8 @@
 """Post the review to GitHub and update the DB back-links.
 
-This replaces the legacy separate ``post_review_to_github_workflow``
-with two pieces inside the main workflow:
+This supersedes the legacy ``app.services.github.workflow``
+(``post_review_to_github_workflow``, removed) with two pieces inside
+the main workflow:
 
 - :func:`postReviewStep` — the **DBOS step edge**: converts the
   :class:`ReviewResult` into the GitHub body, posts it via the
@@ -28,7 +29,7 @@ from dbos import DBOS
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.core.db import dbos_datasource
+from app.core.db import async_session_maker
 from app.models.code_comment import CodeComment
 from app.models.review import Review
 from app.services.github.pr.errors import GitHubPRError
@@ -44,7 +45,11 @@ from app.workflows.review.errors import (
     isRetryableStatusCode,
     shouldRetry,
 )
-from app.workflows.review.types import PostReviewResult, RepoSnapshot, ReviewWorkflowInput
+from app.workflows.review.types import (
+    PostReviewResult,
+    RepoSnapshot,
+    ReviewWorkflowInput,
+)
 
 log = logging.getLogger(__name__)
 
@@ -278,7 +283,7 @@ async def updatePostBacklinks(
         )
 
 
-@dbos_datasource.transaction()
+@DBOS.step()
 async def updatePostBacklinksTx(
     *,
     reviewRowId: ReviewRowId,
@@ -294,18 +299,18 @@ async def updatePostBacklinksTx(
         ReviewStepFailure: the back-link rows could not be written
             (wrapping a :class:`PersistError`).
     """
-    session = dbos_datasource.sql_session()
-    result = await updatePostBacklinks(
-        session,
-        reviewRowId=reviewRowId,
-        commentRowIds=commentRowIds,
-        githubReviewId=githubReviewId,
-        githubCommentIds=githubCommentIds,
-        repoId=repoId,
-        prNumber=prNumber,
-    )
-    if result is not None:
-        raise ReviewStepFailure(result)
+    async with async_session_maker() as session:
+        result = await updatePostBacklinks(
+            session,
+            reviewRowId=reviewRowId,
+            commentRowIds=commentRowIds,
+            githubReviewId=githubReviewId,
+            githubCommentIds=githubCommentIds,
+            repoId=repoId,
+            prNumber=prNumber,
+        )
+        if result is not None:
+            raise ReviewStepFailure(result)
 
 
 __all__ = [

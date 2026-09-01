@@ -200,7 +200,8 @@ Windows, the `__main__` block swaps uvicorn's asyncio loop factory to
   per-LLM-call JSON observability (metadata only; no prompt/output capture).
 - `logging.py` — `JsonFormatter`, `configure_structured_logging()`,
   `structured_log(level, msg, object)`.
-- `result.py` — `Ok` / `Err` result helpers used by the GitHub post path.
+- `result.py` — `Ok` / `Err` result helpers (currently unused; retained
+  for future result-style services).
 
 `src/app/models/` — see §3.4 Domain model. `__init__.py` re-exports every
 table and enum so `from app.models import *` in `alembic/env.py` registers
@@ -406,16 +407,13 @@ them on `SQLModel.metadata`.
   - `steps/` — `resolve_installation`, `resolve_repo_id`,
     `resolve_last_review`, `fetch_pr_state`, `add_reaction`,
     `resolve_llm_config`, `build_review_input`, `dispatch_review`.
-- `github/` — the GitHub post-pipeline.
-  - `post_review.py` — pure conversions (`convert_to_github_*`),
-    `post_review_to_github` (the REST call via an installation client),
-    `GitHubPosterError` variants, and the DB-update helpers.
-  - `workflow.py` — `post_review_to_github_workflow` (id
-    `post:{repo_id}:{pr_number}:{head_sha[:7]}`) wrapping the single
-    `post_review_to_github_step` (`retries_allowed=True`, `max_attempts=3`,
-    retry only on `RetryableGitHubPostError` — 5xx / 429). Non-retryable
-    errors complete the workflow with `posted=False`.
-  - `steps/` — placeholder for future sub-step helpers.
+- `github/` — the GitHub service package (sub-services follow the §9
+  pattern): `installation/`, `repo/`, `pr/`, `webhook/`, plus the
+  private `client.py` App-auth client factory. The GitHub post-pipeline
+  (posting a review + the DB back-link updates) lives in
+  `workflows/review/steps/post_review.py`, built on the `pr`
+  sub-service — the legacy `post_review.py` / `workflow.py` modules
+  were removed.
 - `llm_config/` — plain async service (no DBOS workflow):
   `test_user_llm_config` (never raises; runs a `create_deep_agent`
   probe with a `response_format` pydantic schema — the same
@@ -748,7 +746,7 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
     counts (success path; `review_status=SUCCESS`), carrying `review_id`.
 11. `mark_review_is_stopped_step` — flip the `review` row to `SUCCESS`
     with the surviving comment count and the GitHub review id (from the
-    awaited post workflow). Durable like the running step.
+    inline post step, when it posted). Durable like the running step.
 12. `kill_sandbox_step` — always, in a `finally`: destroys the ephemeral
     per-run sandbox (best-effort; a kill failure never masks the run's
     outcome).
@@ -773,11 +771,12 @@ severities (any P1 → `REQUEST_CHANGES`, else any P2/P3 → `COMMENT`, else
 `APPROVE`).
 
 If `post_to_github` is enabled (always true on the webhook path), the
-workflow starts `post_review_to_github_workflow` with id
-`post:{repo_id}:{pr_number}:{head_sha[:7]}`. This durable workflow retries
-transient GitHub errors (5xx / 429) up to 3 attempts and can be restarted
-independently via the DBOS admin server without re-running the LLM. The
-main workflow completes regardless of the post outcome.
+workflow posts the review inline via `postReviewStep`
+(`workflows/review/steps/post_review.py`): a DBOS step with its own
+retry policy (429 / 5xx retried without re-running the LLM); terminal
+4xx failures return `posted=False` and the local review completes
+regardless. On success `updatePostBacklinksTx` writes the GitHub
+review / comment ids back onto the `review` / `code_comments` rows.
 
 **Diff parsing and comment-line validation.** GitHub's review-comments API
 rejects (422) any inline comment whose `(file, line, side)` anchor is not in
@@ -1083,10 +1082,11 @@ private key — which startup validation prevents).
 
 ### 9.7 Status
 
-- `github` — refactored: three sub-services (`installation`, `repo`,
-  `pr`), ctx-carried client, no gates, no logging. The legacy
-  `post_review.py` / `workflow.py` modules are kept untouched and are
-  still exported from the package for the existing pipeline.
+- `github` — refactored: sub-services (`installation`, `repo`, `pr`,
+  `webhook`), ctx-carried client, no gates, no logging. The legacy
+  `post_review.py` / `workflow.py` modules were removed; posting now
+  runs inline in `workflows/review/steps/post_review.py` via the `pr`
+  sub-service.
 - `llm` / `sandbox` — ctx-based services; `llm` drops env gates (env
   validated at startup), `sandbox` keeps its provider map + provider
   classes as the wiring seam. Both are built but not yet consumed by

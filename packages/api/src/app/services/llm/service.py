@@ -5,7 +5,7 @@ Entry points:
 - :func:`createDefaultLLMContext` — build a :class:`LLMCtx` from settings.
 - :func:`createUserLLMContext` — build a :class:`LLMCtx` from the user's
   stored ``llm_configs`` row (fresh DB query; no borrowing from the
-  ``app.services.llm_config`` service).
+  :mod:`app.services.llm.config` sub-service).
 - :func:`createLLMModel` — build the LangChain chat model
   (:class:`langchain_core.language_models.BaseChatModel`) for a ctx;
   fresh implementation over ``langchain.chat_models.init_chat_model``
@@ -74,11 +74,11 @@ async def createUserLLMContext(
     """Build a :class:`LLMCtx` from the user's stored ``llm_configs`` row.
 
     Runs its own query against :class:`LLMConfigRecord` — the per-user
-    service :mod:`app.services.llm_config` is intentionally not reused.
-    The user's ``model`` / ``apiKey`` / ``baseUrl`` are taken from the
-    row; the remaining knobs (headers / retries / rate limit) come from
-    the global settings, so a user-supplied credential still flows
-    through Sentinel's rate limiter / retry policy.
+    sub-service :mod:`app.services.llm.config` is intentionally not
+    reused. The user's ``model`` / ``apiKey`` / ``baseUrl`` are taken
+    from the row; the remaining knobs (headers / retries / rate limit)
+    come from the global settings, so a user-supplied credential still
+    flows through Sentinel's rate limiter / retry policy.
 
     Returns:
         ``LLMCtx`` on success; ``LLMContextError`` when the user has no

@@ -14,10 +14,11 @@ Two layers, following the new service conventions:
 
 from __future__ import annotations
 
+from dbos import DBOS
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.core.db import dbos_datasource
+from app.core.db import get_dbos_datasource, async_session_maker
 from app.models.repo import Repo as RepoModel
 from app.utils.branded import RepoId, RepoName, RepoOwner
 from app.workflows.review.errors import RepoGetError, ReviewStepFailure
@@ -31,7 +32,11 @@ async def getRepo(
 ) -> RepoSnapshot | RepoGetError:
     """Fetch the local :class:`Repo` row by its GitHub-side id."""
     repo = (
-        (await session.execute(select(RepoModel).where(RepoModel.github_repo_id == ghRepoId)))
+        (
+            await session.execute(
+                select(RepoModel).where(RepoModel.github_repo_id == ghRepoId)
+            )
+        )
         .scalars()
         .first()
     )
@@ -45,7 +50,7 @@ async def getRepo(
     )
 
 
-@dbos_datasource.transaction()
+@DBOS.step()
 async def getRepoTx(*, ghRepoId: int) -> RepoSnapshot:
     """Durable DBOS transaction: find the local repo row by GitHub repo id.
 
@@ -53,11 +58,11 @@ async def getRepoTx(*, ghRepoId: int) -> RepoSnapshot:
         ReviewStepFailure: no row matches ``ghRepoId`` (wrapping a
             :class:`RepoGetError`). Business outcome — not retried.
     """
-    session = dbos_datasource.sql_session()
-    result = await getRepo(session, ghRepoId=ghRepoId)
-    if isinstance(result, RepoGetError):
-        raise ReviewStepFailure(result)
-    return result
+    async with async_session_maker() as session:
+        result = await getRepo(session, ghRepoId=ghRepoId)
+        if isinstance(result, RepoGetError):
+            raise ReviewStepFailure(result)
+        return result
 
 
 __all__ = ["getRepo", "getRepoTx"]

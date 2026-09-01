@@ -3,7 +3,7 @@
 Three endpoints:
 
 - ``POST /api/llm_config/`` — accept a candidate config, probe it
-  via :func:`app.services.llm_config.test_user_llm_config`, and on
+  via :func:`app.services.llm.config.testLLMConfig`, and on
   success upsert the row. Always returns ``200`` with the envelope
   described below (the frontend renders the probe result directly
   from the response, so HTTP-status branching is unnecessary).
@@ -43,7 +43,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.services.llm_config.types import LLMTestResultPublic
+from app.services.llm.config.types import LLMConfigTestResultPublic
 
 
 # --------------------------------------------------------------------------- #
@@ -147,7 +147,7 @@ class LLMConfigUpsertResponse(BaseModel):
             "convenience."
         ),
     )
-    test_result: LLMTestResultPublic = Field(
+    test_result: LLMConfigTestResultPublic = Field(
         description=(
             "The raw probe outcome. ``response`` is populated on "
             "success; ``exception`` is populated on failure. The "
@@ -179,7 +179,7 @@ class LLMConfigTestResponse(BaseModel):
             "convenience."
         ),
     )
-    test_result: LLMTestResultPublic = Field(
+    test_result: LLMConfigTestResultPublic = Field(
         description=(
             "The raw probe outcome. ``response`` is populated on "
             "success; ``exception`` is populated on failure."

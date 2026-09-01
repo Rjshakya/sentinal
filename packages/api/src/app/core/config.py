@@ -355,6 +355,10 @@ class Settings(BaseSettings):
         "(records at ERROR or higher become Sentry events regardless).",
     )
 
+    review_e2e_installation_id: str = Field(
+        description="github installations id for e2e review test"
+    )
+
     @property
     def daytona_configured(self) -> bool:
         return bool(self.daytona_api_key)

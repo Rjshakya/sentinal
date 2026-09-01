@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
+from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.db import get_session
 from app.schemas.llm_config import (
     CreateLLMConfigRequest,
     LLMConfigResponse,
@@ -28,12 +30,14 @@ from app.schemas.llm_config import (
     LLMConfigUpsertResponse,
     to_llm_config_response,
 )
-from app.services.llm_config import (
-    list_user_llm_configs,
-    test_user_llm_config,
-    upsert_user_llm_config,
+from app.services.llm.config import (
+    LLMConfigStoreError,
+    listUserLLMConfigs,
+    saveUserLLMConfig,
+    testLLMConfig,
 )
-from app.services.llm_config.types import LLMTestResultPublic
+from app.services.llm.config.types import LLMConfigTestResultPublic
+from app.utils.branded import UserId
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +48,7 @@ router = APIRouter(prefix="/llm_config", tags=["llm_configs"])
 async def create_or_replace_my_llm_config(
     request: Request,
     body: CreateLLMConfigRequest,
+    session: AsyncSession = Depends(get_session),
 ) -> LLMConfigUpsertResponse:
     """Test the supplied config, then store it on success.
 
@@ -61,22 +66,20 @@ async def create_or_replace_my_llm_config(
         body.model_id,
     )
 
-    record, test_result = await upsert_user_llm_config(
-        user_id=user_id,
+    test_result = await testLLMConfig(
         provider=body.provider,
-        model_id=body.model_id,
-        base_url=body.base_url,
-        api_key=body.api_key,
+        modelId=body.model_id,
+        baseUrl=body.base_url,
+        apiKey=body.api_key,
     )
-
-    public_test = LLMTestResultPublic(
+    public_test = LLMConfigTestResultPublic(
         response=test_result.get("response"),
         exception=test_result.get("exception"),
     )
 
-    if record is None:
+    if public_test.exception is not None:
         log.info(
-            "llm_configs: upsert failed (test or db): user_id=%s exception=%s",
+            "llm_configs: upsert failed (probe): user_id=%s exception=%s",
             user_id,
             public_test.exception,
         )
@@ -84,6 +87,42 @@ async def create_or_replace_my_llm_config(
             data=None,
             success=False,
             error=public_test.exception,
+            test_result=public_test,
+        )
+
+    record = await saveUserLLMConfig(
+        session,
+        userId=UserId(user_id),
+        provider=body.provider,
+        modelId=body.model_id,
+        baseUrl=body.base_url,
+        apiKey=body.api_key,
+    )
+    if isinstance(record, LLMConfigStoreError):
+        log.info(
+            "llm_configs: upsert failed (db): user_id=%s exception=%s",
+            user_id,
+            record.message,
+        )
+        return LLMConfigUpsertResponse(
+            data=None,
+            success=False,
+            error=record.message,
+            test_result=public_test,
+        )
+
+    try:
+        await session.commit()
+    except Exception as exc:
+        log.info(
+            "llm_configs: upsert failed (commit): user_id=%s exc=%s",
+            user_id,
+            exc,
+        )
+        return LLMConfigUpsertResponse(
+            data=None,
+            success=False,
+            error=f"database error: {type(exc).__name__}: {exc}",
             test_result=public_test,
         )
 
@@ -110,7 +149,7 @@ async def test_my_llm_config(
     """Probe a candidate config without persisting it.
 
     Mirrors the probe run inside the upsert endpoint. The service
-    layer promises :func:`test_user_llm_config` never raises, so
+    layer promises :func:`testLLMConfig` never raises, so
     the only branch here is the successful / failed probe result.
     The frontend renders the probe outcome directly from the
     response — no HTTP-status branching required.
@@ -124,15 +163,15 @@ async def test_my_llm_config(
         body.model_id,
     )
 
-    result = await test_user_llm_config(
+    test_result = await testLLMConfig(
         provider=body.provider,
-        model_id=body.model_id,
-        base_url=body.base_url,
-        api_key=body.api_key,
+        modelId=body.model_id,
+        baseUrl=body.base_url,
+        apiKey=body.api_key,
     )
-    public_test = LLMTestResultPublic(
-        response=result.get("response"),
-        exception=result.get("exception"),
+    public_test = LLMConfigTestResultPublic(
+        response=test_result.get("response"),
+        exception=test_result.get("exception"),
     )
 
     if public_test.exception is not None:
@@ -157,14 +196,17 @@ async def test_my_llm_config(
 
 
 @router.get("/", response_model=list[LLMConfigResponse])
-async def list_my_llm_config(request: Request) -> list[LLMConfigResponse]:
+async def list_my_llm_config(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> list[LLMConfigResponse]:
     """Return the user's stored config with ``api_key`` redacted.
 
     Empty list when the user has no row. One element at most —
     one config per user.
     """
     user_id: str = request.state.user_id
-    rows = await list_user_llm_configs(user_id)
+    rows = await listUserLLMConfigs(session, UserId(user_id))
     return [to_llm_config_response(row) for row in rows]
 
 
