@@ -147,7 +147,8 @@ Read flow for a PR review:
 | AI           | `deepagents` orchestrator + 4 `SubAgent`s, LangChain chat models, `tree-sitter-language-pack` for parsing |
 | Durable jobs | DBOS — durable workflows, idempotent steps, retryable transactions on the same Postgres |
 | Database     | PostgreSQL 18 (docker-compose), `gen_random_uuid()` defaults, CASCADE FKs           |
-| Logging      | JSON via `JsonFormatter` on the root logger                                         |
+| Logging      | stdlib `logging` → OpenTelemetry logs over OTLP (console fallback)                |
+| Telemetry    | OpenLLMetry (`traceloop-sdk`) — OTLP/HTTP traces for the review agents + FastAPI     |
 | Deploy       | Web → Cloudflare Workers (`wrangler.jsonc`); API → BYO host (containers, Fly, Railway, etc.) |
 
 ---
@@ -335,8 +336,13 @@ A single `.env` at the repo root is loaded by `app.core.config.Settings`
 | `LLM_DEFAULT_HEADERS`                 | `{}`                                        | Optional JSON-encoded dict of HTTP headers attached to every LLM request (gateway IDs, project tags). |
 | `LLM_MAX_RETRIES`                     | `3`                                         | Number of SDK retries on transient errors. |
 | `LLM_RATE_LIMIT_RPS`                  | `0.5`                                       | Client-side requests-per-second rate limit (via `InMemoryRateLimiter`). Set `0` to disable. |
-| `LLM_LOG_IO`                          | `false`                                     | Emit per-LLM-call metadata JSON log lines for the review agents. |
 | `OPENAI_API_KEY`                      | `""`                                        | OpenAI key; injected into the indexing sandbox and used as the env-var fallback for `LLM_MODEL=openai:…`. |
+| **Telemetry (OpenLLMetry)**           |                                             | |
+| `TRACELOOP_BASE_URL`                  | `""`                                        | OTLP/HTTP endpoint for trace + log export (e.g. `http://localhost:4318`); the SDK appends `/v1/traces` and logs export to `/v1/logs`. Works with Traceloop Cloud, a self-hosted OpenTelemetry collector, or any OTLP backend. Leave empty (with `TRACELOOP_API_KEY`) to disable telemetry. |
+| `TRACELOOP_API_KEY`                   | `""`                                        | Bearer token for the OTLP endpoint (required for Traceloop Cloud, optional for self-hosted collectors). |
+| `TRACELOOP_TRACE_CONTENT`             | `true`                                      | Capture prompts / completions / embeddings as span attributes; set `false` to keep message bodies out of the traces. |
+| `TRACELOOP_DISABLE_BATCH`             | `false`                                     | Send spans immediately instead of batching (dev convenience). |
+| `TELEMETRY_FASTAPI`                   | `true`                                      | Instrument the FastAPI app (one HTTP span per request) when telemetry is configured. |
 | **GitHub App (repo access)**          |                                             | |
 | `GITHUB_APP_ID`                       | `""`                                        | GitHub App numeric id |
 | `GITHUB_APP_CLIENT_ID`                | `""`                                        | GitHub App OAuth client id |
@@ -667,6 +673,11 @@ new revision.
 - **`/api/ai/repo/setup` returns 503.** The review/setup LLM is not
   configured — set `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY` (or
   `OPENAI_API_KEY`).
+- **No traces in the telemetry backend.** Set `TRACELOOP_BASE_URL` (and
+  `TRACELOOP_API_KEY` for authenticated endpoints) in `.env` — with
+  both empty the OpenLLMetry SDK is never initialised. For local
+  debugging add `TRACELOOP_DISABLE_BATCH=true` to see spans in real
+  time.
 - **Sandbox create fails on Windows.** uvicorn must be using the
   `SelectorEventLoop`. `main.py` patches this in its `__main__` block
   for `sys.platform == "win32"`.

@@ -44,6 +44,19 @@ function formatDate(value: string | null): string {
   return new Date(value).toLocaleString();
 }
 
+function formatDuration(start: string | null, end: string | null): string {
+  if (!start || !end) return "—";
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  if (ms < 0) return "—";
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${remSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
 function formatTokens(value: number): string {
   return value.toLocaleString();
 }
@@ -102,13 +115,14 @@ function ReviewsPage() {
                 <TableHead>Pull Request</TableHead>
                 <TableHead>Trigger</TableHead>
                 <TableHead>State</TableHead>
-                <TableHead className="text-right">Comments</TableHead>
+                <TableHead className="">Comments</TableHead>
                 <TableHead>Model</TableHead>
-                <TableHead className="text-right">Tokens</TableHead>
-                <TableHead>Completed</TableHead>
+                <TableHead className="">Tokens</TableHead>
+                <TableHead>Started At</TableHead>
+                <TableHead>Time Taken</TableHead>
               </TableRow>
             </TableHeader>
-            <TableBody>
+            <TableBody className=" bg-accent dark:bg-card">
               {reviews.map((review) => (
                 <ReviewRow key={review.id} review={review} />
               ))}
@@ -128,40 +142,46 @@ function ReviewRow({ review }: { review: Review }) {
       : "—";
 
   return (
-    <TableRow>
-      <TableCell className="font-medium">{repo}</TableCell>
-      <TableCell>
-        <div className="flex flex-col">
-          <span className="max-w-64 truncate">{review.pr_title ?? "—"}</span>
+    <TableRow className="">
+      <TableCell className="border text-xs ">{repo}</TableCell>
+      <TableCell className="border text-xs">
+        <div className="flex items-center gap-2">
           <span className="text-muted-foreground text-xs">
             #{review.pr_number}
           </span>
+          <span className="max-w-64 truncate">{review.pr_title ?? "—"}</span>
+
         </div>
       </TableCell>
-      <TableCell>
+      <TableCell className="border text-xs ">
         <span className="text-muted-foreground capitalize">
           {review.trigger ?? "—"}
         </span>
       </TableCell>
-      <TableCell>
+      <TableCell className="border text-xs">
         <Badge className={state.className}>{state.label}</Badge>
       </TableCell>
-      <TableCell className="text-right">
+      <TableCell className="border text-xs">
         {review.comment_count ?? "—"}
       </TableCell>
-      <TableCell>
+      <TableCell className="border text-xs">
         <span className="text-muted-foreground">
           {review.llm_model ?? "—"}
         </span>
       </TableCell>
-      <TableCell className="text-right">
+      <TableCell className="border text-xs">
         {review.usage
           ? formatTokens(review.usage.total_tokens)
           : "—"}
       </TableCell>
-      <TableCell>
+      <TableCell className=" border text-xs">
         <span className="text-muted-foreground">
-          {formatDate(review.completed_at ?? review.created_at)}
+          {formatDate(review.started_at)}
+        </span>
+      </TableCell>
+      <TableCell className=" border text-xs">
+        <span className="text-muted-foreground">
+          {formatDuration(review.started_at, review.completed_at)}
         </span>
       </TableCell>
     </TableRow>

@@ -26,7 +26,8 @@ ai-code-review/
 │       │   └── versions/     # 12 revisions
 │       └── src/app/
 │           ├── core/         # config, db, auth, middleware, workos, github_app,
-│           │                 #   install_state, sandbox/, llm, llm_callbacks, logging, result
+│           │                 #   install_state, sandbox/, llm, result,
+│           │                 #   telemetry
 │           ├── models/       # SQLModel tables + enums
 │           ├── schemas/      # HTTP request/response shapes (setup, llm_config)
 │           ├── repositories/ # generic Repository[T] base
@@ -112,7 +113,6 @@ Data flow at a glance:
 - **WorkOS SDK** (`AsyncWorkOSClient`) for User Management
 - **githubkit** (`AppAuthStrategy`) for the GitHub App REST surface
 - **LangChain** (`init_chat_model`) + **deepagents** for the review agents
-- **Sentry** for error capture (initialised only when `SENTRY_DSN` is set)
 
 ### 3.2 Module map
 
@@ -123,8 +123,14 @@ routers under `settings.api_prefix` (`/api`). The `lifespan` hook runs
 `create_db_and_tables()` (a `SQLModel.metadata.create_all` convenience for
 greenfield dev), initialises DBOS from `_dbos_config()` and `DBOS.launch()`,
 and calls `build_e2b_template()`; on shutdown it runs `DBOS.destroy()`.
-Sentry is initialised at import time when `settings.sentry_configured`
-(DSN present), with a `LoggingIntegration` that forwards ERROR+ records. On
+OpenLLMetry telemetry (`app/core/telemetry.py::init_telemetry`) is
+initialised at import time when `settings.telemetry_configured`
+(`TRACELOOP_BASE_URL` / `TRACELOOP_API_KEY` present) and is the
+single observability entry point: it wires **traces** via `Traceloop`
+and **logs** via an OTel SDK `LoggingHandler` on the root logger, both
+exported over the same OTLP endpoint (see §3.7). The FastAPI app
+is instrumented in `create_app()` via
+`app/core/telemetry.py::instrument_fastapi` (see §3.7). On
 Windows, the `__main__` block swaps uvicorn's asyncio loop factory to
 `SelectorEventLoop` because psycopg async (used by DBOS) fails on the
 `ProactorEventLoop`.
@@ -137,15 +143,15 @@ Windows, the `__main__` block swaps uvicorn's asyncio loop factory to
   `session_max_age_seconds`), sandbox (`sandbox_provider`, `e2b_*`,
   `daytona_*`), embeddings (`openai_api_key`), LLM (`llm_model` as a
   `"provider:model"` string, `llm_api_key`, `llm_base_url`,
-  `llm_default_headers`, `llm_max_retries`, `llm_rate_limit_rps`,
-  `llm_log_io`), GitHub App (`github_app_*`), DBOS (`dbos_executor_id`,
+  `llm_default_headers`, `llm_max_retries`, `llm_rate_limit_rps`),
+  GitHub App (`github_app_*`), DBOS (`dbos_executor_id`,
   `dbos_database_url`), GitHub webhook (`github_webhook_secret`), install
-  flow (`github_install_state_secret`), Sentry (`sentry_*`). Convenience
+  flow (`github_install_state_secret`). Convenience
   properties: `workos_configured`, `sandbox_configured`,
   `llm_configured` (accepts provider-native env vars via a provider→env-key
   map), `github_app_configured`, `github_webhook_configured`,
   `github_install_state_effective_secret`, `github_app_install_url`,
-  `sentry_configured`, `cookie_secure`. All env vars have safe defaults so
+  `cookie_secure`. All env vars have safe defaults so
   the module can import in tests.
 - `db.py` — async engine + `async_session_maker`, `get_session` dependency,
   `create_db_and_tables`, and `dbos_datasource` (an
@@ -196,10 +202,14 @@ Windows, the `__main__` block swaps uvicorn's asyncio loop factory to
   `build_chat_model(config, callbacks=…)` — the single factory delegating to
   `langchain.chat_models.init_chat_model`, applying rate limiter / base URL /
   default headers / SecretStr-wrapped api_key uniformly.
-- `llm_callbacks.py` — `LLMIOCallbackHandler` + `make_llm_io_handler` for
-  per-LLM-call JSON observability (metadata only; no prompt/output capture).
-- `logging.py` — `JsonFormatter`, `configure_structured_logging()`,
-  `structured_log(level, msg, object)`.
+- `telemetry.py` — OpenLLMetry (`traceloop-sdk`) wiring, the single
+  observability entry point: `init_telemetry()` (import-time init gated on
+  `settings.telemetry_configured`; sets `TRACELOOP_TRACE_CONTENT` /
+  `TRACELOOP_TELEMETRY` env, then `Traceloop.init(...)` with the
+  SDK's anonymous telemetry disabled, followed by an OTel SDK
+  `LoggerProvider` + `LoggingHandler` that routes stdlib `logging`
+  to `<endpoint>/v1/logs`) and `instrument_fastapi(app)`
+  (attaches `FastAPIInstrumentor` when telemetry is on).
 - `result.py` — `Ok` / `Err` result helpers (currently unused; retained
   for future result-style services).
 
@@ -705,7 +715,7 @@ the same head SHA do not re-run the agent. `review_workflow` then runs:
    failure retries **that lane alone**; the invoke steps never stop the
    sandbox (the workflow's `finally` owns the stop). `combine_agent_outcomes`
    then partitions the two results: both failed → raises
-   `ReviewAgentsInvocationError` (pushed to Sentry with run context);
+   `ReviewAgentsInvocationError` (logged with run context);
    partial → failed lanes degrade to empty defaults (`""` summary / empty
    comment lists) with a warning log, and the review completes with the
    successful lanes' output; token usage is aggregated per model from
@@ -773,17 +783,40 @@ the PR's diff. Two layers guard this:
 `efc8cecac0b4_`. Schema changes go through Alembic; the lifespan's
 `create_all` is a convenience for greenfield dev, not a substitute.
 
-### 3.7 Structured logging + Sentry
+### 3.7 OpenTelemetry observability (traces + logs)
 
-The API emits all logs as JSON (`configure_structured_logging()` replaces
-the root formatter with `JsonFormatter`). Failures in the review path are
-logged via `structured_log` and pushed to Sentry when `SENTRY_DSN` is set:
-`combine_agent_outcomes` captures `ReviewAgentsInvocationError` with the
-full run context (PR, SHAs, user, LLM provider/model, failed/succeeded
-agents, workflow id) as tags and extras. When `LLM_LOG_IO` is enabled, every
-LLM call from the review agents emits `llm_call_started` /
-`llm_call_completed` / `tool_call_*` lines with correlation context; the
-handler never captures prompt or output text.
+OpenLLMetry (`traceloop-sdk`, wired in `app/core/telemetry.py`) is the
+single observability entry point. When `settings.telemetry_configured`
+(`TRACELOOP_BASE_URL` / `TRACELOOP_API_KEY` set — otherwise the SDK is
+never initialised and all logs stay on the console), it exports two
+signals over the same OTLP/HTTP pipeline, so any collector can ingest
+them:
+
+- **Traces.** The SDK auto-instruments LangChain + the provider
+  SDKs, so every LLM call of the review agents (both lanes + both
+  extractor steps) becomes a `gen_ai` span with model, token usage, and
+  latency — no call-site changes. The FastAPI app is instrumented via
+  `opentelemetry-instrumentation-fastapi` (`instrument_fastapi(app)` in
+  `create_app()`, skippable with `TELEMETRY_FASTAPI=false`). Each review
+  run is grouped under one `review` workflow span (the
+  `@traceloop.sdk.decorators.workflow(name="review")` wrapper on
+  `reviewWorkflow`) tagged with the run's business context via
+  `Traceloop.set_association_properties` (repo_id / pr_number / head_sha /
+  user_id / workflow_id) — the join key for correlating the fire-and-forget
+  review trace with the webhook HTTP span. `TRACELOOP_TRACE_CONTENT`
+  (default `true`) controls whether prompts / completions / embeddings are
+  captured as span attributes; `TRACELOOP_DISABLE_BATCH` sends spans
+  immediately (dev convenience). The SDK's own anonymous telemetry is
+  disabled.
+- **Logs.** The API logs through stdlib `logging` (plain console via
+  `logging.basicConfig` in `main.py`). When telemetry is configured, an
+  OTel SDK `LoggingHandler` is attached to the root logger, so every
+  `log.info` / `log.error` call in the codebase becomes an OTel log
+  record exported to `<endpoint>/v1/logs` with the same resource
+  attributes (`service.name=sentinel`, `env=development`); `extra`
+  kwargs on a call are surfaced as LogRecord attributes. Failures in
+  the review path are logged with the full run context (PR, SHAs,
+  user, LLM provider/model, workflow id) as standard log records.
 
 ## 4. Frontend — `web`
 
@@ -915,13 +948,15 @@ corresponding route file does not exist yet.
 | `DAYTONA_API_KEY`, `DAYTONA_TEMPLATE` | `""` | Daytona adapter config |
 | `LLM_MODEL` | `""` | `provider:model` string for the review agents |
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_DEFAULT_HEADERS` | `""` / `""` / `{}` | Provider credential / gateway base URL / headers |
-| `LLM_MAX_RETRIES` / `LLM_RATE_LIMIT_RPS` / `LLM_LOG_IO` | `3` / `0.5` / `false` | SDK retries, client-side rate limit, per-call I/O logging |
+| `LLM_MAX_RETRIES` / `LLM_RATE_LIMIT_RPS` | `3` / `0.5` | SDK retries, client-side rate limit |
 | `GITHUB_APP_ID` / `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` / `GITHUB_APP_SLUG` | `""` | GitHub App identity |
 | `GITHUB_APP_PRIVATE_KEY` / `GITHUB_APP_PRIVATE_KEY_PATH` | `""` | App private key (base64 or PEM path) |
 | `GITHUB_WEBHOOK_SECRET` | `""` | HMAC secret for `X-Hub-Signature-256` |
 | `GITHUB_INSTALL_STATE_SECRET` | `""` | HMAC secret for install-flow state; falls back to `WORKOS_COOKIE_PASSWORD` |
 | `DBOS_EXECUTOR_ID` / `DBOS_DATABASE_URL` | hostname / `postgresql://…@localhost:5432/aicode` | DBOS executor identity / DB URL |
-| `SENTRY_DSN` / `SENTRY_ENVIRONMENT` / `SENTRY_TRACES_SAMPLE_RATE` / `SENTRY_PROFILES_SAMPLE_RATE` | `""` / `development` / `1.0` / `1.0` | Sentry observability |
+| `TRACELOOP_BASE_URL` / `TRACELOOP_API_KEY` | `""` / `""` | OpenLLMetry OTLP/HTTP trace + log endpoint / bearer token (both empty → SDK never initialised) |
+| `TRACELOOP_TRACE_CONTENT` / `TRACELOOP_DISABLE_BATCH` | `true` / `false` | Capture prompts/completions on spans / send spans immediately (dev) |
+| `TELEMETRY_FASTAPI` | `true` | Instrument the FastAPI app (HTTP spans) when telemetry is configured |
 
 ### 6.2 Frontend (`web/.env`)
 
@@ -1006,7 +1041,7 @@ Each service package owns one domain and lives under
 ### 9.3 No logging in services
 
 Services do not import `logging`. They just return — success values
-or error values. Logging (and Sentry capture) happens at the edge:
+or error values. Logging happens at the edge:
 routers, webhook receivers, DBOS steps.
 
 ### 9.4 Errors are values, never exceptions

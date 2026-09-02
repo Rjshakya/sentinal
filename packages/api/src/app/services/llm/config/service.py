@@ -102,9 +102,8 @@ async def testLLMConfig(
     rejections, …).
 
     No callbacks are attached, so the probe produces no
-    ``llm_call_started`` / ``llm_call_completed`` log lines and no
-    Sentry noise. The tokens still show up in the provider's own
-    usage dashboard.
+    ``llm_call_started`` / ``llm_call_completed`` log lines. The
+    tokens still show up in the provider's own usage dashboard.
     """
     try:
         ctx = _build_candidate_ctx(

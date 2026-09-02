@@ -250,18 +250,6 @@ class Settings(BaseSettings):
             "0 disables the limiter."
         ),
     )
-    llm_log_io: bool = Field(
-        default=False,
-        description=(
-            "Emit per-LLM-call metadata JSON log lines for the review "
-            "agents. Each line carries correlation context (agent / "
-            "repo / pr / head_sha / workflow_id / model), the "
-            "per-call index, run id, latency, and token usage. Input "
-            "messages, output text, and tool inputs/outputs are NOT "
-            "captured. When false, no LLM I/O callback handler is "
-            "attached and there is zero per-call overhead."
-        ),
-    )
 
     # --- GitHub App ---
     github_app_id: str = Field(
@@ -323,36 +311,56 @@ class Settings(BaseSettings):
         "blank.",
     )
 
-    # --- Sentry observability ---
-    sentry_dsn: str = Field(
+    # --- Telemetry (OpenLLMetry / traceloop-sdk) ---
+    # Standard OTLP/HTTP trace export. The env vars keep the SDK-native
+    # TRACELOOP_* names so they work even outside this settings object;
+    # the fields are the telemetry_* surface consumed by
+    # app.core.telemetry.
+    telemetry_api_key: str = Field(
         default="",
-        description="Sentry DSN. Leave empty to skip Sentry initialisation "
-        "entirely (no SDK is loaded, no log records are captured).",
+        alias="TRACELOOP_API_KEY",
+        description=(
+            "Bearer token for the OTLP endpoint (Traceloop Cloud or any "
+            "authenticated collector). Leave empty for unauthenticated "
+            "endpoints."
+        ),
     )
-    sentry_environment: str = Field(
-        default="development",
-        description="Sentry environment tag (e.g. 'development', 'staging', 'production').",
+    telemetry_base_url: str = Field(
+        default="",
+        alias="TRACELOOP_BASE_URL",
+        description=(
+            "OTLP/HTTP endpoint for trace export, e.g. "
+            "'http://localhost:4318'. The SDK appends '/v1/traces'; an "
+            "http(s) prefix selects the OTLP/HTTP protocol. Leave both "
+            "this and TRACELOOP_API_KEY empty to disable telemetry "
+            "entirely (the SDK is never initialised)."
+        ),
     )
-    sentry_traces_sample_rate: float = Field(
-        default=1.0,
-        description="Fraction of transactions to capture for tracing (0.0 - 1.0).",
-    )
-    sentry_profiles_sample_rate: float = Field(
-        default=1.0,
-        description="Fraction of profile sessions to capture (0.0 - 1.0).",
-    )
-    sentry_send_default_pii: bool = Field(
+    telemetry_trace_content: bool = Field(
         default=True,
-        description="Send request headers and IP for users; see Sentry docs.",
+        alias="TRACELOOP_TRACE_CONTENT",
+        description=(
+            "Capture prompts / completions / embeddings as span "
+            "attributes. True (default) gives full visibility into what "
+            "the review agents sent and received; set false to keep "
+            "message bodies out of the traces (metadata only)."
+        ),
     )
-    sentry_enable_logs: bool = Field(
+    telemetry_disable_batch: bool = Field(
+        default=False,
+        alias="TRACELOOP_DISABLE_BATCH",
+        description=(
+            "Send spans immediately instead of batching them. Useful in "
+            "dev to see traces in real time; leave false in production."
+        ),
+    )
+    telemetry_fastapi: bool = Field(
         default=True,
-        description="Enable the Sentry structured-logs API.",
-    )
-    sentry_log_level: str = Field(
-        default="INFO",
-        description="Minimum stdlib logging level to forward to Sentry as breadcrumbs "
-        "(records at ERROR or higher become Sentry events regardless).",
+        description=(
+            "Instrument the FastAPI app (one HTTP span per request) "
+            "when telemetry is configured. Set false to disable the "
+            "HTTP layer while keeping LLM trace export."
+        ),
     )
 
     review_e2e_installation_id: str = Field(
@@ -453,15 +461,6 @@ class Settings(BaseSettings):
         )
 
     @property
-    def llm_log_io_enabled(self) -> bool:
-        """True when per-LLM-call I/O logging is enabled.
-
-        The chat model factory reads this to decide whether to attach
-        the :class:`app.core.llm_callbacks.LLMIOCallbackHandler`.
-        """
-        return self.llm_log_io
-
-    @property
     def github_webhook_configured(self) -> bool:
         """True when a webhook secret is set and deliveries can be verified."""
         return bool(self.github_webhook_secret)
@@ -496,9 +495,15 @@ class Settings(BaseSettings):
         return "sentinel:repo:"
 
     @property
-    def sentry_configured(self) -> bool:
-        """True when a Sentry DSN is set and the SDK should be initialised."""
-        return bool(self.sentry_dsn)
+    def telemetry_configured(self) -> bool:
+        """True when OpenLLMetry has an OTLP endpoint or API key to export to.
+
+        Both ``telemetry_api_key`` and ``telemetry_base_url`` default to
+        empty so the module imports safely in tests and the SDK is never
+        initialised (no auto-generated Traceloop-cloud key) unless the
+        operator opts in.
+        """
+        return bool(self.telemetry_api_key or self.telemetry_base_url)
 
 
 settings = Settings()

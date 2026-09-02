@@ -29,7 +29,6 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.llm import build_chat_model
-from app.core.logging import configure_structured_logging
 from app.core.sandbox.e2b import CODE_SANDBOX_TEMPLATE_NAME, build_e2b_template
 
 log = logging.getLogger(__name__)
@@ -62,11 +61,6 @@ def echo_word(word: str) -> str:
 
 async def main() -> int:
 
-    # Install the JSON formatter on the root logger so the LLM I/O
-    # callback handler's structured payloads render as JSON lines.
-    # No-op when LLM_LOG_IO is unset (the handler list is empty).
-    configure_structured_logging()
-
     build_e2b_template()
     llm_config = settings.llm_config
     log.info(
@@ -75,10 +69,6 @@ async def main() -> int:
         llm_config.base_url,
         (llm_config.api_key or "")[:6],
     )
-
-    # When settings.llm_log_io_enabled is false (the default), this
-    # returns an empty list and the chat model gets no callbacks —
-    # behavior is identical to before this change.
 
     chat = build_chat_model(config=llm_config)
 

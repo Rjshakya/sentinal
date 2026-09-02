@@ -4,8 +4,6 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import sentry_sdk
-
 # psycopg async mode does not work with Windows' default ProactorEventLoop.
 # Force the SelectorEventLoop before any DBOS/SQLAlchemy async imports run.
 # if sys.platform == "win32":
@@ -14,13 +12,12 @@ import sentry_sdk
 from dbos import DBOS, DBOSConfig
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sentry_sdk.integrations.logging import LoggingIntegration
 
 from app.core.config import settings
 from app.core.db import create_db_and_tables, get_dbos_datasource
-from app.core.logging import configure_structured_logging
 from app.core.middleware import AuthMiddleware
 from app.core.sandbox.e2b import build_e2b_index_template, build_e2b_template
+from app.core.telemetry import init_telemetry, instrument_fastapi
 from app.routers import (
     ai,
     auth,
@@ -48,43 +45,14 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
-configure_structured_logging()
-if settings.sentry_configured:
-    _sentry_log_level = getattr(
-        logging, settings.sentry_log_level.upper(), logging.INFO
-    )
-    if not isinstance(_sentry_log_level, int):
-        _sentry_log_level = logging.INFO
-    sentry_sdk.init(
-        dsn=settings.sentry_dsn,
-        environment=settings.sentry_environment,
-        send_default_pii=settings.sentry_send_default_pii,
-        enable_logs=settings.sentry_enable_logs,
-        # Set traces_sample_rate to 1.0 to capture 100%
-        # of transactions for tracing.
-        traces_sample_rate=settings.sentry_traces_sample_rate,
-        # Set profile_session_sample_rate to 1.0 to profile 100%
-        # of profile sessions.
-        profile_session_sample_rate=settings.sentry_profiles_sample_rate,
-        # Set profile_lifecycle to "trace" to automatically
-        # run the profiler on when there is an active transaction
-        profile_lifecycle="trace",
-        integrations=[
-            LoggingIntegration(
-                level=_sentry_log_level,
-                event_level=logging.ERROR,
-            ),
-        ],
-    )
-    logging.getLogger(__name__).info(
-        "sentry initialised: env=%s log_level=%s",
-        settings.sentry_environment,
-        settings.sentry_log_level,
-    )
-else:
-    logging.getLogger(__name__).info(
-        "sentry not configured (SENTRY_DSN empty); skipping init"
-    )
+# OpenLLMetry telemetry: the single observability entry point, gated
+# on TRACELOOP_BASE_URL / TRACELOOP_API_KEY. It wires traces (via
+# Traceloop) and logs (OTLP) through the same endpoint. OpenTelemetry
+# instrumentors patch already-imported modules, so this is safe after
+# the routers above have imported LangChain / provider packages. The
+# FastAPI ASGI instrumentation is attached in create_app() via
+# instrument_fastapi.
+init_telemetry()
 
 
 def _dbos_config() -> DBOSConfig:
@@ -146,6 +114,10 @@ def create_app() -> FastAPI:
     app.include_router(indexing.router, prefix=settings.api_prefix)
     app.include_router(search.router, prefix=settings.api_prefix)
     app.include_router(webhooks.router, prefix=settings.api_prefix)
+
+    # One OTLP HTTP span per request (skipped when telemetry is
+    # unconfigured or TELEMETRY_FASTAPI=false).
+    instrument_fastapi(app)
 
     return app
 

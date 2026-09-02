@@ -47,6 +47,12 @@ Design notes:
   (:func:`app.workflows.review.steps.invoke_agent.invokeAgentStep`
   under ``asyncio.gather(return_exceptions=True)``); structured
   payloads are produced afterwards by the durable extractor steps.
+- When OpenLLMetry telemetry is configured, the workflow is wrapped in
+  a ``traceloop.sdk.decorators.workflow(name="review")`` span so every
+  LLM call of the run nests under one per-review trace, tagged with
+  the run's business context via
+  :func:`Traceloop.set_association_properties` (see
+  :mod:`app.core.telemetry`).
 """
 
 from __future__ import annotations
@@ -55,6 +61,8 @@ import asyncio
 import logging
 
 from dbos import DBOS
+from traceloop.sdk import Traceloop
+from traceloop.sdk.decorators import workflow as traceloop_workflow
 
 from app.models.enums import PRStatus
 from app.services.sandbox.types import SandboxCtx
@@ -210,6 +218,7 @@ def buildReviewWorkflowInput(
 # --------------------------------------------------------------------------- #
 
 
+@traceloop_workflow(name="review")
 @DBOS.workflow()
 async def reviewWorkflow(
     ctx: ReviewWorkflowCtx,
@@ -233,6 +242,21 @@ async def reviewWorkflow(
     workflow_id: str = DBOS.workflow_id or "<no-workflow-id>"
 
     repo: RepoSnapshot = await getRepoTx(ghRepoId=input.ghRepoId)
+
+    # Tag every span of this run with the review's business context so
+    # traces are filterable by repo / pr / head / user in the telemetry
+    # backend. The @traceloop_workflow(name="review") wrapper above
+    # carries these onto the workflow span; the parallel lane steps
+    # inherit them via asyncio context propagation.
+    Traceloop.set_association_properties(
+        {
+            "repo_id": repo.id,
+            "pr_number": input.prNumber,
+            "head_sha": input.headSha,
+            "user_id": input.userId,
+            "workflow_id": workflow_id,
+        }
+    )
 
     review_row_id: ReviewRowId | None = None
     sandbox_ctx: SandboxCtx = ctx.sandboxCtx
