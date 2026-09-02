@@ -336,6 +336,9 @@ class Settings(BaseSettings):
             "entirely (the SDK is never initialised)."
         ),
     )
+
+    axiom_dataset: str | None = Field(default="", description="Axiom dataset name")
+
     telemetry_trace_content: bool = Field(
         default=True,
         alias="TRACELOOP_TRACE_CONTENT",
@@ -364,8 +367,16 @@ class Settings(BaseSettings):
     )
 
     review_e2e_installation_id: str = Field(
-        description="github installations id for e2e review test"
+        default="",
+        description="github installations id for e2e review test",
     )
+
+    app_env: str = Field(
+        default="development",
+        description="app environment",
+    )
+
+    app_name: str = Field(default="reviewpr", description="app name")
 
     @property
     def daytona_configured(self) -> bool:
