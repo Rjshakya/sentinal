@@ -243,7 +243,7 @@ export const apiClient = {
       body: JSON.stringify(payload),
     }),
   codeSearch: (payload: CodeSearchRequest) =>
-    request<CodeSearchResponse>("/search", {
+    request<CodeSearchResponse>("/search/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

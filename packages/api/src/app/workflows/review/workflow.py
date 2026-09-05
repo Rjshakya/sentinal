@@ -218,7 +218,7 @@ def buildReviewWorkflowInput(
 # --------------------------------------------------------------------------- #
 
 
-@traceloop_workflow(name="review")
+@traceloop_workflow(name="review_workflow")
 @DBOS.workflow()
 async def reviewWorkflow(
     ctx: ReviewWorkflowCtx,
@@ -239,6 +239,7 @@ async def reviewWorkflow(
     ``FAILED`` by :func:`markReviewErroredStep` on any terminal
     exception (which is then re-raised).
     """
+
     workflow_id: str = DBOS.workflow_id or "<no-workflow-id>"
 
     repo: RepoSnapshot = await getRepoTx(ghRepoId=input.ghRepoId)
@@ -409,9 +410,9 @@ async def reviewWorkflow(
             if post_result.posted and post_result.githubReviewId is not None:
                 await updatePostBacklinksTx(
                     reviewRowId=review_row_id,
+                    reviewSummaryId=str(summary_row_id),
                     commentRowIds=comment_row_ids,
                     githubReviewId=post_result.githubReviewId,
-                    githubCommentIds=post_result.githubCommentIds,
                     repoId=repo.id,
                     prNumber=input.prNumber,
                 )

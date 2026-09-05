@@ -27,11 +27,12 @@ import logging
 
 from dbos import DBOS
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import col, select
 
 from app.core.db import async_session_maker
 from app.models.code_comment import CodeComment
 from app.models.review import Review
+from app.models.review_summary import ReviewSummary
 from app.services.github.pr.errors import GitHubPRError
 from app.services.github.pr.service import createPRCtx, postReview
 from app.services.github.pr.types import PRCommentDraft, PRCtx, PRReviewDraft
@@ -235,9 +236,9 @@ async def updatePostBacklinks(
     session: AsyncSession,
     *,
     reviewRowId: ReviewRowId,
+    reviewSummaryId: str,
     commentRowIds: list[str],
     githubReviewId: int,
-    githubCommentIds: list[int],
     repoId: RepoId,
     prNumber: PRNumber,
 ) -> None | PersistError:
@@ -250,31 +251,37 @@ async def updatePostBacklinks(
     """
     try:
         review = await session.get(Review, reviewRowId)
+
         if review is not None:
             review.github_review_id = str(githubReviewId)
             session.add(review)
 
-        if commentRowIds and githubCommentIds:
+        reviewSummary = await session.get(ReviewSummary, reviewSummaryId)
+
+        if reviewSummary is not None:
+            reviewSummary.github_review_id = str(githubReviewId)
+            session.add(reviewSummary)
+
+        if commentRowIds:
             rows = (
                 (
                     await session.execute(
                         select(CodeComment).where(
-                            CodeComment.id.in_(commentRowIds)  # type: ignore[attr-defined]
+                            col(CodeComment.id).in_(commentRowIds)
                         )
                     )
                 )
                 .scalars()
                 .all()
             )
-            byId = {row.id: row for row in rows}
-            for rowId, ghId in zip(commentRowIds, githubCommentIds, strict=False):
-                row = byId.get(rowId)
-                if row is not None:
-                    row.github_comment_id = str(ghId)
-                    session.add(row)
+
+            for row in rows:
+                row.github_review_id = str(githubReviewId)
+                session.add(row)
 
         await session.commit()
         return None
+
     except Exception as exc:
         return PersistError(
             message=f"failed to update post back-links: {type(exc).__name__}: {exc}",
@@ -287,9 +294,9 @@ async def updatePostBacklinks(
 async def updatePostBacklinksTx(
     *,
     reviewRowId: ReviewRowId,
+    reviewSummaryId: str,
     commentRowIds: list[str],
     githubReviewId: int,
-    githubCommentIds: list[int],
     repoId: RepoId,
     prNumber: PRNumber,
 ) -> None:
@@ -300,15 +307,17 @@ async def updatePostBacklinksTx(
             (wrapping a :class:`PersistError`).
     """
     async with async_session_maker() as session:
+
         result = await updatePostBacklinks(
             session,
             reviewRowId=reviewRowId,
+            reviewSummaryId=reviewSummaryId,
             commentRowIds=commentRowIds,
             githubReviewId=githubReviewId,
-            githubCommentIds=githubCommentIds,
             repoId=repoId,
             prNumber=prNumber,
         )
+
         if result is not None:
             raise ReviewStepFailure(result)
 

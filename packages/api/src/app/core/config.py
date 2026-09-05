@@ -339,6 +339,12 @@ class Settings(BaseSettings):
 
     axiom_dataset: str | None = Field(default="", description="Axiom dataset name")
 
+    axiom_metrics_dataset: str = Field(
+        default="",
+        description="Axiom Metrics-type dataset name for OTel metrics "
+        "ingestion (X-Axiom-Metrics-Dataset header).",
+    )
+
     telemetry_trace_content: bool = Field(
         default=True,
         alias="TRACELOOP_TRACE_CONTENT",

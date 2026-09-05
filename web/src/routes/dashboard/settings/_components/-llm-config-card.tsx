@@ -112,9 +112,9 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
           data.success && data.test_result.response
             ? { ok: true, message: `OK: "${data.test_result.response.slice(0, 80)}"` }
             : {
-                ok: false,
-                message: data.error ?? data.test_result.exception ?? "Test failed",
-              };
+              ok: false,
+              message: data.error ?? data.test_result.exception ?? "Test failed",
+            };
         recordTest(payload, status);
       },
       onError: (err) => {
@@ -143,21 +143,23 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
 
   return (
     <Card className="flex flex-col  p-1 gap-1 drop-shadow-sm  ">
-      <CardHeader className=" p-4 gap-3 ">
-        <div className="flex items-center  gap-2">
-          <div className="flex items-center gap-2">
-            <IconKey className="size-4" />
+      <CardHeader className=" p-1 gap-0">
+        <div className="flex items-center justify-between  gap-2">
+          <div className="flex items-center  gap-2">
             <CardTitle>LLM provider</CardTitle>
           </div>
           {existing ? (
-            <Badge className="p-1  bg-green-700  ">
+            <span className=" flex items-center gap-2 px-2 py-1  border-2 border-dashed text-green-500  ">
               <IconCheck className="size-3" />
-            </Badge>
+              <p className="text-[10px]">configured</p>
+
+            </span>
           ) : (
-            <Badge variant="secondary">
-              <IconCircleDashed />
-              Not configured
-            </Badge>
+            <span className=" flex items-center gap-2 px-2 py-1  bg-muted   ">
+              <IconCheck className="size-3.5" />
+              <p className="text-xs">not configured</p>
+
+            </span>
           )}
         </div>
         <CardDescription>

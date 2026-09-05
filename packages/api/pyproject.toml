@@ -53,9 +53,13 @@ line-length = 88
 target-version = ["py313"]
 
 
+# [tool.pyright]
+# exclude = ["**/__pycache__", "alembic" , "test-data"]
+
 
 # Docker command to run api container
-#
+
+
 # docker run -d --name reviewpr-backend-api --restart unless-stopped `
 #   --network sentinal-net `
 #   --env-file packages/api/.env `

@@ -29,6 +29,7 @@ class CodeComment(SQLModel, table=True):
     )
     commit_id: str = Field(nullable=False)
     github_comment_id: str | None = Field(default=None, nullable=True)
+    github_review_id: str | None = Field(default=None, nullable=True)
     file_name: str = Field(nullable=False)
     comment: str = Field(nullable=False)
     severity: CommentSeverity = Field(nullable=False)

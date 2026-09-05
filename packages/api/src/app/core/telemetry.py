@@ -77,6 +77,9 @@ APP_NAME = settings.app_name
 APP_ENV = settings.app_env
 """The ``env`` resource attribute attached to every span/log."""
 
+TRACELOOP_CLOUD_URL = "https://api.traceloop.com"
+"""Traceloop Cloud's default OTLP endpoint, mirroring the SDK's default."""
+
 
 def _log_endpoint() -> str:
     """Resolve the OTLP logs endpoint next to the trace endpoint.
@@ -86,11 +89,11 @@ def _log_endpoint() -> str:
     targets. With only ``TRACELOOP_API_KEY`` set, logs export to
     Traceloop Cloud, mirroring traceloop's default base URL.
     """
-    base_url = settings.telemetry_base_url.rstrip("/")
+    base_url = (settings.telemetry_base_url or TRACELOOP_CLOUD_URL).rstrip("/")
     return f"{base_url}/v1/logs"
 
 
-def _init_log_export() -> None:
+def _init_log_export(headers: dict[str, str] | None) -> None:
     """Route stdlib logging to OTLP via the OTel SDK log pipeline.
 
     Creates a :class:`LoggerProvider` with a batching OTLP/HTTP log
@@ -104,7 +107,9 @@ def _init_log_export() -> None:
         resource=Resource.create({"service.name": APP_NAME, "env": APP_ENV})
     )
     provider.add_log_record_processor(
-        BatchLogRecordProcessor(OTLPLogExporter(endpoint=_log_endpoint()))
+        BatchLogRecordProcessor(
+            OTLPLogExporter(endpoint=_log_endpoint(), headers=headers)
+        )
     )
     otel_logs.set_logger_provider(provider)
 
@@ -139,6 +144,20 @@ def init_telemetry() -> None:
 
     api_key: str | None = settings.telemetry_api_key or None
     axiom_dataset = settings.axiom_dataset
+    axiom_metrics_dataset = settings.axiom_metrics_dataset
+
+    otel_headers: dict[str, str] = {}
+    metrics_headers: dict[str, str] = {}
+
+    if api_key:
+        otel_headers["Authorization"] = f"Bearer {api_key}"
+        metrics_headers["Authorization"] = f"Bearer {api_key}"
+
+        if axiom_dataset:
+            otel_headers["X-Axiom-Dataset"] = axiom_dataset
+
+        if axiom_metrics_dataset:
+            metrics_headers["X-Axiom-Metrics-Dataset"] = axiom_metrics_dataset
 
     if api_key and axiom_dataset:
         Traceloop.init(
@@ -148,10 +167,8 @@ def init_telemetry() -> None:
             disable_batch=settings.telemetry_disable_batch,
             telemetry_enabled=False,
             resource_attributes={"env": APP_ENV},
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "X-Axiom-Dataset": axiom_dataset,
-            },
+            headers=otel_headers,
+            metrics_headers=metrics_headers,
         )
     else:
 
@@ -164,7 +181,7 @@ def init_telemetry() -> None:
             resource_attributes={"env": APP_ENV},
         )
 
-    _init_log_export()
+    _init_log_export(otel_headers)
 
     log.info(
         "telemetry initialised: base_url=%s logs_endpoint=%s env=%s trace_content=%s",

@@ -65,6 +65,10 @@ from app.utils.branded import (
     RepoId,
     UserId,
 )
+from app.workflows.repair_and_publish.workflow import (
+    DispatchRepairAndPublishWorkflowInput,
+    dispatchRepairAndPublishWorkflow,
+)
 from app.workflows.review.helpers import (
     classifyComment,
     effectiveDiffBase,
@@ -514,7 +518,7 @@ async def handleIssueCommentCreated(
 
     await addReaction(pr_ctx, trigger.commentId)  # best-effort ack
 
-    workflow_id = await dispatchReview(
+    reviewWorkflowId = await dispatchReview(
         repoId=repo.id,
         prNumber=trigger.prNumber,
         headSha=state.headSha,
@@ -522,11 +526,20 @@ async def handleIssueCommentCreated(
         workflowInput=workflow_input,
     )
 
+    repairAndPublishWorkflowId = await dispatchRepairAndPublishWorkflow(
+        input=DispatchRepairAndPublishWorkflowInput(
+            prNumber=trigger.prNumber,
+            commitId=CommitId(state.headSha),
+            llmCtx=llm_ctx,
+            sandboxCtx=sandbox_ctx,
+        )
+    )
+
     log.info(
-        "review.trigger: started workflow: delivery=%s workflow_id=%s "
+        "review.trigger: started workflow: delivery=%s review_workflow_id=%s "
         "gh_repo_id=%s number=%s head_sha=%s diff_base_sha=%s",
         delivery,
-        workflow_id,
+        reviewWorkflowId,
         trigger.ghRepoId,
         trigger.prNumber,
         state.headSha,
