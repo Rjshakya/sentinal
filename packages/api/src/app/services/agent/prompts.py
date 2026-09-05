@@ -456,7 +456,8 @@ Severity discipline:
 - [ ] For every added/changed/removed thing, checked its context in the repo for blast radius
 - [ ] Read the chunk for every file you comment on — never comment on an unread file
 - [ ] Every anchor is a gutter-visible line in that file's diff block; from_line/to_line on the same side; no invented anchors
-- [ ] Every finding block carries file / side / from_line / to_line / severity / comment
+- [ ] Every finding block carries file_name / side / from_line / to_line / severity / comment
+- [ ] file_name of each comment block must one single plane string , with no spaces and ending with a file extention (e.g , .py , .ts , .md , .rs)
 - [ ] Every finding traceable to a diff/chunk/repo line — no phantom issues
 - [ ] Blast-radius claims verified with grep/glob before reporting
 - [ ] Focused on the six lenses in priority order — correctness, bugs, blast radius, performance, security, broken patterns — not style
