@@ -26,8 +26,9 @@ pipeline boundary without an explicit ``cast``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Generic, Literal, TypeVar, Union
+from typing import Generic, Literal, TypeVar
 
 T = TypeVar("T", covariant=True)
 U = TypeVar("U")
@@ -50,13 +51,13 @@ class Ok(Generic[T]):
     def is_err(self) -> Literal[False]:
         return False
 
-    def and_then(self, fn: Callable[[T], "Result[U, E_co]"]) -> "Result[U, E_co]":
+    def and_then(self, fn: Callable[[T], Result[U, E_co]]) -> Result[U, E_co]:
         return fn(self.value)
 
-    def map(self, fn: Callable[[T], U]) -> "Result[U, E_co]":
+    def map(self, fn: Callable[[T], U]) -> Result[U, E_co]:
         return Ok(fn(self.value))
 
-    def map_err(self, fn: Callable[[E_co], F]) -> "Result[T, F]":
+    def map_err(self, fn: Callable[[E_co], F]) -> Result[T, F]:
         return self
 
     def unwrap_or(self, default: T_default) -> T | T_default:
@@ -80,13 +81,13 @@ class Err(Generic[E_co]):
     def is_err(self) -> Literal[True]:
         return True
 
-    def and_then(self, fn: Callable[[T], "Result[U, E_co]"]) -> "Result[U, E_co]":
+    def and_then(self, fn: Callable[[T], Result[U, E_co]]) -> Result[U, E_co]:
         return self
 
-    def map(self, fn: Callable[[T], U]) -> "Result[U, E_co]":
+    def map(self, fn: Callable[[T], U]) -> Result[U, E_co]:
         return self
 
-    def map_err(self, fn: Callable[[E_co], F]) -> "Result[T, F]":
+    def map_err(self, fn: Callable[[E_co], F]) -> Result[T, F]:
         return Err(fn(self.error))
 
     def unwrap_or(self, default: T_default) -> T_default:
@@ -96,9 +97,8 @@ class Err(Generic[E_co]):
         return fn(self.error)
 
 
-Result = Union[Ok[T], Err[E_co]]
+Result = Ok[T] | Err[E_co]
 """A value of type ``T`` on success, or an error of type ``E`` on failure."""
 
 
 __all__ = ["Err", "Ok", "Result"]
-

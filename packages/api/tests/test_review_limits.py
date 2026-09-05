@@ -88,6 +88,7 @@ def test_workflow_input_defaults_pr_size_to_zero() -> None:
         status=PRStatus.OPEN,
         llm_config=LLMConfig(model="openai:gpt-5.5"),
         post_to_github=False,
+        github_installation_id=123,
     )
     assert input.pr_size == {
         "additions": 0,

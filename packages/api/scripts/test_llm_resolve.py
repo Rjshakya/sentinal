@@ -25,7 +25,6 @@ import sys
 from typing import NamedTuple
 
 from app.core.llm import LLMConfig, build_chat_model
-from app.core.logging import configure_structured_logging
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +94,6 @@ def _try_resolve(case: _Case) -> str:
 
 
 def main() -> int:
-    configure_structured_logging()
     log.info("resolving %d LLMConfig cases", len(CASES))
     print("=" * 72)
     for case in CASES:

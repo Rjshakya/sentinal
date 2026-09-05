@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useInstallation } from "@/lib/installation";
 
 import { GithubConnectionCard } from "./-github-connection-card";
+import { NavIcons } from "@/lib/nav";
 
 export function ActionsCard() {
   const { data: installation, isLoading } = useInstallation();
@@ -63,8 +64,8 @@ export function ActionsCard() {
             </CardDescription>
           </CardContent>
           <CardFooter>
-            <Button variant={"default"} render={<Link to="/dashboard/repositories" />}>
-              <IconFolders />
+            <Button variant={"outline"} render={<Link to="/dashboard/repositories" />}>
+              {NavIcons.folder}
               Configure repositories
             </Button>
           </CardFooter>

@@ -163,6 +163,7 @@ async def start_setup_repos(
                 skipped=False,
             )
         )
+
         log.info(
             "ai.start_setup: dispatched workflow_id=%s user_id=%s github_repo_id=%s",
             workflow_info.workflow_id,

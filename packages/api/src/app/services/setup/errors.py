@@ -17,8 +17,8 @@ short-circuit the workflow; DBOS marks the workflow ``ERROR`` and the
 router surfaces the failure through the workflow's
 :class:`SetupWorkflowResult` (``error_name`` / ``error_message``).
 
-The hierarchy mirrors :mod:`app.services.review.errors` but is named
-independently (``SetupError`` vs ``StepError``) so a future shared
+The hierarchy mirrors :mod:`app.workflows.review.errors` but is named
+independently (``SetupError`` vs ``ReviewStepError``) so a future shared
 base is a clean refactor rather than a rename across two pipelines.
 """
 
@@ -117,7 +117,7 @@ class SetupAgentCrashedError(SetupError):
     """The setup agent raised an unexpected, non-transient exception.
 
     Final — not retried. Anything that is not classified as a
-    transient LLM error by :func:`app.services.review.errors.is_llm_retry_error`
+    transient LLM error by :func:`app.workflows.review.errors.isLlmRetryError`
     lands here. The workflow re-raises and DBOS records the
     error name + message on the workflow result.
     """

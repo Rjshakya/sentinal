@@ -167,6 +167,35 @@ export type UserStats = {
   bugs_caught: number;
 };
 
+export type ReviewState = "STARTING" | "RUNNING" | "SUCCESS" | "FAILED";
+export type ReviewRunStatus = "SUCCESS" | "FAILED";
+export type ReviewTrigger = "opened" | "comment" | null;
+
+export type ReviewUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  review_status: ReviewRunStatus;
+};
+
+export type Review = {
+  id: string;
+  repo_name: string | null;
+  repo_owner: string | null;
+  pr_number: number;
+  pr_title: string | null;
+  commit_id: string;
+  trigger: ReviewTrigger;
+  state: ReviewState;
+  comment_count: number | null;
+  llm_client: string | null;
+  llm_model: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  usage: ReviewUsage | null;
+};
+
 export class ApiError extends Error {
   status: number;
   body: string;
@@ -200,6 +229,7 @@ export const apiClient = {
   repos: () => request<Repo[]>("/github/repos"),
   userRepos: () => request<UserRepo[]>("/users/repos"),
   userStats: () => request<UserStats>("/users/stats"),
+  reviews: () => request<Review[]>("/review"),
   setup: (repos: SetupRepo[]) =>
     request<SetupAck>("/ai/repo/setup", {
       method: "POST",
@@ -213,7 +243,7 @@ export const apiClient = {
       body: JSON.stringify(payload),
     }),
   codeSearch: (payload: CodeSearchRequest) =>
-    request<CodeSearchResponse>("/search", {
+    request<CodeSearchResponse>("/search/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

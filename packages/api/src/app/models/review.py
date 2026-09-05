@@ -13,10 +13,15 @@ is the user-facing mirror.
 
 The LLM columns snapshot the resolved
 :class:`app.core.llm.LLMConfig` at run time so failed runs keep their
-LLM identity even though no usage/summary rows exist. ``error_context``
-carries the JSON payload of :class:`app.services.review.errors.ReviewAgentsInvocationError`
-(failed/succeeded agent names, retryable flags, cause) when it was the
-failure source.
+LLM identity even though no usage/summary rows exist. ``llm_provider``
+records the config source (``"system"`` for the settings default,
+``"user"`` for the user's stored ``llm_configs`` row); ``llm_client``
+records the actual provider from the ``"provider:model"`` string (e.g.
+``"openai"``, ``"anthropic"``). ``error_context``
+carries the JSON payload built by
+:func:`app.workflows.review.steps.review_lifecycle.buildErrorContext`
+(error name, cause, failed/succeeded agent lanes) when the workflow
+errored.
 """
 
 from __future__ import annotations
@@ -82,6 +87,7 @@ class Review(SQLModel, table=True):
 
     sandbox_id: str | None = Field(default=None)
     llm_provider: str | None = Field(default=None)
+    llm_client: str | None = Field(default=None)
     llm_model: str | None = Field(default=None)
     llm_base_url: str | None = Field(default=None)
 

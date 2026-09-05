@@ -14,6 +14,7 @@ import { Route as DashboardRouteRouteImport } from './routes/dashboard/route'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard/index'
 import { Route as DashboardRepositoriesRouteRouteImport } from './routes/dashboard/repositories/route'
+import { Route as DashboardReviewsRouteRouteImport } from './routes/dashboard/reviews/route'
 import { Route as DashboardSettingsRouteRouteImport } from './routes/dashboard/settings/route'
 import { Route as DashboardSearchOwnerNameRouteRouteImport } from './routes/dashboard/search/$owner/$name/route'
 
@@ -43,6 +44,11 @@ const DashboardRepositoriesRouteRoute =
     path: '/repositories',
     getParentRoute: () => DashboardRouteRoute,
   } as any)
+const DashboardReviewsRouteRoute = DashboardReviewsRouteRouteImport.update({
+  id: '/reviews',
+  path: '/reviews',
+  getParentRoute: () => DashboardRouteRoute,
+} as any)
 const DashboardSettingsRouteRoute = DashboardSettingsRouteRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -60,6 +66,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof DashboardRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/dashboard/repositories': typeof DashboardRepositoriesRouteRoute
+  '/dashboard/reviews': typeof DashboardReviewsRouteRoute
   '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
@@ -68,6 +75,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
   '/dashboard/repositories': typeof DashboardRepositoriesRouteRoute
+  '/dashboard/reviews': typeof DashboardReviewsRouteRoute
   '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard': typeof DashboardIndexRoute
   '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
@@ -78,6 +86,7 @@ export interface FileRoutesById {
   '/dashboard': typeof DashboardRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/dashboard/repositories': typeof DashboardRepositoriesRouteRoute
+  '/dashboard/reviews': typeof DashboardReviewsRouteRoute
   '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
@@ -89,6 +98,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/login'
     | '/dashboard/repositories'
+    | '/dashboard/reviews'
     | '/dashboard/settings'
     | '/dashboard/'
     | '/dashboard/search/$owner/$name'
@@ -97,6 +107,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/dashboard/repositories'
+    | '/dashboard/reviews'
     | '/dashboard/settings'
     | '/dashboard'
     | '/dashboard/search/$owner/$name'
@@ -106,6 +117,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/login'
     | '/dashboard/repositories'
+    | '/dashboard/reviews'
     | '/dashboard/settings'
     | '/dashboard/'
     | '/dashboard/search/$owner/$name'
@@ -154,6 +166,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardRepositoriesRouteRouteImport
       parentRoute: typeof DashboardRouteRoute
     }
+    '/dashboard/reviews': {
+      id: '/dashboard/reviews'
+      path: '/reviews'
+      fullPath: '/dashboard/reviews'
+      preLoaderRoute: typeof DashboardReviewsRouteRouteImport
+      parentRoute: typeof DashboardRouteRoute
+    }
     '/dashboard/settings': {
       id: '/dashboard/settings'
       path: '/settings'
@@ -173,6 +192,7 @@ declare module '@tanstack/react-router' {
 
 interface DashboardRouteRouteChildren {
   DashboardRepositoriesRouteRoute: typeof DashboardRepositoriesRouteRoute
+  DashboardReviewsRouteRoute: typeof DashboardReviewsRouteRoute
   DashboardSettingsRouteRoute: typeof DashboardSettingsRouteRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
   DashboardSearchOwnerNameRouteRoute: typeof DashboardSearchOwnerNameRouteRoute
@@ -180,6 +200,7 @@ interface DashboardRouteRouteChildren {
 
 const DashboardRouteRouteChildren: DashboardRouteRouteChildren = {
   DashboardRepositoriesRouteRoute: DashboardRepositoriesRouteRoute,
+  DashboardReviewsRouteRoute: DashboardReviewsRouteRoute,
   DashboardSettingsRouteRoute: DashboardSettingsRouteRoute,
   DashboardIndexRoute: DashboardIndexRoute,
   DashboardSearchOwnerNameRouteRoute: DashboardSearchOwnerNameRouteRoute,

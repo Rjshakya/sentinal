@@ -194,12 +194,9 @@ def build_chat_model(
 
     ``callbacks`` is forwarded to every provider constructor.
     LangChain threads the chat model's callbacks through every
-    inner run, so attaching a handler here captures every LLM
-    call and tool invocation a deep-agent makes internally — not
-    just the outer ``ainvoke``. The review-agent observability
-    handler is built in
-    :func:`app.core.llm_callbacks.make_llm_io_handler` and passed
-    through this kwarg.
+    inner run, so a handler attached here sees every LLM call and
+    tool invocation a deep-agent makes internally — not just the
+    outer ``ainvoke``.
 
     Raises:
         ValueError: :attr:`LLMConfig.model` is not a valid

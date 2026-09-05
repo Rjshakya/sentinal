@@ -21,7 +21,7 @@ function DashboardOverview() {
   const { data: stats, isLoading: statsLoading } = useUserStats();
 
   return (
-    <div className="flex flex-1 flex-col gap-8  p-4 pt-0 max-w-3xl mx-auto w-full ">
+    <div className="flex flex-1 flex-col gap-12  p-4 pt-0 max-w-3xl mx-auto w-full ">
       <GreetingCard />
       <div className="grid gap-2 md:grid-cols-3">
         <StatCard

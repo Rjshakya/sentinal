@@ -1,0 +1,46 @@
+
+
+
+name: reviewpr-backend
+
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: aicode-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: aicode
+    ports:
+      - "5432:5432"
+    volumes:
+      - aicode_pg_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aicode"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sentinal
+
+  lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: aicode-lgtm
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "3001:3000"
+    volumes:
+      - lgtm_data:/data
+    networks:
+      - sentinal
+
+volumes:
+  aicode_pg_data:
+    external: true
+    name: ai-code-review_aicode_pg_data
+  lgtm_data:
+
+networks:
+  sentinal:
+    name: sentinal-net

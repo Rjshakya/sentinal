@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from app.services.agent.models import ReviewComments, SummaryResult
+from app.utils.schema import ReviewComments, SummaryResult
 from app.services.agent.prompts import (
     PR_SUMMARY_SYSTEM_PROMPT,
     REVIEW_COMMENTS_SYSTEM_PROMPT,

@@ -1,11 +1,12 @@
-"""Shared fixtures for the indexing-pipeline e2e test."""
+"""Shared fixtures for the indexing- and review-pipeline e2e tests."""
 
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from uuid import uuid4
-
+from pathlib import Path
 import pytest
 from dbos import (
     DBOS,
@@ -15,17 +16,32 @@ from dbos import (
     WorkflowStatusString,
 )
 
+# BASE_DIR = Path(__file__).resolve().parents[3]
+# ENV_PATH = BASE_DIR / ".env"
+#
+# load_dotenv(ENV_PATH, override=False)
 # psycopg async (used by DBOS) fails on Windows' ProactorEventLoop —
 # force the SelectorEventLoop, mirroring packages/api/main.py.
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+# if sys.platform == "win32":
+#     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 
 from app.core.config import settings
+from app.core.db import create_db_and_tables
 from app.services.indexing.helpers import index_workflow_id
 from app.services.indexing.types import IndexWorkflowInput
 from app.services.indexing.workflow import indexRepo
+from app.workflows.review.types import (
+    ReviewRunResult,
+    ReviewWorkflowCtx,
+    ReviewWorkflowInput,
+)
+from app.workflows.review.workflow import reviewWorkflow
 
 INDEX_TIMEOUT_S: float = 2000.0
+REVIEW_TIMEOUT_S: float = 1200.0
 
 _TERMINAL_STATES = {
     WorkflowStatusString.SUCCESS.value,
@@ -45,32 +61,46 @@ def _dbos_config() -> DBOSConfig:
     }
 
 
-@pytest.fixture(scope="session", autouse=True)
-def e2b_templates() -> None:
-    """Build the E2B sandbox templates the e2e tests need.
+# @pytest.fixture(scope="session", autouse=True)
+# def e2b_templates() -> None:
+#     """Build the E2B sandbox templates the e2e tests need.
+#
+#     Idempotent — ``Template.build`` returns the existing template id
+#     on subsequent calls. Skipped when ``E2B_API_KEY`` is unset so the
+#     fixture never hard-fails for tests that don't need a sandbox.
+#     """
+#     if settings.e2b_api_key:
+#         from app.core.sandbox.e2b import (
+#             build_e2b_index_template,
+#             build_e2b_template,
+#         )
+#
+#         build_e2b_template()
+#         build_e2b_index_template()
+#
 
-    Idempotent — ``Template.build`` returns the existing template id
-    on subsequent calls. Skipped when ``E2B_API_KEY`` is unset so the
-    fixture never hard-fails for tests that don't need a sandbox.
+
+@pytest.fixture(scope="session", autouse=True)
+async def dbos_lifecycle():
+    """Launch DBOS against Postgres once per session; skip if unreachable.
+
+    Runs on the pytest-asyncio session loop (see
+    ``asyncio_default_*_loop_scope`` in ``pyproject.toml``) so the
+    engine's pooled connections are created and reused on a single loop.
     """
-    if settings.e2b_api_key:
-        from app.core.sandbox.e2b import (
-            build_e2b_index_template,
-            build_e2b_template,
-        )
-
-        build_e2b_template()
-        build_e2b_index_template()
-
-
-@pytest.fixture(scope="session", autouse=True)
-def dbos_lifecycle():
-    """Launch DBOS against Postgres once per session; skip if unreachable."""
     DBOS(config=_dbos_config())
     try:
         DBOS.launch()
-    except Exception as exc:  # noqa: BLE001 — session-skip path: any launch failure is a fixture-level skip
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 — session-skip path: any launch failure is a fixture-level skip
         pytest.skip(f"Postgres/DBOS unavailable ({type(exc).__name__}: {exc})")
+    try:
+        await create_db_and_tables()
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 — session-skip path: cannot create app tables
+        pytest.skip(f"cannot create app tables ({type(exc).__name__}: {exc})")
     try:
         yield
     finally:
@@ -100,6 +130,28 @@ def requires_indexing_env() -> None:
 
 
 @pytest.fixture
+def requires_review_env() -> None:
+    """Skip the review e2e when its env prerequisites are missing.
+
+    Requires the review pipeline's full credential set: an LLM key,
+    the sandbox (E2B) key, the GitHub App identity (the clone mints an
+    installation token), an OpenAI key (the structured extractor is
+    OpenAI-only), and a live ``REVIEW_E2E_INSTALLATION_ID`` for the
+    target repo.
+    """
+    if not settings.llm_configured:
+        pytest.skip("review e2e requires LLM_MODEL + LLM_API_KEY")
+    if not settings.sandbox_configured:
+        pytest.skip("review e2e requires the sandbox provider key")
+    if not settings.github_app_configured:
+        pytest.skip("review e2e requires the GitHub App credentials")
+    if not (settings.openai_api_key or os.environ.get("OPENAI_API_KEY")):
+        pytest.skip("review e2e requires an OpenAI key (extractor)")
+    if not settings.review_e2e_installation_id:
+        pytest.skip("review e2e requires REVIEW_E2E_INSTALLATION_ID")
+
+
+@pytest.fixture
 def bucket_owner_repo() -> tuple[str, str, str]:
     """The (bucket, owner, repo) triple the e2e test writes to."""
     bucket = settings.index_s3_bucket
@@ -120,12 +172,20 @@ async def run_index_workflow(
         workflow_id = index_workflow_id(input.repo_owner, input.repo_name)
     with SetWorkflowID(workflow_id):
         handle = await DBOS.start_workflow_async(indexRepo, input)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while True:
-        status = await DBOS.get_workflow_status_async(handle.workflow_id)
-        if status is not None and status.status in _TERMINAL_STATES:
-            return handle.workflow_id, status
-        if loop.time() >= deadline:
-            pytest.fail(f"indexRepo {handle.workflow_id} timed out after {timeout_s}s")
-        await asyncio.sleep(2.0)
+    status = await handle.get_status()
+    return handle.workflow_id, status
+
+
+async def run_review_workflow(
+    ctx: ReviewWorkflowCtx,
+    input: ReviewWorkflowInput,
+    *,
+    workflow_id: str,
+    timeout_s: float = REVIEW_TIMEOUT_S,
+) -> tuple[str, ReviewRunResult, WorkflowStatus]:
+    """Dispatch ``reviewWorkflow`` under its deterministic id; wait for a terminal state."""
+    with SetWorkflowID(workflow_id):
+        handle = await DBOS.start_workflow_async(reviewWorkflow, ctx, input)
+    output = await handle.get_result()
+    status = await handle.get_status()
+    return handle.workflow_id, output, status

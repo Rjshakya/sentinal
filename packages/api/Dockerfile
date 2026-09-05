@@ -58,4 +58,5 @@ USER app
 HEALTHCHECK --interval=40s --timeout=5s --start-period=15s --retries=5 \
   CMD curl -fsS http://localhost:${PORT:-8000}/api/health || exit 1
 
+ENTRYPOINT ["/app/docker/migrate.sh"]
 CMD [ "python", "main.py"]
