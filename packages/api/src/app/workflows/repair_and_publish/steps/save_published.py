@@ -55,6 +55,10 @@ async def savePublishedReview(
             return None
 
         review.github_review_id = str(published.githubReviewId)
+
+        if published.postedComments:
+            review.comment_count = len(published.postedComments)
+
         session.add(review)
 
         q = select(ReviewSummary).where(ReviewSummary.review_id == unpublished.reviewId)
