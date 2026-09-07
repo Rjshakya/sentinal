@@ -1,0 +1,18 @@
+{
+  "user_id": "00000000-0000-0000-0000-000000000001",
+  "github_repo_id": 1298419702,
+  "github_installation_id": 1,
+  "github_pr_id":4395127676,
+  "repo_url": "https://github.com/Rjshakya/code-review-test.git",
+  "repo_owner": "Rjshakya",
+  "repo_name": "code-review-test",
+  "pr_number": 2,
+  "base_sha": "c9488afc7738734ddd93dc927470700e4434a9db",
+  "head_sha": "6c759629989ab83133f2b04217ff4e4db1a88594",
+  "base_branch":"main",
+  "default_branch":"main",
+  "head_branch":"add-endpoints",
+  "post_to_github":false,
+  "title":"Add endpoints",
+  "author":"Rjshakya"
+}

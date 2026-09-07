@@ -14,6 +14,7 @@ resolution-markers = [
 members = [
     "ai-code-review",
     "api",
+    "evals",
 ]
 
 [[package]]
@@ -732,6 +733,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/fd/3f/5cfb744bae4d57f253ee95cc3291a60ab944ea0fdb34d2d4b9ef05eaf0a7/e2b-2.30.0.tar.gz", hash = "sha256:96515e7512caf26bc975b516372063015fa6b48b386482952b2ab9aeabaee879", size = 179811, upload-time = "2026-06-25T18:03:57.52Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b1/ee/bfce7382df70d2fa252969b083e2bbf5e85d22b73e36cc6d4c663df81670/e2b-2.30.0-py3-none-any.whl", hash = "sha256:37e122fee9e5b36f31980221f3a41db9b33847c2d0866a9f07bc083f9aa4ce96", size = 330349, upload-time = "2026-06-25T18:03:55.975Z" },
+]
+
+[[package]]
+name = "evals"
+version = "0.1.0"
+source = { editable = "packages/evals" }
+dependencies = [
+    { name = "api" },
+    { name = "httpx" },
+    { name = "langchain-core" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "api", editable = "packages/api" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "langchain-core", specifier = ">=0.3" },
+    { name = "pydantic", specifier = ">=2.6" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
 ]
 
 [[package]]

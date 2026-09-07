@@ -377,6 +377,22 @@ class Settings(BaseSettings):
         description="github installations id for e2e review test",
     )
 
+    # --- Eval API token (gates ``POST /api/review``) ---
+    # The eval harness calls ``POST /api/review`` to drive the production
+    # reviewWorkflow end-to-end. The route is unauthenticated (no sealed
+    # session cookie) — it relies on a static shared secret carried in the
+    # ``X-Eval-Token`` request header, matched against this setting. Leave
+    # empty to disable the route (503 on every call). Same secret is read
+    # by the eval process via ``EVAL_API_TOKEN``.
+    eval_api_token: str = Field(
+        default="",
+        description=(
+            "Shared secret gating ``POST /api/review``. The caller sends it "
+            "in the ``X-Eval-Token`` request header. Leave empty to disable "
+            "the route (every call returns 503)."
+        ),
+    )
+
     app_env: str = Field(
         default="development",
         description="app environment",
@@ -521,6 +537,15 @@ class Settings(BaseSettings):
         operator opts in.
         """
         return bool(self.telemetry_api_key or self.telemetry_base_url)
+
+    @property
+    def eval_configured(self) -> bool:
+        """True when ``POST /api/review`` can be invoked by the eval harness.
+
+        Requires ``eval_api_token`` to be set. When false, the route
+        returns 503 — every other API surface is unaffected.
+        """
+        return bool(self.eval_api_token)
 
 
 settings = Settings()
