@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, Sequence, TypeVar, cast
 
+from sqlalchemy import Row
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
-from sqlmodel import SQLModel, delete, select, update
+from sqlmodel import SQLModel, col, delete, select, update
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 T = TypeVar("T", bound=SQLModel)
 C = TypeVar("C")
 
 
-class Repository(Generic[T]):
+class BaseRepository(Generic[T]):
     def __init__(self, model: type[T], session: AsyncSession) -> None:
         self._model = model
         self._session = session
@@ -24,65 +25,39 @@ class Repository(Generic[T]):
         stmt = select(self._model)
         if limit is not None:
             stmt = stmt.limit(limit)
-        result = await self._session.execute(stmt)
-        return list(result.scalars().all())
 
-    async def find_by_field(
-        self, col: InstrumentedAttribute[C] | C, value: C
-    ) -> T | None:
-        stmt = select(self._model).where(cast(ColumnElement[bool], col == value))
-        result = await self._session.execute(stmt)
-        return result.scalars().first()
+        result = await self._session.exec(stmt)
+        return list(result.all())
 
-    async def find_all_by_field(
+    async def findByField(self, column: C, value: C) -> T | None:
+        stmt = select(self._model).where(col(column) == value)
+        result = await self._session.exec(stmt)
+        return result.first()
+
+    async def findAllByField(
         self,
-        col: InstrumentedAttribute[C] | C,
+        column: C,
         value: C,
         *,
         limit: int | None = None,
     ) -> list[T]:
-        stmt = select(self._model).where(cast(ColumnElement[bool], col == value))
+        stmt = select(self._model).where(col(column) == value)
         if limit is not None:
             stmt = stmt.limit(limit)
-        result = await self._session.execute(stmt)
-        return list(result.scalars().all())
-
-    async def find_by_fields(self, **fields: Any) -> T | None:
-        """Look up a single row matching every ``field=value`` keyword arg.
-
-        Issues a single ``SELECT ... WHERE col1 = ? AND col2 = ? ...``
-        (one round-trip, not one query per field — i.e. **not** an N+1).
-        Returns the first matching row, or ``None`` if nothing matches.
-        """
-        stmt = select(self._model)
-        for attr, value in fields.items():
-            stmt = stmt.where(getattr(self._model, attr) == value)
-        result = await self._session.execute(stmt)
-        return result.scalars().first()
+        result = await self._session.exec(stmt)
+        return list(result.all())
 
     async def add(self, obj: T) -> T:
         self._session.add(obj)
         return obj
 
-    async def update_by_field(
-        self,
-        col: InstrumentedAttribute[C] | C,
-        value: C,
-        **updates: Any,
-    ) -> T | None:
-        stmt = (
-            update(self._model)
-            .where(cast(ColumnElement[bool], col == value))
-            .values(**updates)
-        )
-        await self._session.execute(stmt)
-        return await self.find_by_field(col, value)
-
-    async def delete(self, col: InstrumentedAttribute[C] | C, value: C) -> bool:
-        stmt = delete(self._model).where(cast(ColumnElement[bool], col == value))
-        result = cast(CursorResult[Any], await self._session.execute(stmt))
-        return (result.rowcount or 0) > 0
+    async def delete(self, column: C, value: C) -> T | None:
+        stmt = delete(self._model).where(col(column) == value).returning(self._model)
+        result = await self._session.execute(stmt)
+        deleted = result.scalars().one_or_none()
+        await self._session.flush()
+        return deleted
 
 
-def make_repo(model: type[T], session: AsyncSession) -> Repository[T]:
-    return Repository(model, session)
+def makeRepo(model: type[T], session: AsyncSession) -> BaseRepository[T]:
+    return BaseRepository(model, session)
