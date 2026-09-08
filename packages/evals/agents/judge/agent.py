@@ -20,9 +20,9 @@ from agents.judge.type import JudgeInput, JudgeVerdict
 from agents.review.type import parse_markdown
 
 
-async def run(input: JudgeInput) -> JudgeVerdict:
+async def run(*, input: JudgeInput, session_id: str) -> tuple[JudgeVerdict, str]:
     """Judge one review run: parse result.md, call the structured judge model."""
-    review = parse_markdown(input.result_md)
+    review = input.review
 
     payload = {
         "review": {
@@ -42,7 +42,7 @@ async def run(input: JudgeInput) -> JudgeVerdict:
         },
     }
 
-    model = build_model()
+    model, llm_ctx = build_model(sessionId=session_id)
     structured = model.with_structured_output(JudgeVerdict)
     response = await structured.ainvoke(
         [
@@ -50,7 +50,7 @@ async def run(input: JudgeInput) -> JudgeVerdict:
             HumanMessage(content=json.dumps(payload, indent=2)),
         ]
     )
-    return JudgeVerdict.model_validate(response)
+    return JudgeVerdict.model_validate(response), llm_ctx.modelId
 
 
 __all__ = ["run"]

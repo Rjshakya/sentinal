@@ -27,6 +27,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -125,6 +126,9 @@ async def _call_review_api(
 
 
 async def run_pr(pr_id: str) -> tuple[Path, Path]:
+
+    session_id = str(uuid4())[:5]
+
     dataset_dir = ROOT / "dataset" / pr_id
     input_raw = _read_json(dataset_dir / "input.json")
     review_input = ReviewInput.model_validate(input_raw)
@@ -134,20 +138,36 @@ async def run_pr(pr_id: str) -> tuple[Path, Path]:
     api_token = _require_env("EVAL_API_TOKEN")
 
     review_input.github_installation_id = int(_require_env("GITHUB_INSTALLATION_ID"))
+
     request_body = review_input.model_dump(mode="json")
+    request_body["session_id"] = session_id
+    request_body["model"] = "anthropic:minimax-m3"
+    # request_body["baseUrl"] = "https://opencode.ai/zen/go/v1"
+
+    request_body["baseUrl"] = "https://opencode.ai/zen/go"
+
     api_response = await _call_review_api(
-        api_url=api_url, api_token=api_token, body=request_body
+        api_url=api_url,
+        api_token=api_token,
+        body=request_body,
     )
 
     output = api_response
-    result_md = render_markdown(output)
-    result_md_path = _write_text(ROOT / "results" / pr_id / "result.md", result_md)
 
-    verdict = await judge_agent.run(JudgeInput(gold=gold, result_md=result_md))
+    result_json_path = _write_text(
+        ROOT / "results" / pr_id / "result.json",
+        output.model_dump_json(indent=4),
+    )
+
+    verdict, judge_model_id = await judge_agent.run(
+        input=JudgeInput(gold=gold, review=output),
+        session_id=session_id,
+    )
 
     precision, recall, f1, fp_rate = compute_metrics(verdict, gold)
+
     report = JudgeReport(
-        judge_model=model_name(),
+        judge_model=judge_model_id,
         verdict=verdict,
         precision=precision,
         recall=recall,
@@ -157,10 +177,10 @@ async def run_pr(pr_id: str) -> tuple[Path, Path]:
 
     report_json_path = _write_text(
         ROOT / "report" / pr_id / "report.json",
-        report.model_dump_json(indent=2),
+        report.model_dump_json(indent=4),
     )
 
-    return result_md_path, report_json_path
+    return result_json_path, report_json_path
 
 
 def main() -> int:
@@ -172,11 +192,11 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        result_md, report_json = asyncio.run(run_pr(args.pr_id))
+        result_json, report_json = asyncio.run(run_pr(args.pr_id))
     except Exception as exc:  # noqa: BLE001 — the runner fails loudly, nothing to retry
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-    print(f"ok: {result_md} and {report_json}")
+    print(f"ok: {result_json} and {report_json}")
     return 0
 
 

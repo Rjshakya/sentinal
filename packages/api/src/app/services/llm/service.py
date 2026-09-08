@@ -48,7 +48,13 @@ from app.services.llm.types import (
 )
 
 
-def createDefaultLLMContext() -> LLMCtx:
+def createDefaultLLMContext(
+    *,
+    model: str | None = None,
+    apiKey: ApiKey | None = None,
+    baseUrl: BaseUrl | None = None,
+    headers: dict[str, str] | None = None,
+) -> LLMCtx:
     """Build a :class:`LLMCtx` from the global :class:`Settings`.
 
     Picks up ``LLM_MODEL`` / ``LLM_API_KEY`` / ``LLM_BASE_URL`` /
@@ -57,11 +63,13 @@ def createDefaultLLMContext() -> LLMCtx:
     here.
     """
     return LLMCtx(
-        model=settings.llm_model,
+        model=model or settings.llm_model,
         origin="system",
-        apiKey=ApiKey(settings.llm_api_key) if settings.llm_api_key else None,
-        baseUrl=BaseUrl(settings.llm_base_url) if settings.llm_base_url else None,
-        defaultHeaders=dict(settings.llm_default_headers),
+        apiKey=apiKey or ApiKey(settings.llm_api_key) if settings.llm_api_key else None,
+        baseUrl=(
+            baseUrl or BaseUrl(settings.llm_base_url) if settings.llm_base_url else None
+        ),
+        defaultHeaders=headers or dict(settings.llm_default_headers),
         maxRetries=settings.llm_max_retries,
         rateLimitRps=settings.llm_rate_limit_rps,
     )

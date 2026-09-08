@@ -42,3 +42,4 @@ class EvalReviewResponse(BaseModel):
     summary: str
     comments: Annotated[list[EvalReviewComment], Field(default_factory=list)]
     usages: Annotated[dict[str, EvalReviewUsage], Field(default_factory=dict)]
+    model: str | None = None

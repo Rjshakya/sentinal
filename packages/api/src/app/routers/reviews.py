@@ -36,6 +36,7 @@ from app.models.review import Review, ReviewState
 from app.models.review_usage import ReviewUsage
 from app.services.llm import createDefaultLLMContext
 from app.utils.branded import (
+    BaseUrl,
     CommitId,
     InstallationId,
     PRNumber,
@@ -78,6 +79,10 @@ class EvalReviewRequest(BaseModel):
     cloning — the placeholders land on the ``pull_requests`` row but do
     not affect the review logic.
     """
+
+    session_id: str = Field(default="eval-review-session")
+    model: str = Field(description="llm model")
+    baseUrl: str = Field(description="llm base url")
 
     user_id: str = Field(
         min_length=1,
@@ -175,6 +180,7 @@ class EvalReviewResponse(BaseModel):
     summary: str
     comments: Annotated[list[EvalReviewComment], Field(default_factory=list)]
     usages: Annotated[dict[str, EvalReviewUsage], Field(default_factory=dict)]
+    model: str | None
 
 
 def _validate_user_id(user_id: str) -> None:
@@ -303,7 +309,11 @@ async def trigger_review(
     if repo is None:
         raise HTTPException(status_code=400, detail={"error": "repo not found"})
 
-    llm_ctx = createDefaultLLMContext()
+    llm_ctx = createDefaultLLMContext(
+        model=body.model,
+        baseUrl=BaseUrl(body.baseUrl),
+        headers={"x-opencode-session": f"eval-session-{body.session_id}"},
+    )
 
     sandbox_ctx = buildSandboxCtx(
         userId=body.user_id,
@@ -391,6 +401,7 @@ async def trigger_review(
             )
             for model_name, bucket in result.usages["usages"].items()
         },
+        model=llm_ctx.modelId,
     )
 
 

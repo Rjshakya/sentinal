@@ -11,6 +11,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+from type import EvalReviewResponse
+
 GoldSeverity = Literal["P1_CRITICAL", "P2_WARNING", "P3_NITPICK"]
 
 
@@ -61,7 +63,7 @@ class JudgeInput(BaseModel):
     """Everything the judge agent needs: gold + the review's result.md."""
 
     gold: GoldOutput
-    result_md: str
+    review: EvalReviewResponse
 
 
 class JudgeReport(BaseModel):
@@ -84,7 +86,7 @@ def compute_metrics(
     matched = sum(1 for c in verdict.comments if c.matched_gold_idx is not None)
     fp = sum(1 for c in verdict.comments if c.verdict == "false_positive")
 
-    precision = matched / predicted_n if predicted_n else 1.0
+    precision = matched / predicted_n if predicted_n else 0.0
     recall = matched / gold_n if gold_n else (1.0 if predicted_n == 0 else 0.0)
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     fp_rate = fp / predicted_n if predicted_n else 0.0
