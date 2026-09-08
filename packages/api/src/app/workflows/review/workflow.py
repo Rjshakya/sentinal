@@ -263,12 +263,11 @@ async def reviewWorkflow(
     sandbox_ctx: SandboxCtx = ctx.sandboxCtx
 
     try:
-        sandbox_ctx = await createSandboxStep(sandbox_ctx)
-        sandbox_id = sandbox_ctx.sandboxId
-        if sandbox_id is None:
+
+        if input.githubInstallationId is None:
             raise ReviewStepFailure(
-                SandboxCreateError(
-                    message="create sandbox step returned no sandbox id",
+                CloneError(
+                    message="github installation id missing; cannot clone the repo",
                     userId=input.userId,
                     repoId=repo.id,
                     prNumber=input.prNumber,
@@ -276,10 +275,13 @@ async def reviewWorkflow(
                 )
             )
 
-        if input.githubInstallationId is None:
+        sandbox_ctx = await createSandboxStep(sandbox_ctx)
+        sandbox_id = sandbox_ctx.sandboxId
+
+        if sandbox_id is None:
             raise ReviewStepFailure(
-                CloneError(
-                    message="github installation id missing; cannot clone the repo",
+                SandboxCreateError(
+                    message="create sandbox step returned no sandbox id",
                     userId=input.userId,
                     repoId=repo.id,
                     prNumber=input.prNumber,
@@ -405,6 +407,7 @@ async def reviewWorkflow(
         )
 
         github_review_id: str | None = None
+
         if input.postToGithub:
             post_result = await postReviewStep(repo=repo, input=input, review=review)
             if post_result.posted and post_result.githubReviewId is not None:

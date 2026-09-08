@@ -46,3 +46,9 @@ build
 # Docs (not needed in the image, kept in repo)
 README.md
 AGENTS.md
+
+# Eval harness artefacts — never bake sandbox clones / results / reports into the image
+packages/evals/results
+packages/evals/report
+packages/evals/sandbox/sentinel-workspace
+packages/evals/sandbox/tmp

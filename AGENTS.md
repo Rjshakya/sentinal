@@ -17,24 +17,31 @@ ai-code-review/
 ├── docker-compose.yml        # Postgres 18
 ├── .env / .env.example       # backend env (loaded from repo root)
 ├── packages/
-│   └── api/                  # FastAPI backend (uv member)
-│       ├── pyproject.toml
-│       ├── alembic.ini
-│       ├── main.py           # uvicorn entry point (packages/api/main.py)
-│       ├── alembic/
-│       │   ├── env.py
-│       │   └── versions/     # 12 revisions
-│       └── src/app/
-│           ├── core/         # config, db, auth, middleware, workos, github_app,
-│           │                 #   install_state, sandbox/, llm, result,
-│           │                 #   telemetry
-│           ├── models/       # SQLModel tables + enums
-│           ├── schemas/      # HTTP request/response shapes (setup, llm_config)
-│           ├── repositories/ # generic Repository[T] base
-│           ├── routers/      # health, auth, github, ai, users, llm_configs, webhooks
-│           ├── services/     # agent/, setup/, indexing/, github/, llm_config/
-│           ├── workflows/    # review/ (durable review pipeline + triggers)
-│           └── utils/        # uuidToStr, etc.
+│   ├── api/                  # FastAPI backend (uv member)
+│   │   ├── pyproject.toml
+│   │   ├── alembic.ini
+│   │   ├── main.py           # uvicorn entry point (packages/api/main.py)
+│   │   ├── alembic/
+│   │   │   ├── env.py
+│   │   │   └── versions/     # 12 revisions
+│   │   └── src/app/
+│   │       ├── core/         # config, db, auth, middleware, workos, github_app,
+│   │       │                 #   install_state, sandbox/, llm, result,
+│   │       │                 #   telemetry
+│   │       ├── models/       # SQLModel tables + enums
+│   │       ├── schemas/      # HTTP request/response shapes (setup, llm_config)
+│   │       ├── repositories/ # generic Repository[T] base
+│   │       ├── routers/      # health, auth, github, ai, users, llm_configs, webhooks
+│   │       ├── services/     # agent/, setup/, indexing/, github/, llm_config/
+│   │       ├── workflows/    # review/ (durable review pipeline + triggers)
+│   │       └── utils/        # uuidToStr, etc.
+│   └── evals/                # evaluation harness (uv member; see §3.8)
+│       ├── main.py           # sequential runner: prepare → review → judge
+│       ├── dataset/          # authored cases: {repo}-pr-{n}/{input,output}.json
+│       ├── agents/           # review/ + judge/ (type, llm, prompt, agent)
+│       ├── sandbox/          # shared sandbox: clone + diff + split artifacts
+│       ├── results/          # per-PR review outputs (result.md)
+│       └── report/           # per-PR judge reports (report.json)
 └── web/                      # TanStack Start frontend (pnpm)
     ├── package.json
     ├── vite.config.ts
@@ -817,6 +824,30 @@ them:
   kwargs on a call are surfaced as LogRecord attributes. Failures in
   the review path are logged with the full run context (PR, SHAs,
   user, LLM provider/model, workflow id) as standard log records.
+
+### 3.8 Evaluation harness — `packages/evals`
+
+A minimal three-stage sequential runner (`main.py <pr-id>`) that
+evaluates the production review agents against authored datasets:
+
+1. **prepare** (`sandbox/main.py`) — clones the repo into the shared
+   sandbox root (`sandbox/sentinel-workspace/<repo>`), writes the
+   unified diff to `sandbox/tmp/{pr}/{head}/file.diff`, and runs the
+   prod split script. One sandbox serves every PR; idempotent per
+   (repo, pr, head).
+2. **review** (`agents/review/`) — runs both production lanes (same
+   prompts, middleware, user prompt, and extractor steps) over a
+   `LocalShellBackend` rooted at the sandbox; renders the output to
+   `results/<pr-id>/result.md` (fixed template: verdict, summary,
+   comments with severity + anchors, parsed back deterministically).
+3. **judge** (`agents/judge/`) — an isolated structured-output LLM
+   judge scores the review against `dataset/<pr-id>/output.json` (gold
+   bugs) + the diff and writes `report/<pr-id>/report.json`
+   (per-comment verdicts + derived precision/recall/F1/FP rate).
+
+Datasets are authored as `dataset/{repo}-pr-{n}/{input,output}.json`
+(input: repo URL/owner/name, PR number, base/head SHAs; output: gold
+verdict + bugs with id, location, severity).
 
 ## 4. Frontend — `web`
 

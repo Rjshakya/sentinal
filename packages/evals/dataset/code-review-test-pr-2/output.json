@@ -1,0 +1,47 @@
+{
+  "verdict": "REQUEST_CHANGES",
+  "bugs": [
+    {
+      "id": "B1",
+      "bug": "Pagination off-by-one: start = page * limit so default page=1 skips the first page of users",
+      "location": "src/index.ts:42",
+      "severity": "P1_CRITICAL"
+    },
+    {
+      "id": "B2",
+      "bug": "Search compares exact match (===) instead of substring (includes) — partial queries return empty",
+      "location": "src/index.ts:48",
+      "severity": "P2_WARNING"
+    },
+    {
+      "id": "B3",
+      "bug": "Cart total applies 10% tax via subtotal * 1.1 without rounding — floating-point artifacts in total",
+      "location": "src/index.ts:94",
+      "severity": "P2_WARNING"
+    },
+    {
+      "id": "B4",
+      "bug": "Cart accepts negative or zero qty/price — no input validation",
+      "location": "src/index.ts:87-90",
+      "severity": "P2_WARNING"
+    },
+    {
+      "id": "B5",
+      "bug": "PUT /user/:id appends a new record (users.push) instead of replacing the existing user",
+      "location": "src/index.ts:68",
+      "severity": "P1_CRITICAL"
+    },
+    {
+      "id": "B6",
+      "bug": "DELETE handler registered at /:id instead of /user/:id — intended endpoint never matches",
+      "location": "src/index.ts:72",
+      "severity": "P1_CRITICAL"
+    },
+    {
+      "id": "B7",
+      "bug": "POST /user trusts client-supplied id with no duplicate check",
+      "location": "src/index.ts:56-57",
+      "severity": "P2_WARNING"
+    }
+  ]
+}

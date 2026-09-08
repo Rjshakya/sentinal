@@ -36,3 +36,9 @@ next-env.d.ts
 Thumbs.db
 *.swp
 
+# Eval harness
+packages/evals/results/
+packages/evals/report/
+packages/evals/sandbox/sentinel-workspace/
+packages/evals/sandbox/tmp/
+

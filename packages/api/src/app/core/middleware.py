@@ -36,10 +36,22 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     BYPASS_PREFIXES: tuple[str, ...] = ("/api/github/setup",)
 
+    # Method-aware bypasses for paths that live under a protected prefix
+    # but are accessed without a sealed session cookie. ``POST /api/review``
+    # is the eval trigger — it gates itself on the ``X-Eval-Token`` header
+    # instead of the WorkOS session, so the middleware must skip it.
+    BYPASS_METHODS: dict[str, set[str]] = {
+        "/api/review": {"POST"},
+    }
+
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next,
+    ):
 
         if request.method == "OPTIONS":
             return await call_next(request)
@@ -47,6 +59,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if any(path.startswith(p) for p in self.BYPASS_PREFIXES):
             return await call_next(request)
+
+        for prefix, methods in self.BYPASS_METHODS.items():
+            if path.startswith(prefix) and request.method in methods:
+                return await call_next(request)
 
         if not any(path.startswith(p) for p in self.PROTECTED_PREFIXES):
             return await call_next(request)
