@@ -9,7 +9,12 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 
-engine = create_async_engine(settings.database_url, echo=False, future=True)
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    future=True,
+    pool_pre_ping=True,
+)
 
 async_session_maker = async_sessionmaker(
     engine,
@@ -17,42 +22,9 @@ async_session_maker = async_sessionmaker(
     expire_on_commit=False,
 )
 
-# DBOS datasource for durable, exactly-once transactions inside DBOS workflows.
-# Created at module import time so the @dbos_datasource.transaction() decorator
-# is available when workflow modules are imported.
-# DBOS uses psycopg, so we strip the +asyncpg driver suffix from the URL.
-_DBOS_DATABASE_URL = settings.database_url.replace("+asyncpg", "")
-
 
 def _selector_loop_factory() -> asyncio.AbstractEventLoop:
     return asyncio.SelectorEventLoop(selectors.SelectSelector())
-
-
-# dbos_datasource: AsyncSQLAlchemyDatasource = asyncio.run(
-#     AsyncSQLAlchemyDatasource.create(
-#         _DBOS_DATABASE_URL, engine_kwargs={"poolclass": NullPool}
-#     ),
-#     loop_factory=_selector_loop_factory,
-# )
-
-
-_dbos_datasource: AsyncSQLAlchemyDatasource | None = None
-
-
-async def get_dbos_datasource() -> AsyncSQLAlchemyDatasource:
-    """Lazily create the DBOS datasource on the caller's running loop.
-
-    Must be awaited once, after DBOS.launch(), before any
-    @dbos_datasource.transaction()-decorated code runs. Call it from
-    the app lifespan and from the test dbos_lifecycle fixture — never
-    at import time, so we never need a throwaway event loop.
-    """
-    global _dbos_datasource
-    if _dbos_datasource is None:
-        _dbos_datasource = await AsyncSQLAlchemyDatasource.create(
-            _DBOS_DATABASE_URL, engine_kwargs={"poolclass": NullPool}
-        )
-    return _dbos_datasource
 
 
 async def get_session():

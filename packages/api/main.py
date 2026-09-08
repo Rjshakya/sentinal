@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.core.db import create_db_and_tables, get_dbos_datasource
+from app.core.db import create_db_and_tables
 from app.core.middleware import AuthMiddleware
 from app.core.sandbox.e2b import build_e2b_index_template, build_e2b_template
 from app.core.telemetry import init_telemetry, instrument_fastapi
@@ -66,7 +66,6 @@ def _dbos_config() -> DBOSConfig:
     return {
         "name": "sentinel",
         "system_database_url": db_url,
-        "application_database_url": db_url,
         "executor_id": settings.dbos_executor_id,
         # "run_admin_server": True,
         # "admin_port": 3001,
@@ -78,9 +77,6 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await create_db_and_tables()
     DBOS(config=_dbos_config())
     DBOS.launch()
-    # await get_dbos_datasource()
-    # build_e2b_template()
-    # build_e2b_index_template()
     try:
         yield
     finally:

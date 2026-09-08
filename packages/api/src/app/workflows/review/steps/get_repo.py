@@ -18,7 +18,7 @@ from dbos import DBOS
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.core.db import get_dbos_datasource, async_session_maker
+from app.core.db import async_session_maker
 from app.models.repo import Repo as RepoModel
 from app.utils.branded import RepoId, RepoName, RepoOwner
 from app.workflows.review.errors import RepoGetError, ReviewStepFailure
