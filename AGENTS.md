@@ -30,7 +30,7 @@ ai-code-review/
 │   │       │                 #   telemetry
 │   │       ├── models/       # SQLModel tables + enums
 │   │       ├── schemas/      # HTTP request/response shapes (setup, llm_config)
-│   │       ├── repositories/ # generic Repository[T] base
+│   │       ├── repositories/ # generic BaseRepository[T] + per-model subclasses
 │   │       ├── routers/      # health, auth, github, ai, users, llm_configs, webhooks
 │   │       ├── services/     # agent/, setup/, indexing/, github/, llm_config/
 │   │       ├── workflows/    # review/ (durable review pipeline + triggers)

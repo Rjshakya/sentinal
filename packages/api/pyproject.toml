@@ -67,4 +67,4 @@ target-version = ["py313"]
 #   -e DBOS_DATABASE_URL=postgresql://postgres:postgres@db:5432/aicode `
 #   -e TRACELOOP_BASE_URL=http://lgtm:4318 `
 #   -p 8000:8000 `
-#   reviewpr-backend-api:latest
+#   reviewpr-api:latest

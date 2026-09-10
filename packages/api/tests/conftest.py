@@ -56,28 +56,8 @@ def _dbos_config() -> DBOSConfig:
     return {
         "name": "sentinel",
         "system_database_url": db_url,
-        "application_database_url": db_url,
         "executor_id": "pytest",
     }
-
-
-# @pytest.fixture(scope="session", autouse=True)
-# def e2b_templates() -> None:
-#     """Build the E2B sandbox templates the e2e tests need.
-#
-#     Idempotent — ``Template.build`` returns the existing template id
-#     on subsequent calls. Skipped when ``E2B_API_KEY`` is unset so the
-#     fixture never hard-fails for tests that don't need a sandbox.
-#     """
-#     if settings.e2b_api_key:
-#         from app.core.sandbox.e2b import (
-#             build_e2b_index_template,
-#             build_e2b_template,
-#         )
-#
-#         build_e2b_template()
-#         build_e2b_index_template()
-#
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -111,54 +91,6 @@ async def dbos_lifecycle():
 def workflow_salt() -> str:
     """Per-session uuid slice so repeated pytest runs re-execute the pipeline."""
     return uuid4().hex[:8]
-
-
-@pytest.fixture
-def requires_indexing_env() -> None:
-    """Skip the test when the indexing pipeline is not configured.
-
-    Requires the host env has the in-sandbox pipeline's full set of
-    credentials: OpenAI key, E2B key, INDEX_S3_BUCKET, and the full
-    AWS quartet (access key + secret + region + endpoint URL).
-    """
-    if not settings.indexing_configured:
-        pytest.skip(
-            "indexing e2e requires OPENAI_API_KEY, E2B_API_KEY, "
-            "INDEX_S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, "
-            "AWS_REGION, AWS_ENDPOINT_URL"
-        )
-
-
-@pytest.fixture
-def requires_review_env() -> None:
-    """Skip the review e2e when its env prerequisites are missing.
-
-    Requires the review pipeline's full credential set: an LLM key,
-    the sandbox (E2B) key, the GitHub App identity (the clone mints an
-    installation token), an OpenAI key (the structured extractor is
-    OpenAI-only), and a live ``REVIEW_E2E_INSTALLATION_ID`` for the
-    target repo.
-    """
-    if not settings.llm_configured:
-        pytest.skip("review e2e requires LLM_MODEL + LLM_API_KEY")
-    if not settings.sandbox_configured:
-        pytest.skip("review e2e requires the sandbox provider key")
-    if not settings.github_app_configured:
-        pytest.skip("review e2e requires the GitHub App credentials")
-    if not (settings.openai_api_key or os.environ.get("OPENAI_API_KEY")):
-        pytest.skip("review e2e requires an OpenAI key (extractor)")
-    if not settings.review_e2e_installation_id:
-        pytest.skip("review e2e requires REVIEW_E2E_INSTALLATION_ID")
-
-
-@pytest.fixture
-def bucket_owner_repo() -> tuple[str, str, str]:
-    """The (bucket, owner, repo) triple the e2e test writes to."""
-    bucket = settings.index_s3_bucket
-    if not bucket:
-        pytest.skip("INDEX_S3_BUCKET is not set")
-    # owner / repo derived from the default E2E repo below.
-    return bucket, "", ""
 
 
 async def run_index_workflow(

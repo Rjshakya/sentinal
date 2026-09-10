@@ -174,7 +174,7 @@ ai-code-review/
 │           ├── models/       # SQLModel tables + enums
 │           ├── schemas/      # HTTP request/response shapes
 │           ├── routers/      # health, auth, github, ai, users, webhooks
-│           ├── repositories/ # generic Repository[T] base
+│           ├── repositories/ # generic BaseRepository[T] + per-model subclasses
 │           ├── services/
 │           │   ├── agent/        # deep-agent + subagent prompts/models + setup pipeline
 │           │   ├── github/       # post-review to GitHub

@@ -26,13 +26,12 @@ import logging
 
 from dbos import DBOS, SetWorkflowID
 from fastapi import APIRouter, HTTPException, Path, Query, Request, status
-from sqlalchemy import func
-from sqlmodel import select
+from sqlmodel import col
 
 from app.core.db import async_session_maker
 from app.models.indexing import IndexRun
-from app.models.repo import Repo
-from app.repositories.base import Repository
+from app.repositories.index_run import IndexRunRepository
+from app.repositories.repo import RepoRepository
 from app.schemas.indexing import (
     IndexRunListResponse,
     IndexRunOut,
@@ -55,9 +54,9 @@ router = APIRouter(prefix="/indexing", tags=["indexing"])
 
 
 async def _resolve_local_repo_id(
-    *, user_id: str, owner: str, repo: str
+    *, user_id: str, owner: str, repo_name: str
 ) -> str | None:
-    """Return the local :class:`Repo.id` (UUID) for this ``owner/repo``, or ``None``.
+    """Return the local ``repos.id`` (UUID) for this ``owner/repo``, or ``None``.
 
     Rows in the ``repos`` table are populated by the GitHub
     ``installation_repositories`` webhook events, so this is the
@@ -68,12 +67,14 @@ async def _resolve_local_repo_id(
     authorisation check for cloning.
     """
     async with async_session_maker() as session:
-        repo_row = await Repository(Repo, session).find_by_fields(
-            user_id=user_id,
-            repo_owner=owner,
-            repo_name=repo,
+        repo = RepoRepository(session=session)
+        repoRow = await repo.find(
+            col(repo.model.user_id) == user_id,
+            col(repo.model.repo_owner) == owner,
+            col(repo.model.repo_name) == repo_name,
+            one=True,
         )
-        return repo_row.id if repo_row is not None else None
+        return repoRow.id if repoRow is not None else None
 
 
 async def _list_user_runs(
@@ -84,27 +85,18 @@ async def _list_user_runs(
 ) -> tuple[list[IndexRun], int]:
     """Return one page of the user's runs (newest first) and the total count.
 
-    Bypasses the generic :class:`Repository` because the list endpoint
-    needs both pagination and ordering, neither of which the generic
-    base supports out of the box. Issues two queries: one paginated
-    ``SELECT`` and one ``SELECT COUNT(*)``.
+    Issues two queries: one ordered, paginated ``SELECT`` and one
+    ``SELECT COUNT(*)``.
     """
     async with async_session_maker() as session:
-        items_stmt = (
-            select(IndexRun)
-            .where(IndexRun.user_id == user_id)
-            .order_by(IndexRun.created_at.desc())  # type: ignore[attr-defined]
-            .limit(limit)
-            .offset(offset)
+        repo = IndexRunRepository(session=session)
+        items = await repo.find(
+            col(repo.model.user_id) == user_id,
+            order_by=col(repo.model.created_at).desc(),
+            limit=limit,
+            offset=offset,
         )
-        items = list((await session.exec(items_stmt)).all())
-
-        count_stmt = (
-            select(func.count())
-            .select_from(IndexRun)
-            .where(IndexRun.user_id == user_id)
-        )
-        total = int((await session.exec(count_stmt)).one())
+        total = await repo.count(col(repo.model.user_id) == user_id)
 
     return items, total
 
@@ -138,7 +130,7 @@ async def trigger_index_run(
     repo_name: str = body.repo_name
 
     local_repo_id: str | None = await _resolve_local_repo_id(
-        user_id=user_id, owner=owner, repo=repo_name
+        user_id=user_id, owner=owner, repo_name=repo_name
     )
     if local_repo_id is None:
         raise HTTPException(
@@ -191,8 +183,12 @@ async def get_index_run(
     """
     user_id: str = request.state.user_id
     async with async_session_maker() as session:
-        repo = Repository(IndexRun, session)
-        run = await repo.find_by_fields(workflow_id=workflow_id, user_id=user_id)
+        repo = IndexRunRepository(session=session)
+        run = await repo.find(
+            col(repo.model.workflow_id) == workflow_id,
+            col(repo.model.user_id) == user_id,
+            one=True,
+        )
     if run is None:
         raise HTTPException(status_code=404, detail="index run not found")
     return to_index_run_out(run)
