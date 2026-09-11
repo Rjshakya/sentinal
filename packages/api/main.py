@@ -67,8 +67,8 @@ def _dbos_config() -> DBOSConfig:
         "name": "sentinel",
         "system_database_url": db_url,
         "executor_id": settings.dbos_executor_id,
-        # "run_admin_server": True,
-        # "admin_port": 3001,
+        "enable_otlp": settings.telemetry_configured,
+        "otel_attribute_format": "semconv",
     }
 
 

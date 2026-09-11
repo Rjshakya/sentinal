@@ -226,13 +226,21 @@ def buildSandboxCtx(*, userId: str, repoId: str, repoName: str) -> SandboxCtx:
     )
 
 
+def handleOpencodeLLMCtx(llm_ctx: LLMCtx, commitId: str):
+    ctx = llm_ctx
+    if ctx is not None and "opencode" in str(ctx.baseUrl):
+        ctx.defaultHeaders = {"x-opencode-session": f"session-{commitId[:6]}"}
+
+    return ctx
+
+
 async def getUserIdFromInstallation(
     session: AsyncSession, *, githubInstallationId: int
 ) -> str | None:
     """Return the WorkOS ``user_id`` that owns the installation, or ``None``."""
-    row = await InstallationRepository(
-        session=session
-    ).find_by_github_installation_id(githubInstallationId)
+    row = await InstallationRepository(session=session).find_by_github_installation_id(
+        githubInstallationId
+    )
     return row.user_id if row is not None else None
 
 
@@ -248,9 +256,7 @@ async def loadLastReview(
     prNumber: int,
 ) -> LastReviewSnapshot | None:
     """Return the latest successful :class:`Review` row for the PR, or ``None``."""
-    row = await ReviewRepository(session=session).find_latest_success(
-        repoId, prNumber
-    )
+    row = await ReviewRepository(session=session).find_latest_success(repoId, prNumber)
     if row is None:
         return None
     return LastReviewSnapshot(
@@ -330,6 +336,8 @@ async def handlePullRequestOpened(
         )
 
     llm_ctx = await resolveLlmCtx(session, userId=userId)
+    llm_ctx = handleOpencodeLLMCtx(llm_ctx=llm_ctx, commitId=pr_payload.headSha)
+
     sandbox_ctx = buildSandboxCtx(
         userId=userId,
         repoId=repo.id,
@@ -475,6 +483,8 @@ async def handleIssueCommentCreated(
     )
 
     llm_ctx = await resolveLlmCtx(session, userId=user_id)
+    llm_ctx = handleOpencodeLLMCtx(llm_ctx=llm_ctx, commitId=state.headSha)
+
     sandbox_ctx = buildSandboxCtx(
         userId=user_id, repoId=repo.id, repoName=repo.repo_name
     )
