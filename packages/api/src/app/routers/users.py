@@ -11,16 +11,14 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from sqlalchemy import func
-from sqlmodel import desc, select
+from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import get_session
-from app.models.code_comment import CodeComment
-from app.models.enums import CommentSeverity
-from app.models.pull_request import PullRequest
 from app.models.repo import Repo
-from app.models.review_summary import ReviewSummary
+from app.repositories.code_comment import CodeCommentRepository
+from app.repositories.repo import RepoRepository
+from app.repositories.review_summary import ReviewSummaryRepository
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -64,17 +62,13 @@ async def list_my_repos(
     the source of truth for the dashboard's "indexed repositories" list.
     """
     try:
-        stmt = (
-            select(Repo)
-            .where(
-                Repo.user_id == request.state.user_id,
-                Repo.is_indexed == True,
-            )
-            .order_by(desc(Repo.updated_at))
-            .limit(limit)
+        repo = RepoRepository(session=session)
+        rows = await repo.find(
+            col(Repo.user_id) == request.state.user_id,
+            col(Repo.is_indexed) == True,
+            order_by=col(Repo.updated_at).desc(),
+            limit=limit,
         )
-        result = await session.exec(stmt)
-        rows = result.all()
 
         return [
             UserRepoOut(
@@ -110,35 +104,12 @@ async def get_user_stats(
     """
     user_id = request.state.user_id
 
-    prs_reviewed_stmt = (
-        select(func.count())
-        .select_from(ReviewSummary)
-        .join(PullRequest)
-        .join(Repo)
-        .where(Repo.user_id == user_id)
-    )
-    prs_reviewed = int((await session.exec(prs_reviewed_stmt)).one() or 0)
+    summaries = ReviewSummaryRepository(session=session)
+    prs_reviewed = await summaries.count_for_user(user_id)
 
-    comments_issued_stmt = (
-        select(func.count())
-        .select_from(CodeComment)
-        .join(PullRequest)
-        .join(Repo)
-        .where(Repo.user_id == user_id)
-    )
-    comments_issued = int((await session.exec(comments_issued_stmt)).one() or 0)
-
-    bugs_caught_stmt = (
-        select(func.count())
-        .select_from(CodeComment)
-        .join(PullRequest)
-        .join(Repo)
-        .where(
-            Repo.user_id == user_id,
-            CodeComment.severity == CommentSeverity.P1_CRITICAL.value,
-        )
-    )
-    bugs_caught = int((await session.exec(bugs_caught_stmt)).one() or 0)
+    comments = CodeCommentRepository(session=session)
+    comments_issued = await comments.count_for_user(user_id)
+    bugs_caught = await comments.count_p1_for_user(user_id)
 
     return UserStatsOut(
         prs_reviewed=prs_reviewed,

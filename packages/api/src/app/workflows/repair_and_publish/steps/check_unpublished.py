@@ -20,16 +20,19 @@ from __future__ import annotations
 from typing import cast
 
 from dbos import DBOS
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col, select
+from sqlmodel import col
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.models.code_comment import CodeComment
 from app.models.enums import CommentState
-from app.models.installation import Installation
-from app.models.repo import Repo
 from app.models.review import Review
 from app.models.review_summary import ReviewSummary
+from app.repositories.code_comment import CodeCommentRepository
+from app.repositories.installation import InstallationRepository
+from app.repositories.repo import RepoRepository
+from app.repositories.review import ReviewRepository
+from app.repositories.review_summary import ReviewSummaryRepository
 from app.utils.branded import (
     CommitId,
     InstallationId,
@@ -82,17 +85,11 @@ async def loadUnpublishedReview(
         problems. Never raises.
     """
     try:
-        review = (
-            (
-                await session.execute(
-                    select(Review).where(
-                        Review.commit_id == commitId,
-                        col(Review.github_review_id).is_(None),
-                    )
-                )
-            )
-            .scalars()
-            .first()
+        reviews = ReviewRepository(session=session)
+        review = await reviews.find(
+            col(Review.commit_id) == commitId,
+            col(Review.github_review_id).is_(None),
+            one=True,
         )
     except Exception as exc:
         return _checkError(
@@ -106,17 +103,11 @@ async def loadUnpublishedReview(
     reviewId = ReviewRowId(review.id)
 
     try:
-        summary = (
-            (
-                await session.execute(
-                    select(ReviewSummary).where(
-                        ReviewSummary.review_id == reviewId,
-                        col(ReviewSummary.github_review_id).is_(None),
-                    )
-                )
-            )
-            .scalars()
-            .first()
+        summaries = ReviewSummaryRepository(session=session)
+        summary = await summaries.find(
+            col(ReviewSummary.review_id) == reviewId,
+            col(ReviewSummary.github_review_id).is_(None),
+            one=True,
         )
     except Exception as exc:
         return _checkError(
@@ -130,25 +121,13 @@ async def loadUnpublishedReview(
         return None
 
     try:
-        comment_rows = (
-            (
-                await session.execute(
-                    select(CodeComment)
-                    .where(
-                        CodeComment.review_id == reviewId,
-                        col(CodeComment.github_review_id).is_(None),
-                    )
-                    .order_by(col(CodeComment.created_at))
-                )
-            )
-            .scalars()
-            .all()
+        comments_repo = CodeCommentRepository(session=session)
+        comment_rows = await comments_repo.find(
+            col(CodeComment.review_id) == reviewId,
+            col(CodeComment.github_review_id).is_(None),
+            order_by=col(CodeComment.created_at),
         )
-        repo = (
-            (await session.execute(select(Repo).where(Repo.id == review.repo_id)))
-            .scalars()
-            .first()
-        )
+        repo = await RepoRepository(session=session).get(review.repo_id)
     except Exception as exc:
         return _checkError(
             f"failed to load comments / repo: {type(exc).__name__}: {exc}",
@@ -162,18 +141,12 @@ async def loadUnpublishedReview(
         )
 
     try:
-        installation = (
-            (
-                await session.execute(
-                    select(Installation).where(
-                        Installation.user_id == review.user_id,
-                        Installation.account_login == repo.repo_owner,
-                        Installation.suspended_at.is_(None),  # type: ignore[union-attr]
-                    )
-                )
-            )
-            .scalars()
-            .first()
+        installation = await InstallationRepository(
+            session=session
+        ).find_by_user_and_login(
+            review.user_id,
+            repo.repo_owner,
+            active_only=True,
         )
     except Exception as exc:
         return _checkError(

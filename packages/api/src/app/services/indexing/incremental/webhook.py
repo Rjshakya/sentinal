@@ -25,11 +25,11 @@ from typing import Any
 
 from dbos import DBOS, SetWorkflowID
 from pydantic import BaseModel
-from sqlmodel import select
 
 from app.core.db import async_session_maker
-from app.models.installation import Installation
 from app.models.repo import Repo
+from app.repositories.installation import InstallationRepository
+from app.repositories.repo import RepoRepository
 from app.services.indexing.incremental.helpers import (
     extract_push_files,
     incremental_workflow_id,
@@ -67,11 +67,10 @@ class PushWebhookAck(BaseModel):
 async def resolve_installation_owner(github_installation_id: int) -> str | None:
     """Return the WorkOS ``user_id`` that owns the installation, or ``None``."""
     async with async_session_maker() as session:
-        stmt = select(Installation.user_id).where(
-            Installation.github_installation_id == github_installation_id,
-            Installation.user_id.is_not(None),  # type: ignore[union-attr]
-        )
-        return (await session.exec(stmt)).first()
+        row = await InstallationRepository(
+            session=session
+        ).find_by_github_installation_id(github_installation_id)
+        return row.user_id if row is not None else None
 
 
 async def resolve_installed_repo(
@@ -82,12 +81,11 @@ async def resolve_installed_repo(
 ) -> Repo | None:
     """Return the local :class:`Repo` row for ``user_id``'s installed repo."""
     async with async_session_maker() as session:
-        stmt = select(Repo).where(
-            Repo.user_id == user_id,
-            Repo.repo_owner == repo_owner,
-            Repo.repo_name == repo_name,
+        return await RepoRepository(session=session).find_by_owner_name(
+            user_id=user_id,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
         )
-        return (await session.exec(stmt)).first()
 
 
 # --------------------------------------------------------------------------- #

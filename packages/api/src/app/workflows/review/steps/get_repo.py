@@ -15,11 +15,10 @@ Two layers, following the new service conventions:
 from __future__ import annotations
 
 from dbos import DBOS
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
-from app.models.repo import Repo as RepoModel
+from app.repositories.repo import RepoRepository
 from app.utils.branded import RepoId, RepoName, RepoOwner
 from app.workflows.review.errors import RepoGetError, ReviewStepFailure
 from app.workflows.review.types import RepoSnapshot
@@ -31,15 +30,7 @@ async def getRepo(
     ghRepoId: int,
 ) -> RepoSnapshot | RepoGetError:
     """Fetch the local :class:`Repo` row by its GitHub-side id."""
-    repo = (
-        (
-            await session.execute(
-                select(RepoModel).where(RepoModel.github_repo_id == ghRepoId)
-            )
-        )
-        .scalars()
-        .first()
-    )
+    repo = await RepoRepository(session=session).find_by_github_repo_id(ghRepoId)
     if repo is None:
         return RepoGetError(message=f"repo {ghRepoId!r} not found")
     return RepoSnapshot(

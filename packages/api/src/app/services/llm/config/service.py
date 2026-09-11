@@ -25,11 +25,11 @@ from datetime import UTC, datetime
 
 from deepagents import create_deep_agent
 from langchain.agents.structured_output import ProviderStrategy
-from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.models.llm_config import LLMConfigRecord
+from app.repositories.llm_config import LLMConfigRecordRepository
 from app.services.llm.config.errors import LLMConfigStoreError
 from app.services.llm.config.types import (
     LLMConfigProbeResult,
@@ -163,16 +163,16 @@ async def saveUserLLMConfig(
         ``LLMConfigRecord`` on success; ``LLMConfigStoreError`` on any
         DB failure (read, insert/update, or refresh).
     """
-    stmt = select(LLMConfigRecord).where(LLMConfigRecord.user_id == userId)
+    repo = LLMConfigRecordRepository(session=session)
     try:
-        existing = (await session.exec(stmt)).first()
+        existing = await repo.find_by_user(userId)
         if existing is not None:
             existing.provider = provider
             existing.model_id = modelId
             existing.base_url = baseUrl
             existing.api_key = apiKey
             existing.updated_at = datetime.now(UTC)
-            session.add(existing)
+            await repo.add(existing)
             await session.flush()
             await session.refresh(existing)
             return existing
@@ -184,7 +184,7 @@ async def saveUserLLMConfig(
             base_url=baseUrl,
             api_key=apiKey,
         )
-        session.add(row)
+        await repo.add(row)
         await session.flush()
         await session.refresh(row)
         return row
@@ -204,8 +204,8 @@ async def listUserLLMConfigs(
     empty when the user has no row (one element at most — one config
     per user).
     """
-    stmt = select(LLMConfigRecord).where(LLMConfigRecord.user_id == userId)
-    row = (await session.exec(stmt)).first()
+    repo = LLMConfigRecordRepository(session=session)
+    row = await repo.find_by_user(userId)
     return [row] if row is not None else []
 
 

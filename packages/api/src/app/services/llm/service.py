@@ -34,11 +34,10 @@ from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.rate_limiters import InMemoryRateLimiter
 from pydantic import SecretStr
-from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
-from app.models.llm_config import LLMConfigRecord
+from app.repositories.llm_config import LLMConfigRecordRepository
 from app.services.llm.errors import LLMConfigError, LLMContextError
 from app.services.llm.types import (
     ApiKey,
@@ -93,9 +92,9 @@ async def createUserLLMContext(
         row or the DB read fails (the error carries ``userId``). Never
         raises.
     """
-    stmt = select(LLMConfigRecord).where(LLMConfigRecord.user_id == userId)
+    repo = LLMConfigRecordRepository(session=session)
     try:
-        row = (await session.exec(stmt)).first()
+        row = await repo.find_by_user(userId)
     except Exception as exc:
         return LLMContextError(
             message=f"failed to load llm config: {type(exc).__name__}: {exc}",

@@ -141,10 +141,10 @@ async def run_pr(pr_id: str) -> tuple[Path, Path]:
 
     request_body = review_input.model_dump(mode="json")
     request_body["session_id"] = session_id
-    request_body["model"] = "anthropic:minimax-m3"
-    # request_body["baseUrl"] = "https://opencode.ai/zen/go/v1"
+    request_body["model"] = "openai:deepseek-v4.1-flash"
+    request_body["baseUrl"] = "https://opencode.ai/zen/go/v1"
 
-    request_body["baseUrl"] = "https://opencode.ai/zen/go"
+    # request_body["baseUrl"] = "https://opencode.ai/zen/go"
 
     api_response = await _call_review_api(
         api_url=api_url,

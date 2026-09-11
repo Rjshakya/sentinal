@@ -21,15 +21,14 @@ step that runs before the repair step, not here.
 from __future__ import annotations
 
 from dbos import DBOS
-from sqlalchemy import delete
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.util import await_fallback
-from sqlmodel import select
+from sqlmodel import col
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.models.code_comment import CodeComment
-from app.models.review import Review
-from app.models.review_summary import ReviewSummary
+from app.repositories.code_comment import CodeCommentRepository
+from app.repositories.review import ReviewRepository
+from app.repositories.review_summary import ReviewSummaryRepository
 from app.workflows.repair_and_publish.errors import (
     RepairPublishStepFailure,
     SaveError,
@@ -48,8 +47,8 @@ async def savePublishedReview(
 ):
 
     try:
-        q = select(Review).where(Review.id == unpublished.reviewId)
-        review = (await session.execute(q)).scalars().first()
+        reviews = ReviewRepository(session=session)
+        review = await reviews.get(unpublished.reviewId)
 
         if review is None:
             return None
@@ -59,41 +58,30 @@ async def savePublishedReview(
         if published.postedComments:
             review.comment_count = len(published.postedComments)
 
-        session.add(review)
+        await reviews.add(review)
 
-        q = select(ReviewSummary).where(ReviewSummary.review_id == unpublished.reviewId)
-        summary = (await session.execute(q)).scalars().first()
+        summaries = ReviewSummaryRepository(session=session)
+        summary = await summaries.find_by_review_id(unpublished.reviewId)
 
         if summary is None:
             return None
 
         summary.github_review_id = str(published.githubReviewId)
-        session.add(summary)
+        await summaries.add(summary)
 
+        comments = CodeCommentRepository(session=session)
         if published.postedComments:
-            rows = (
-                (
-                    await session.execute(
-                        select(CodeComment).where(
-                            CodeComment.id.in_(  # type: ignore[attr-defined]
-                                [row.commentId for row in published.postedComments]
-                            )
-                        )
-                    )
-                )
-                .scalars()
-                .all()
+            rows = await comments.find_by_ids(
+                [row.commentId for row in published.postedComments]
             )
             for row in rows:
                 row.github_review_id = unpublished.reviewId
-                session.add(row)
+                await comments.add(row)
 
         if published.leftComments:
-            await session.execute(
-                delete(CodeComment).where(
-                    CodeComment.id.in_(  # type: ignore[attr-defined]
-                        [row.commentId for row in published.leftComments]
-                    )
+            await comments.delete(
+                col(CodeComment.id).in_(
+                    [row.commentId for row in published.leftComments]
                 )
             )
 

@@ -34,6 +34,9 @@ from app.models.pull_request import PullRequest
 from app.models.repo import Repo
 from app.models.review import Review, ReviewState
 from app.models.review_usage import ReviewUsage
+from app.repositories.installation import InstallationRepository
+from app.repositories.repo import RepoRepository
+from app.repositories.review import ReviewRepository
 from app.services.llm import createDefaultLLMContext
 from app.utils.branded import (
     BaseUrl,
@@ -45,11 +48,7 @@ from app.utils.branded import (
 )
 from app.utils.schema import CommentSeverityStr, CommentSideStr, ReviewVerdictStr
 from app.utils.util import uuidToStr
-from app.workflows.review.triggers import (
-    buildSandboxCtx,
-    getRepoRecord,
-    getUserIdFromInstallation,
-)
+from app.workflows.review.triggers import buildSandboxCtx
 from app.workflows.review.types import (
     emptyPrSize,
     ReviewWorkflowCtx,
@@ -247,26 +246,23 @@ async def _ensure_repo_row(
     the row is synthesised here under the caller-supplied ``user_id``.
     Returns the row's id (UUID string).
     """
-    stmt = select(Repo).where(Repo.github_repo_id == github_repo_id)
-    existing = (await session.exec(stmt)).first()
+    repo = RepoRepository(session=session)
+    existing = await repo.find_by_github_repo_id(github_repo_id)
     if existing is not None:
         return existing.id
 
-    repo = Repo(
+    row = Repo(
         id=uuidToStr(),
         user_id=user_id,
         github_repo_id=github_repo_id,
         repo_name=repo_name,
         repo_owner=repo_owner,
         clone_url=clone_url,
-        url=None,
-        private=False,
-        default_branch=None,
     )
-    session.add(repo)
+    await repo.add(row)
     await session.commit()
-    await session.refresh(repo)
-    return repo.id
+    await session.refresh(row)
+    return row.id
 
 
 @router.post("", response_model=EvalReviewResponse)
@@ -291,20 +287,16 @@ async def trigger_review(
     ghRepoId = body.github_repo_id
     ghPrId = body.github_pr_id
 
-    githubInstallationId = InstallationId(body.github_installation_id)
-
-    userId = await getUserIdFromInstallation(
-        session,
-        githubInstallationId=githubInstallationId,
+    installations = InstallationRepository(session=session)
+    installation = await installations.find_by_github_installation_id(
+        body.github_installation_id
     )
 
-    if userId is None:
+    if installation is None:
         raise HTTPException(status_code=400, detail={"error": "repo not found"})
 
-    repo = await getRepoRecord(
-        session,
-        ghRepoId=ghRepoId,
-    )
+    repos = RepoRepository(session=session)
+    repo = await repos.find_by_github_repo_id(ghRepoId)
 
     if repo is None:
         raise HTTPException(status_code=400, detail={"error": "repo not found"})
@@ -456,6 +448,7 @@ async def list_reviews(
     to keep pyright happy with SQLModel instrumented-attribute equality.
     """
     try:
+        repo = ReviewRepository(session=session)
         stmt = (
             select(Review, Repo, PullRequest, ReviewUsage)
             .outerjoin(Repo, cast(ColumnElement[bool], Review.repo_id == Repo.id))
@@ -471,7 +464,7 @@ async def list_reviews(
             .order_by(desc(Review.created_at))
             .limit(limit)
         )
-        result = await session.exec(stmt)
+        result = await repo.session.exec(stmt)
         rows = result.all()
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to list reviews")

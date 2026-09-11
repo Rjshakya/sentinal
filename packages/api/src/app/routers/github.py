@@ -34,8 +34,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func
-from sqlmodel import delete, select
+from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
@@ -45,6 +44,8 @@ from app.core.install_state import sign as sign_install_state
 from app.core.install_state import verify as verify_install_state
 from app.models.installation import Installation
 from app.models.repo import Repo
+from app.repositories.installation import InstallationRepository
+from app.repositories.repo import RepoRepository
 from app.utils.util import uuidToStr
 
 log = logging.getLogger(__name__)
@@ -118,12 +119,7 @@ class RepoOut(BaseModel):
 async def _load_user_installations(
     session: AsyncSession, user_id: str
 ) -> list[Installation]:
-    stmt = (
-        select(Installation)
-        .where(Installation.user_id == user_id)
-        .order_by(Installation.created_at.asc())  # type: ignore[attr-defined]
-    )
-    return list((await session.exec(stmt)).all())
+    return await InstallationRepository(session=session).find_by_user(user_id)
 
 
 async def _load_user_repo_count(session: AsyncSession, user_id: str) -> int:
@@ -132,8 +128,8 @@ async def _load_user_repo_count(session: AsyncSession, user_id: str) -> int:
     ``Repo`` rows are user-scoped, not installation-scoped, so this
     total is the same on every installation of the same user.
     """
-    stmt = select(func.count()).select_from(Repo).where(Repo.user_id == user_id)
-    return int((await session.exec(stmt)).one() or 0)
+    repo = RepoRepository(session=session)
+    return await repo.count(col(Repo.user_id) == user_id)
 
 
 def _summarize(
@@ -242,13 +238,13 @@ async def list_installation_repos_route(request: Request) -> list[RepoOut]:
     # boundary so the response shape stays a strict ``bool``.
     if seen:
         async with async_session_maker() as session:
-            stmt = select(Repo.github_repo_id, Repo.is_indexed).where(
-                Repo.user_id == user_id,
-                Repo.github_repo_id.in_(list(seen.keys())),  # type: ignore[attr-defined]
+            repo = RepoRepository(session=session)
+            rows = await repo.find(
+                col(Repo.user_id) == user_id,
+                col(Repo.github_repo_id).in_(list(seen.keys())),
             )
             local_state: dict[int, bool] = {
-                row[0]: bool(row[1]) if row[1] is not None else False
-                for row in (await session.exec(stmt)).all()
+                row.github_repo_id: bool(row.is_indexed) for row in rows
             }
         for r in seen.values():
             r.is_configured = r.id in local_state
@@ -273,14 +269,14 @@ async def forget_installation(
     """
     user_id = request.state.user_id
     async with async_session_maker() as session:
-        delete_installations = delete(Installation).where(
-            Installation.id == installation_id,  # pyright: ignore
-            Installation.user_id == user_id,
+        repo = InstallationRepository(session=session)
+        deleted = await repo.delete(
+            col(Installation.id) == installation_id,
+            col(Installation.user_id) == user_id,
         )
-        result = await session.exec(delete_installations)
         await session.commit()
 
-        deleted_count = result.rowcount
+        deleted_count = len(deleted)
         if deleted_count == 0:
             raise HTTPException(status_code=404, detail="Installation not found")
 
@@ -360,22 +356,18 @@ async def _upsert_installation(
     """
     now = datetime.now(UTC)
     async with async_session_maker() as session:
-        stmt = select(Installation).where(
-            Installation.user_id == user_id,
-            Installation.github_installation_id == github_installation_id,
-        )
-        existing = (await session.exec(stmt)).first()
+        repo = InstallationRepository(session=session)
+        existing = await repo.find_by_github_installation_id(github_installation_id)
         if existing is not None:
             existing.account_login = account_login
             existing.account_type = account_type
             existing.repository_selection = repository_selection
             existing.suspended_at = suspended_at
             existing.updated_at = now
-            session.add(existing)
             await session.commit()
             return False
 
-        session.add(
+        await repo.add(
             Installation(
                 id=uuidToStr(),
                 user_id=user_id,

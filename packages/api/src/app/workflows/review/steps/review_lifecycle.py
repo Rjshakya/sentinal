@@ -29,11 +29,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from dbos import DBOS
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.models.review import Review, ReviewState
+from app.repositories.review import ReviewRepository
 from app.utils.branded import PrRowId, RepoId, ReviewRowId, UserId
 from app.workflows.review.errors import (
     LifecycleUpdateError,
@@ -73,15 +73,8 @@ async def markReviewRunning(
     attempt).
     """
     try:
-        existing = (
-            (
-                await session.execute(
-                    select(Review).where(Review.workflow_id == workflowId)
-                )
-            )
-            .scalars()
-            .first()
-        )
+        reviews = ReviewRepository(session=session)
+        existing = await reviews.find_by_workflow_id(workflowId)
 
         if existing is not None:
             existing.state = ReviewState.RUNNING
@@ -118,7 +111,7 @@ async def markReviewRunning(
             llm_base_url=llmBaseUrl,
             started_at=_utcnow(),
         )
-        session.add(review)
+        await reviews.add(review)
         await session.commit()
         await session.refresh(review)
         return ReviewRowId(review.id)
@@ -147,7 +140,8 @@ async def markReviewStopped(
 ) -> None | LifecycleUpdateError:
     """Flip the row to ``SUCCESS`` and persist the run outcome."""
     try:
-        review = await session.get(Review, reviewRowId)
+        reviews = ReviewRepository(session=session)
+        review = await reviews.get(reviewRowId)
         if review is None:
             return LifecycleUpdateError(
                 message=f"mark stopped: review {reviewRowId!r} not found",
@@ -188,7 +182,8 @@ async def markReviewErrored(
     if reviewRowId is None:
         return None
     try:
-        review = await session.get(Review, reviewRowId)
+        reviews = ReviewRepository(session=session)
+        review = await reviews.get(reviewRowId)
         if review is None:
             return LifecycleUpdateError(
                 message=f"mark errored: review {reviewRowId!r} not found",

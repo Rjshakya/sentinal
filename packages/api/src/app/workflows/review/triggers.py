@@ -37,13 +37,13 @@ from typing import Any, cast
 
 from dbos import DBOS, SetWorkflowID
 from pydantic import BaseModel, ValidationError
-from sqlmodel import select
 
 from app.core.config import settings
 from app.models.enums import PRStatus
-from app.models.installation import Installation
 from app.models.repo import Repo
-from app.models.review import Review, ReviewState
+from app.repositories.installation import InstallationRepository
+from app.repositories.repo import RepoRepository
+from app.repositories.review import ReviewRepository
 from app.services.github.pr.errors import GitHubPRError
 from app.services.github.pr.service import addReaction, createPRCtx, getPrState
 from app.services.llm import (
@@ -230,18 +230,15 @@ async def getUserIdFromInstallation(
     session: AsyncSession, *, githubInstallationId: int
 ) -> str | None:
     """Return the WorkOS ``user_id`` that owns the installation, or ``None``."""
-    stmt = select(Installation.user_id).where(
-        Installation.github_installation_id == githubInstallationId,
-        Installation.user_id.is_not(None),  # type: ignore[union-attr]
-    )
-    return (await session.exec(stmt)).first()
+    row = await InstallationRepository(
+        session=session
+    ).find_by_github_installation_id(githubInstallationId)
+    return row.user_id if row is not None else None
 
 
 async def getRepoRecord(session: AsyncSession, *, ghRepoId: int) -> Repo | None:
     """Return the local :class:`Repo` row for a GitHub repo id, or ``None``."""
-    stmt = select(Repo).where(Repo.github_repo_id == ghRepoId)
-    result = await session.exec(stmt)
-    return result.first()
+    return await RepoRepository(session=session).find_by_github_repo_id(ghRepoId)
 
 
 async def loadLastReview(
@@ -251,17 +248,9 @@ async def loadLastReview(
     prNumber: int,
 ) -> LastReviewSnapshot | None:
     """Return the latest successful :class:`Review` row for the PR, or ``None``."""
-    stmt = (
-        select(Review)
-        .where(
-            Review.repo_id == repoId,
-            Review.pr_number == prNumber,
-            Review.state == ReviewState.SUCCESS,
-        )
-        .order_by(Review.created_at.desc())  # type: ignore[attr-defined]
-        .limit(1)
+    row = await ReviewRepository(session=session).find_latest_success(
+        repoId, prNumber
     )
-    row = (await session.exec(stmt)).first()
     if row is None:
         return None
     return LastReviewSnapshot(

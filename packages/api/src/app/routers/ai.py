@@ -25,11 +25,12 @@ from datetime import UTC, datetime
 
 from dbos import DBOS, WorkflowStatusString
 from fastapi import APIRouter, HTTPException, Path, Request, status
-from sqlmodel import select
+from sqlmodel import col
 
 from app.core.config import settings
 from app.core.db import async_session_maker
 from app.models.repo import Repo
+from app.repositories.repo import RepoRepository
 from app.schemas.setup import (
     SetupRequest,
     SetupStatusResponse,
@@ -184,11 +185,9 @@ async def _existing_repo_ids(github_repo_ids: list[int]) -> set[int]:
     if not github_repo_ids:
         return set()
     async with async_session_maker() as session:
-        stmt = select(Repo.github_repo_id).where(
-            Repo.github_repo_id.in_(github_repo_ids)  # type: ignore[attr-defined]
-        )
-        result = await session.exec(stmt)
-        return set(result.all())
+        repo = RepoRepository(session=session)
+        rows = await repo.find(col(Repo.github_repo_id).in_(github_repo_ids))
+        return {row.github_repo_id for row in rows}
 
 
 # --------------------------------------------------------------------------- #

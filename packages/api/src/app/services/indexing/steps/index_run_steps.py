@@ -30,11 +30,11 @@ import logging
 from datetime import UTC, datetime
 
 from dbos import DBOS
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.models.indexing import IndexRun, IndexRunState
+from app.repositories.index_run import IndexRunRepository
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def _utcnow() -> datetime:
 
 
 async def _fetch_run(session: AsyncSession, run_id: str) -> IndexRun | None:
-    return await session.get(IndexRun, run_id)
+    return await IndexRunRepository(session=session).get(run_id)
 
 
 @DBOS.step()
@@ -71,9 +71,22 @@ async def create_index_run_step(
     workflow_id = DBOS.workflow_id or ""
     try:
         async with async_session_maker() as session:
-            stmt = (
-                pg_insert(IndexRun)
-                .values(
+            repo = IndexRunRepository(session=session)
+            existing = await repo.find_by_workflow_id(workflow_id)
+            if existing is not None:
+                existing.state = IndexRunState.STARTING
+                existing.error_name = None
+                existing.error_message = None
+                existing.chunk_count = None
+                existing.file_count = None
+                existing.sandbox_id = None
+                existing.started_at = None
+                existing.finished_at = None
+                existing.updated_at = _utcnow()
+                await session.commit()
+                run_id = existing.id
+            else:
+                row = IndexRun(
                     user_id=user_id,
                     workflow_id=workflow_id,
                     repo_owner=repo_owner,
@@ -83,26 +96,10 @@ async def create_index_run_step(
                     state=IndexRunState.STARTING,
                     s3_bucket=s3_bucket,
                 )
-                .on_conflict_do_update(
-                    index_elements=[IndexRun.workflow_id],
-                    set_={
-                        "state": IndexRunState.STARTING,
-                        "error_name": None,
-                        "error_message": None,
-                        "chunk_count": None,
-                        "file_count": None,
-                        "sandbox_id": None,
-                        "started_at": None,
-                        "finished_at": None,
-                        "updated_at": _utcnow(),
-                    },
-                )
-                .returning(IndexRun.id)  # pyright: ignore
-            )
-            result = await session.execute(stmt)
-            row = result.first()
-            run_id = row[0] if row is not None else None
-            await session.commit()
+                await repo.add(row)
+                await session.commit()
+                await session.refresh(row)
+                run_id = row.id
         log.info(
             "create_index_run_step: ok run_id=%s workflow_id=%s owner=%s repo=%s",
             run_id,
