@@ -28,15 +28,14 @@ import base64
 import hashlib
 import hmac
 import time
-from typing import cast
 from urllib.parse import quote
 
-from sqlalchemy.sql.elements import ColumnElement
-from sqlmodel import delete, select
+from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.models.installation import Installation
+from app.repositories.installation import InstallationRepository
 from app.services.github.client import getAppGitHub, getAuthenticatedGitHubClient
 from app.services.github.installation.errors import GitHubInstallationError
 from app.services.github.installation.types import (
@@ -147,13 +146,8 @@ async def listInstallations(
     Reads the local mirror — the GitHub API is not consulted. The
     ``suspended`` flag is derived from ``suspended_at`` at the boundary.
     """
-    stmt = (
-        select(Installation)
-        .where(Installation.user_id == ctx.userId)
-        .order_by(Installation.created_at.desc())  # type: ignore[attr-defined]
-    )
     try:
-        rows = (await session.exec(stmt)).all()
+        rows = await InstallationRepository(session=session).find_by_user(ctx.userId)
     except Exception as exc:
         cause = f"{type(exc).__name__}: {exc}"
 
@@ -184,15 +178,12 @@ async def forgetInstallation(
     uninstall the App on github.com; this only clears Sentinel's local
     state. Returns an error when no row matched (nothing to forget).
     """
-    stmt = delete(Installation).where(
-        cast(
-            ColumnElement[bool],
-            Installation.github_installation_id == ctx.installationId,
-        ),
-        cast(ColumnElement[bool], Installation.user_id == ctx.userId),
-    )
+    repo = InstallationRepository(session=session)
     try:
-        result = await session.exec(stmt)
+        deleted = await repo.delete(
+            col(Installation.github_installation_id) == ctx.installationId,
+            col(Installation.user_id) == ctx.userId,
+        )
         await session.commit()
     except Exception as exc:
         await session.rollback()
@@ -204,7 +195,7 @@ async def forgetInstallation(
             installationId=ctx.installationId,
         )
 
-    if (result.rowcount or 0) == 0:
+    if len(deleted) == 0:
         return GitHubInstallationError(
             message="installation not found",
             userId=ctx.userId,

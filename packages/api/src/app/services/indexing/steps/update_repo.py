@@ -27,6 +27,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.models.repo import Repo
+from app.repositories.repo import RepoRepository
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ def _utcnow() -> datetime:
 
 
 async def _fetch_repo(session: AsyncSession, *, repo_id: str) -> Repo | None:
-    return await session.get(Repo, repo_id)
+    return await RepoRepository(session=session).get(repo_id)
 
 
 @DBOS.step()

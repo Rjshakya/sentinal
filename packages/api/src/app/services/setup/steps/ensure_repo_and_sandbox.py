@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from dbos import DBOS
-from sqlmodel import select
+from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
@@ -29,6 +29,9 @@ from app.models.enums import SandboxState
 from app.models.installation import Installation
 from app.models.repo import Repo
 from app.models.sandbox import Sandbox as SandboxModel
+from app.repositories.installation import InstallationRepository
+from app.repositories.repo import RepoRepository
+from app.repositories.sandbox import SandboxRepository
 from app.services.setup.errors import (
     InstallationNotFoundError,
     SandboxCreateError,
@@ -168,12 +171,12 @@ async def _find_installation(
     ``user_id`` predicate is enforced at the DB layer; if a row
     matches ``id`` but belongs to a different user we get no hit.
     """
-    stmt = select(Installation).where(
-        Installation.id == installation_id,
-        Installation.user_id == user_id,
+    repo = InstallationRepository(session=session)
+    return await repo.find(
+        col(Installation.id) == installation_id,
+        col(Installation.user_id) == user_id,
+        one=True,
     )
-    result = await session.exec(stmt)
-    return result.first()
 
 
 async def _upsert_repo(
@@ -193,12 +196,12 @@ async def _upsert_repo(
     is only applied on insert — the router skips repos that already
     have a row, and the retry path never re-inserts a committed row.
     """
-    stmt = select(Repo).where(Repo.github_repo_id == github_repo_id)
-    existing = (await session.exec(stmt)).first()
+    repo = RepoRepository(session=session)
+    existing = await repo.find_by_github_repo_id(github_repo_id)
     if existing is not None:
         return existing
 
-    repo = Repo(
+    row = Repo(
         id=uuidToStr(),
         user_id=user_id,
         github_repo_id=github_repo_id,
@@ -207,10 +210,10 @@ async def _upsert_repo(
         clone_url=f"https://github.com/{repo_owner}/{repo_name}.git",
         default_branch=default_branch,
     )
-    session.add(repo)
+    await repo.add(row)
     await session.flush()
-    await session.refresh(repo)
-    return repo
+    await session.refresh(row)
+    return row
 
 
 async def _insert_sandbox_row(
@@ -229,6 +232,7 @@ async def _insert_sandbox_row(
     only a concern on the rare retry path described in the step's
     docstring.
     """
+    sandboxes = SandboxRepository(session=session)
     sandbox = SandboxModel(
         id=sandbox_id,
         user_id=user_id,
@@ -238,7 +242,7 @@ async def _insert_sandbox_row(
         provider_id="e2b",
         started_at=datetime.now(UTC),
     )
-    session.add(sandbox)
+    await sandboxes.add(sandbox)
     await session.flush()
     await session.refresh(sandbox)
     return sandbox

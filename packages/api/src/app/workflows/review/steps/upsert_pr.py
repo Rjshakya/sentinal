@@ -16,12 +16,12 @@ import logging
 from datetime import UTC, datetime
 
 from dbos import DBOS
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.models.enums import PRStatus
 from app.models.pull_request import PullRequest
+from app.repositories.pull_request import PullRequestRepository
 from app.utils.branded import PrRowId, RepoId
 from app.utils.util import uuidToStr
 from app.workflows.review.errors import ReviewStepFailure, UpsertPRError
@@ -42,18 +42,8 @@ async def upsertPullRequest(
     On update the SHAs, branches, and PR metadata are refreshed; on
     insert a fresh row is created. Returns the row's id.
     """
-    existing = (
-        (
-            await session.execute(
-                select(PullRequest).where(
-                    PullRequest.repo_id == repoId,
-                    PullRequest.number == input.prNumber,
-                )
-            )
-        )
-        .scalars()
-        .first()
-    )
+    repo = PullRequestRepository(session=session)
+    existing = await repo.find_by_repo_and_number(repoId, input.prNumber)
 
     try:
         if existing is not None:
@@ -66,7 +56,7 @@ async def upsertPullRequest(
             existing.author = input.author
             existing.status = input.status
             existing.updated_at = datetime.now(UTC)
-            session.add(existing)
+            await repo.add(existing)
             await session.commit()
             return PrRowId(existing.id)
 
@@ -83,7 +73,7 @@ async def upsertPullRequest(
             head_branch=input.headBranch,
             head_sha=input.headSha,
         )
-        session.add(pr)
+        await repo.add(pr)
         await session.commit()
         await session.refresh(pr)
         return PrRowId(pr.id)

@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from uuid import UUID
 
 from dbos import DBOS
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.models.code_comment import CodeComment
@@ -36,6 +36,9 @@ from app.models.enums import (
 )
 from app.models.review_summary import ReviewSummary
 from app.models.review_usage import ReviewUsage
+from app.repositories.code_comment import CodeCommentRepository
+from app.repositories.review_summary import ReviewSummaryRepository
+from app.repositories.review_usage import ReviewUsageRepository
 from app.utils.branded import (
     CommitId,
     PRNumber,
@@ -139,7 +142,8 @@ async def persistReviewSummary(
             summary=review.summary,
             verdict=ReviewVerdict(review.verdict),
         )
-        session.add(summary)
+        repo = ReviewSummaryRepository(session=session)
+        await repo.add(summary)
         await session.commit()
         await session.refresh(summary)
         return summary.id
@@ -167,10 +171,11 @@ async def persistCodeComments(
         )
         if not rows:
             return []
-        session.add_all(rows)
-        await session.commit()
+        repo = CodeCommentRepository(session=session)
         for row in rows:
-            await session.refresh(row)
+            await repo.add(row)
+        await session.flush()
+        await session.commit()
         return [row.id for row in rows]
     except Exception as exc:
         return PersistError(
@@ -213,9 +218,10 @@ async def persistReviewUsage(
             llm_provider=llmProvider,
             llm_base_url=llmBaseUrl,
         )
-        session.add(row)
+        repo = ReviewUsageRepository(session=session)
+        await repo.add(row)
+        await session.flush()
         await session.commit()
-        await session.refresh(row)
         return row.id
     except Exception as exc:
         return PersistError(

@@ -26,13 +26,12 @@ from __future__ import annotations
 import logging
 
 from dbos import DBOS
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
-from app.models.code_comment import CodeComment
-from app.models.review import Review
-from app.models.review_summary import ReviewSummary
+from app.repositories.code_comment import CodeCommentRepository
+from app.repositories.review import ReviewRepository
+from app.repositories.review_summary import ReviewSummaryRepository
 from app.services.github.pr.errors import GitHubPRError
 from app.services.github.pr.service import createPRCtx, postReview
 from app.services.github.pr.types import PRCommentDraft, PRCtx, PRReviewDraft
@@ -250,34 +249,27 @@ async def updatePostBacklinks(
     (GitHub returns them in posted order).
     """
     try:
-        review = await session.get(Review, reviewRowId)
+        reviews = ReviewRepository(session=session)
+        review = await reviews.get(reviewRowId)
 
         if review is not None:
             review.github_review_id = str(githubReviewId)
-            session.add(review)
+            await reviews.add(review)
 
-        reviewSummary = await session.get(ReviewSummary, reviewSummaryId)
+        summaries = ReviewSummaryRepository(session=session)
+        reviewSummary = await summaries.get(reviewSummaryId)
 
         if reviewSummary is not None:
             reviewSummary.github_review_id = str(githubReviewId)
-            session.add(reviewSummary)
+            await summaries.add(reviewSummary)
 
         if commentRowIds:
-            rows = (
-                (
-                    await session.execute(
-                        select(CodeComment).where(
-                            col(CodeComment.id).in_(commentRowIds)
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
+            comments = CodeCommentRepository(session=session)
+            rows = await comments.find_by_ids(commentRowIds)
 
             for row in rows:
                 row.github_review_id = str(githubReviewId)
-                session.add(row)
+                await comments.add(row)
 
         await session.commit()
         return None

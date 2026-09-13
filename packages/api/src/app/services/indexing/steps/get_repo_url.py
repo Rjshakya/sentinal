@@ -30,12 +30,11 @@ from __future__ import annotations
 import logging
 
 from dbos import DBOS
-from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.core.github_app import mint_installation_token
-from app.models.installation import Installation
+from app.repositories.installation import InstallationRepository
 from app.services.indexing.errors import (
     IndexInstallationNotFoundError,
     IndexInstallTokenMintError,
@@ -59,12 +58,11 @@ async def _find_github_installation_id(
     enforced at the DB layer; if a row matches the account login but
     belongs to a different user we get no hit.
     """
-    stmt = select(Installation.github_installation_id).where(
-        Installation.user_id == user_id,
-        Installation.account_login == account_login,
+    row = await InstallationRepository(session=session).find_by_user_and_login(
+        user_id,
+        account_login,
     )
-    result = await session.exec(stmt)
-    return result.first()
+    return row.github_installation_id if row is not None else None
 
 
 @DBOS.step(

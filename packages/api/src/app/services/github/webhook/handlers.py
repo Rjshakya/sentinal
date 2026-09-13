@@ -29,14 +29,15 @@ informative.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
-from sqlalchemy.sql.elements import ColumnElement
-from sqlmodel import delete, select
+from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.models.installation import Installation
 from app.models.repo import Repo
+from app.repositories.installation import InstallationRepository
+from app.repositories.repo import RepoRepository
 from app.services.github.webhook.types import WebhookCtx
 from app.utils.util import uuidToStr
 
@@ -64,10 +65,10 @@ async def getUserIdByInstallationId(
     session: AsyncSession, github_installation_id: int
 ) -> str | None:
     """Return the WorkOS ``user_id`` that owns the local installation row."""
-    stmt = select(Installation.user_id).where(
-        Installation.github_installation_id == github_installation_id
-    )
-    return (await session.exec(stmt)).first()
+    row = await InstallationRepository(
+        session=session
+    ).find_by_github_installation_id(github_installation_id)
+    return row.user_id if row is not None else None
 
 
 async def _upsertRepo(
@@ -78,12 +79,12 @@ async def _upsertRepo(
     full_name = repoPayload["full_name"]
     owner, _, name = full_name.partition("/")
 
-    stmt = select(Repo).where(Repo.github_repo_id == github_repo_id)
-    repo = (await session.exec(stmt)).first()
-    if repo is not None:
-        return repo.id
+    repo = RepoRepository(session=session)
+    existing = await repo.find_by_github_repo_id(github_repo_id)
+    if existing is not None:
+        return existing.id
 
-    repo = Repo(
+    row = Repo(
         id=uuidToStr(),
         user_id=user_id,
         github_repo_id=github_repo_id,
@@ -94,9 +95,9 @@ async def _upsertRepo(
         private=repoPayload.get("private", False),
         default_branch=repoPayload.get("default_branch"),
     )
-    session.add(repo)
+    await repo.add(row)
     await session.flush()
-    return repo.id
+    return row.id
 
 
 # --------------------------------------------------------------------------- #
@@ -111,13 +112,27 @@ async def handleInstallationDeleted(ctx: WebhookCtx, session: AsyncSession):
         ctx.skipReason = "malformed_installation"
         return None
 
-    stmt = delete(Installation).where(
-        cast(ColumnElement[bool], Installation.github_installation_id == gh_id)
-    )
-    await session.exec(stmt)
+    repo = InstallationRepository(session=session)
+    await repo.delete(col(Installation.github_installation_id) == gh_id)
     await session.commit()
     ctx.accepted = True
     return None
+
+
+async def _set_suspended(
+    session: AsyncSession,
+    *,
+    github_installation_id: int,
+    suspended: bool,
+) -> None:
+    """Set or clear ``suspended_at`` on the installation row and commit."""
+    now = datetime.now(UTC)
+    repo = InstallationRepository(session=session)
+    row = await repo.find_by_github_installation_id(github_installation_id)
+    if row is not None:
+        row.suspended_at = now if suspended else None
+        row.updated_at = now
+    await session.commit()
 
 
 async def handleInstallationSuspended(ctx: WebhookCtx, session: AsyncSession):
@@ -127,14 +142,7 @@ async def handleInstallationSuspended(ctx: WebhookCtx, session: AsyncSession):
         ctx.skipReason = "malformed_installation"
         return None
 
-    now = datetime.now(UTC)
-    stmt = select(Installation).where(Installation.github_installation_id == gh_id)
-    rows = list((await session.exec(stmt)).all())
-    for row in rows:
-        row.suspended_at = now
-        row.updated_at = now
-        session.add(row)
-    await session.commit()
+    await _set_suspended(session, github_installation_id=gh_id, suspended=True)
     ctx.accepted = True
     return None
 
@@ -146,14 +154,7 @@ async def handleInstallationUnsuspended(ctx: WebhookCtx, session: AsyncSession):
         ctx.skipReason = "malformed_installation"
         return None
 
-    now = datetime.now(UTC)
-    stmt = select(Installation).where(Installation.github_installation_id == gh_id)
-    rows = list((await session.exec(stmt)).all())
-    for row in rows:
-        row.suspended_at = None
-        row.updated_at = now
-        session.add(row)
-    await session.commit()
+    await _set_suspended(session, github_installation_id=gh_id, suspended=False)
     ctx.accepted = True
     return None
 
@@ -200,10 +201,8 @@ async def handleInstallationReposRemoved(ctx: WebhookCtx, session: AsyncSession)
         return None
 
     github_repo_ids = {r["id"] for r in removed}
-    stmt = select(Repo).where(Repo.github_repo_id.in_(github_repo_ids))  # type: ignore[attr-defined]
-    repos = list((await session.exec(stmt)).all())
-    for repo in repos:
-        await session.delete(repo)
+    repo = RepoRepository(session=session)
+    await repo.delete(col(Repo.github_repo_id).in_(github_repo_ids))
     await session.commit()
     ctx.accepted = True
     return None
