@@ -124,17 +124,6 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    # import uvicorn.loops.asyncio as uvicorn_asyncio_loop
-    #
-    # if sys.platform == "win32":
-    #
-    #     def _selector_loop_factory(
-    #         use_subprocess: bool = False,
-    #     ) -> type[asyncio.AbstractEventLoop]:
-    #         return asyncio.SelectorEventLoop
-    #
-    #     uvicorn_asyncio_loop.asyncio_loop_factory = _selector_loop_factory
-    #
     uvicorn.run(
         app,
         host="0.0.0.0",
