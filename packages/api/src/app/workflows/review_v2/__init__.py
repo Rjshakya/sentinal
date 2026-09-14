@@ -21,7 +21,11 @@ Submodules:
 from __future__ import annotations
 
 from app.workflows.review_v2.errors import (
+    CheckoutError,
+    CheckoutTransientError,
     ChunkListError,
+    CloneV2Error,
+    CloneV2TransientError,
     FileLaneError,
     PlannerStepError,
     V2AgentsError,
@@ -32,7 +36,11 @@ from app.workflows.review_v2.workflow import (
 )
 
 __all__ = [
+    "CheckoutError",
+    "CheckoutTransientError",
     "ChunkListError",
+    "CloneV2Error",
+    "CloneV2TransientError",
     "FileLaneError",
     "PlannerStepError",
     "V2AgentsError",

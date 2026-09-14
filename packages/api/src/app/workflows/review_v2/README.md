@@ -10,6 +10,11 @@ collide with production v1 runs.
 - `splitted_diffs/` is the diff truth. The host inventories it
   (`listChunkFilesStep`) and fans out over it — no LLM ever decides
   which files get reviewed.
+- The v2 clone (`cloneRepoV2Step`) leaves the working tree checked
+  out at the reviewed head SHA — clone + PR-ref fetch + detached
+  checkout in one atomic script. Fail-closed: any checkout refusal
+  fails the run instead of reviewing a half-built tree. Past the
+  clone step there is exactly one world: PR tree + PR diff.
 - The planner is **enrichment-only**: it annotates files with context.
   A planner miss costs context, never a review (the file is still
   reviewed with an empty slice). Planner failure degrades to an empty
@@ -26,15 +31,21 @@ workflows/review_v2/
 ├── __init__.py      # Public surface: workflow + v2 errors only.
 ├── README.md        # This file.
 ├── errors.py        # V2 error VALUES (ChunkListError, PlannerStepError,
-│                    # FileLaneError, V2AgentsError). Raised wrappers
-│                    # (ReviewStepFailure/Transient) + shouldRetry are
-│                    # REUSED from workflows/review/errors — not duplicated.
+│                    # FileLaneError, CloneV2Error/CloneV2TransientError,
+│                    # CheckoutError/CheckoutTransientError, V2AgentsError).
+│                    # Raised wrappers (ReviewStepFailure/Transient) +
+│                    # shouldRetry are REUSED from workflows/review/errors —
+│                    # not duplicated.
 ├── workflow.py      # reviewWorkflowV2 orchestrator + createReviewV2WorkflowId
 │                    # + fixed planner/file call-limit helpers. Straight-line:
 │                    # infra (imported from v1 steps) → v2 agent phase below →
 │                    # persist/post/lifecycle (imported from v1 steps).
 └── steps/
     ├── __init__.py      # Re-exports the v2 steps + pure helpers.
+    ├── clone_repo_v2.py # V2-native clone (I/O boundary #0): default-branch
+    │                    # clone + PR-ref fetch + detached head checkout in
+    │                    # ONE atomic in-sandbox script, verify-gated.
+    │                    # Fail-closed: checkout refusal fails the run.
     ├── list_chunks.py   # I/O boundary #1: `grep '^### '` in sandbox →
     │                    # ChunkInventory. Owns connectV2Sandbox (local
     │                    # reconnect helper; v1's is package-private).
@@ -52,18 +63,41 @@ workflows/review_v2/
 ```
 
 The key structural rule: **infra steps are imported, never copied**
-(`create_sandbox`, `clone_repo`, `fetch_diff`, `split_diff`,
-`persist_*`, `post_review`, `review_lifecycle`, `extractCommentsStep`
-all come from `workflows/review/steps`). Only the agent phase is new.
-That's what makes the future swap a trigger-line change rather than
-a migration.
+(`create_sandbox`, `fetch_diff`, `split_diff`, `persist_*`,
+`post_review`, `review_lifecycle`, `extractCommentsStep` all come
+from `workflows/review/steps`). The clone is the one deliberate
+exception — v2 owns `clone_repo_v2.py` because the tree-at-head
+invariant is a v2 requirement the shared v1 clone must never adopt
+unilaterally. That's what makes the future swap a trigger-line change
+rather than a migration.
+
+## Clone contract (`cloneRepoV2Step`)
+
+One atomic in-sandbox script: default-branch clone → PR-ref fetch
+(`refs/pull/{pr}/head`, fork-safe — the head branch name is never
+trusted) → `cat-file -e` gate → `checkout --detach {headSha}` →
+`rev-parse HEAD` verify. Fail-closed per stage:
+
+| Stage fails | Outcome |
+|---|---|
+| `git clone` | Fatal — no repo, nothing to review (as v1) |
+| PR-ref fetch | Fatal *only if* it makes checkout impossible (SHA gate); flag recorded for logs |
+| `checkout --detach` / verify gate | **Fatal** — run ERROR, no partial-truth review |
+| Runner dropout / timeout | Transient — DBOS retries ×3 |
+
+Deliberately **no degrade-and-continue**: a degraded tree (base code
+under a PR diff) would force prompts to hedge both worlds, split
+evals by invisible state, and breed Heisenbugs. Past the clone step
+there is exactly one world — PR tree + PR diff — so prompts assert
+PR-state reads unconditionally. Chunks remain the sole anchor truth
+for line numbers regardless.
 
 ## What's done
 
-- `workflow.py` — `reviewWorkflowV2`: infra steps reused by import
-  (sandbox, clone, diff, split, persist, post, lifecycle), then
-  list-chunks → planner → join → batched fan-out → merge → extract →
-  persist/post. Same `RUNNING`/`SUCCESS`/`FAILED` lifecycle, same
+- `workflow.py` — `reviewWorkflowV2`: v2 clone (tree at head, verified)
+  → upsert PR → `RUNNING` → fetch/split diff → list-chunks → planner
+  → join → batched fan-out → merge → extract → persist/post. Same
+  `RUNNING`/`SUCCESS`/`FAILED` lifecycle, same
   `ReviewWorkflowCtx`/`ReviewWorkflowInput`/`ReviewRunResult` shapes.
 - `steps/list_chunks.py` — `grep '^### '` over chunk headers →
   `ChunkInventory` (paths only; diff text never leaves the sandbox).
@@ -75,11 +109,14 @@ a migration.
   report concat, batching, usage aggregation (`combineV2Reports`).
   The v2 base build is comments-only (empty summary).
 - `errors.py` — `ChunkListError`, `PlannerStepError{research,extract}`,
-  `FileLaneError{file}`, `V2AgentsError`. Raised step exceptions and
-  retry predicates reused from v1.
+  `FileLaneError{file}`, `CloneV2Error`/`CloneV2TransientError`,
+  `CheckoutError`/`CheckoutTransientError` (checkout refusal is final),
+  `V2AgentsError`. Raised step exceptions and retry predicates reused
+  from v1.
 - Verified: compiles, all modules import, pyright 0 errors/warnings,
-  pure join/merge logic sanity-checked (repo test suite untouched —
-  some of its tests are broken).
+  pure join/merge logic + clone-summary parser + fail-closed worker
+  mapping sanity-checked (repo test suite untouched — some of its
+  tests are broken).
 
 ## What's left
 

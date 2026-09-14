@@ -4,9 +4,10 @@ The isolated successor of :func:`app.workflows.review.workflow.reviewWorkflow`
 (same infra, new agent phase — the v1 workflow is untouched and keeps
 serving traffic until an explicit future swap):
 
-1. Infra (reused by import, never duplicated): resolve repo → create
-   ephemeral sandbox → clone → upsert PR → mark ``RUNNING`` → fetch
-   diff → split diff.
+1. Infra: resolve repo → create ephemeral sandbox → v2 clone
+   (default-branch clone + PR-ref fetch + detached head checkout,
+   atomically; any checkout refusal fails the run) → upsert PR →
+   mark ``RUNNING`` → fetch diff → split diff.
 2. :func:`app.workflows.review_v2.steps.list_chunks.listChunkFilesStep`
    inventories ``splitted_diffs/`` — the host-side diff truth that
    drives the fan-out.
@@ -55,7 +56,6 @@ from app.workflows.review.errors import (
     ReviewStepFailure,
     SandboxCreateError,
 )
-from app.workflows.review.steps.clone_repo import cloneRepoStep
 from app.workflows.review.steps.create_sandbox import createSandboxStep
 from app.workflows.review.steps.extract_result import (
     buildExtractorLlmCtx,
@@ -97,6 +97,7 @@ from app.workflows.review_v2.steps.combine import (
     combineV2Reports,
     concatFileReports,
 )
+from app.workflows.review_v2.steps.clone_repo_v2 import cloneRepoV2Step
 from app.workflows.review_v2.steps.invoke_file import invokeFileReviewStep
 from app.workflows.review_v2.steps.invoke_planner import (
     buildPlanExtractorLlmCtx,
@@ -216,14 +217,24 @@ async def reviewWorkflowV2(
                 )
             )
 
-        await cloneRepoStep(
+        # V2-native clone: default-branch clone + PR-ref fetch +
+        # detached head checkout in one atomic script. Fail-closed:
+        # any checkout refusal raises and fails the run — v2 never
+        # reviews a half-built tree.
+        cloneResult = await cloneRepoV2Step(
             sandboxCtx=sandbox_ctx,
             userId=input.userId,
             repoId=repo.id,
             repoOwner=repo.repoOwner,
             repoName=repo.repoName,
             prNumber=input.prNumber,
+            headSha=input.headSha,
             githubInstallationId=input.githubInstallationId,
+        )
+        log.info(
+            "review_v2: repo ready: workflow_id=%s checked_out_head=%s",
+            workflow_id,
+            cloneResult.checkedOutHead,
         )
 
         pr_row_id: PrRowId = await upsertPullRequestTx(repoId=repo.id, input=input)

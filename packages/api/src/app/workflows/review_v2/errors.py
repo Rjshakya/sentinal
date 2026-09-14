@@ -29,6 +29,17 @@ V2-specific values:
   the fan-out is N-wide); ``retryable`` mirrors whether the
   underlying failure was transient so the step edge can retry that
   file alone.
+- :class:`CloneV2Error` — the v2 clone script failed (workspace prep
+  or ``git clone`` non-zero). Business outcome — the repo cannot be
+  cloned, the run fails.
+- :class:`CloneV2TransientError` — token mint / sandbox reconnect /
+  runner dropout around the clone. Transient — DBOS retries.
+- :class:`CheckoutError` — the PR-head checkout (or its verify gate)
+  failed. **Final, never degraded**: a review is only produced from
+  a fully-known state (PR tree + PR diff), so the workflow fails
+  instead of reviewing a half-built tree.
+- :class:`CheckoutTransientError` — runner dropout / timeout during
+  the checkout script. Transient — DBOS retries.
 - :class:`V2AgentsError` — no usable agent output at all (planner
   degraded AND every file lane failed, or the file fan-out was
   empty-handed). Raised by the workflow body (wrapped in
@@ -80,6 +91,41 @@ class FileLaneError(ReviewStepError):
     file: str
 
 
+class CloneV2Error(ReviewStepError):
+    """The v2 clone script failed (workspace prep / ``git clone``).
+
+    Business outcome: bad token, missing repo, transport error. The
+    run fails — there is no repo to review.
+    """
+
+    exitCode: int | None = None
+    outputTail: str | None = None
+
+
+class CloneV2TransientError(CloneV2Error):
+    """Token mint / sandbox reconnect / runner dropout. Transient."""
+
+    retryable: bool = True
+
+
+class CheckoutError(ReviewStepError):
+    """The PR-head checkout (or its verify gate) failed.
+
+    Final: the tree cannot be placed at the reviewed head SHA, and v2
+    never reviews a half-built tree — the workflow fails instead of
+    degrading. ``cause`` records which stage refused (fetch, gate,
+    checkout, verify) for logs.
+    """
+
+    cause: str | None = None
+
+
+class CheckoutTransientError(CheckoutError):
+    """Runner dropout / timeout during the checkout script. Transient."""
+
+    retryable: bool = True
+
+
 class V2AgentsError(ReviewStepError):
     """No usable agent output for the run.
 
@@ -96,7 +142,11 @@ class V2AgentsError(ReviewStepError):
 
 
 __all__ = [
+    "CheckoutError",
+    "CheckoutTransientError",
     "ChunkListError",
+    "CloneV2Error",
+    "CloneV2TransientError",
     "FileLaneError",
     "PlannerStepError",
     "V2AgentsError",

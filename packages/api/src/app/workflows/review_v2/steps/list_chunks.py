@@ -154,7 +154,7 @@ async def listChunkFiles(
         # inventory is only valid when the split summary agrees; the
         # workflow decides that. Here: no headers parsed → empty list,
         # unless the command itself failed for another reason.
-        tail = _truncateOutput(result.output)
+        tail = _truncateOutput(result.output, maxChars=600)
         if result.exit_code == 1 and not tail:
             return ChunkInventory(actualFiles=[])
         return ChunkListError(
@@ -214,4 +214,9 @@ async def listChunkFilesStep(
     return result
 
 
-__all__ = ["connectV2Sandbox", "listChunkFiles", "listChunkFilesStep", "parseChunkHeaders"]
+__all__ = [
+    "connectV2Sandbox",
+    "listChunkFiles",
+    "listChunkFilesStep",
+    "parseChunkHeaders",
+]
