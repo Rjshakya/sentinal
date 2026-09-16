@@ -152,7 +152,10 @@ def createLLMModel(ctx: LLMCtx) -> BaseChatModel | LLMConfigError:
         init_kwargs["default_headers"] = dict(ctx.defaultHeaders)
 
     extra: dict[str, Any] = {}
-    if provider == "openai" and model_id.startswith("gpt-5.6"):
+    if provider == "openai" and (
+        model_id.startswith("gpt-5.6")
+        or model_id.startswith("muse-spark-1.3-contributor")
+    ):
         extra = {"use_responses_api": True, "output_version": "responses/v1"}
     if model_id.startswith("deepseek"):
         extra["extra_body"] = {"response_format": {"type": "json_object"}}
