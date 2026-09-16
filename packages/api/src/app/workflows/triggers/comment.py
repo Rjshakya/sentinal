@@ -1,18 +1,22 @@
 """Pure helpers for the ``issue_comment`` trigger path.
 
 No I/O, no DBOS, no sessions, no clock. The comment trigger adapter
-(:func:`app.workflows.review.triggers.handleIssueCommentCreated`) calls
+(:func:`app.workflows.triggers.review.handleIssueCommentCreated`) calls
 these in its body to project the raw webhook payload onto typed models
 and to short-circuit on the first failing check.
+
+Copied from :mod:`app.workflows.review.helpers` (which remains untouched
+until the step-2 deletion); this module is the canonical home going
+forward.
 
 Public surface:
 
 - :func:`validateCommentPayload` — project a raw payload onto
-  :class:`app.workflows.review.types.CommentTriggerInput`, or ``None``
+  :class:`app.workflows.triggers.types.CommentTriggerInput`, or ``None``
   when any field is missing / wrong-typed (never raises).
 - :func:`classifyComment` — the gate that decides whether a comment
   triggers a review. Returns a
-  :class:`app.workflows.review.types.ClassifyCommentResult` with the
+  :class:`app.workflows.triggers.types.ClassifyCommentResult` with the
   first failing ``skipReason`` populated.
 - :func:`shouldReviewComment` — the ``@<slug> review`` regex match.
   Case-insensitive, anywhere in the body.
@@ -26,7 +30,7 @@ Public surface:
   (``OWNER`` / ``COLLABORATOR`` / ``MEMBER``).
 - :func:`effectiveDiffBase` — the pure decision behind the incremental
   re-review: given the GitHub API's base/head and the latest successful
-  :class:`app.workflows.review.types.LastReviewSnapshot`, return the
+  :class:`app.workflows.triggers.types.LastReviewSnapshot`, return the
   git-diff base to use (``None`` = the API's ``baseSha``).
 - :data:`REVIEW_MENTION_RE` — the mention regex.
 - :data:`WRITE_ASSOCIATIONS` — the ``author_association`` values that
@@ -41,7 +45,7 @@ from typing import Any, Final
 from pydantic import ValidationError
 
 from app.utils.branded import CommitId
-from app.workflows.review.types import (
+from app.workflows.triggers.types import (
     ClassifyCommentResult,
     CommentTriggerInput,
     LastReviewSnapshot,
@@ -74,7 +78,7 @@ def validateCommentPayload(
     The pydantic schema enforces every field's type; any missing or
     wrong-typed value makes the function return ``None``. The caller
     folds that into a ``malformed_payload`` skip — never raises, like
-    :func:`app.workflows.review.triggers.extractPrPayload`.
+    :func:`app.workflows.triggers.review.extractPrPayload`.
     """
     issue = rawPayload.get("issue") or {}
     comment = rawPayload.get("comment") or {}

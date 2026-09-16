@@ -48,7 +48,7 @@ from app.utils.branded import (
 )
 from app.utils.schema import CommentSeverityStr, CommentSideStr, ReviewVerdictStr
 from app.utils.util import uuidToStr
-from app.workflows.review.triggers import buildSandboxCtx
+from app.workflows.triggers._common import buildSandboxCtx
 from app.workflows.review.types import (
     emptyPrSize,
     ReviewWorkflowCtx,

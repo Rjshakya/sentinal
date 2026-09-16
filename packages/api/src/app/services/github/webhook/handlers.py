@@ -15,8 +15,8 @@ Two families:
   ``push``) — forward the domain events to the DBOS dispatch adapters.
   ``pull_request`` ``opened`` and ``issue_comment`` ``created`` run the
   refactored review workflow via
-  :mod:`app.workflows.review.triggers`; ``push`` keeps the legacy
-  incremental-indexing adapter. The adapter imports are **deferred to
+  :mod:`app.workflows.triggers.review`; ``push`` keeps the legacy
+   incremental-indexing adapter. The adapter imports are **deferred to
   call time**: the adapters pull in the review / indexing pipelines,
   which in turn import :mod:`app.services.github` — a module-level
   import here would cycle through the partially initialized package.
@@ -65,9 +65,9 @@ async def getUserIdByInstallationId(
     session: AsyncSession, github_installation_id: int
 ) -> str | None:
     """Return the WorkOS ``user_id`` that owns the local installation row."""
-    row = await InstallationRepository(
-        session=session
-    ).find_by_github_installation_id(github_installation_id)
+    row = await InstallationRepository(session=session).find_by_github_installation_id(
+        github_installation_id
+    )
     return row.user_id if row is not None else None
 
 
@@ -215,7 +215,7 @@ async def handleInstallationReposRemoved(ctx: WebhookCtx, session: AsyncSession)
 
 async def handlePullRequestOpened(ctx: WebhookCtx, session: AsyncSession):
     """Forward a ``pull_request`` ``opened`` delivery to the review trigger."""
-    from app.workflows.review.triggers import handlePullRequestOpened as trigger
+    from app.workflows.triggers.review import handlePullRequestOpened as trigger
 
     ack = await trigger(
         payload=ctx.payload,
@@ -229,7 +229,7 @@ async def handlePullRequestOpened(ctx: WebhookCtx, session: AsyncSession):
 
 async def handleIssueCommentCreated(ctx: WebhookCtx, session: AsyncSession):
     """Forward an ``issue_comment`` ``created`` delivery to the review trigger."""
-    from app.workflows.review.triggers import handleIssueCommentCreated as trigger
+    from app.workflows.triggers.review import handleIssueCommentCreated as trigger
 
     ack = await trigger(ctx.payload, ctx.delivery, session)
     ctx.accepted = ack.accepted

@@ -25,9 +25,17 @@ Both are called by the github webhook sub-service delegation handlers
   GitHub API calls go through the pr sub-service ctx.
 - The run environment (:class:`ReviewWorkflowCtx` — per-user
   :class:`LLMCtx` with a settings fallback, settings-driven
-  :class:`SandboxCtx`) is resolved here, at the edge.
+  :class:`SandboxCtx`) is resolved here, at the edge, via
+  :mod:`app.workflows.triggers._common`.
 - Dispatch uses the deterministic ``review-v2:{repo_id}:{pr}:{head_sha[:7]}``
   id, so duplicate deliveries dedupe in DBOS.
+- The repair-and-publish follow-up dispatches through
+  :mod:`app.workflows.triggers.repair` (one trigger module per
+  workflow), not inline.
+
+Copied from :mod:`app.workflows.review.triggers` (which remains untouched
+until the step-2 deletion); this module is the canonical home going
+forward.
 """
 
 from __future__ import annotations
@@ -36,28 +44,14 @@ import logging
 from typing import Any, cast
 
 from dbos import DBOS, SetWorkflowID
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from app.core.config import settings
 from app.models.enums import PRStatus
-from app.models.repo import Repo
-from app.repositories.installation import InstallationRepository
-from app.repositories.repo import RepoRepository
 from app.repositories.review import ReviewRepository
 from app.services.github.pr.errors import GitHubPRError
 from app.services.github.pr.service import addReaction, createPRCtx, getPrState
-from app.services.llm import (
-    LLMContextError,
-    LLMCtx,
-    createDefaultLLMContext,
-    createUserLLMContext,
-)
-from app.services.sandbox.service import (
-    DEFAULT_ROOT_PATH,
-    createSandboxCtx,
-    getDefaulSandboxName,
-)
-from app.services.sandbox.types import ProviderId, SanboxProviderApiKey, SandboxCtx
+from app.services.llm.types import LLMCtx
 from app.utils.branded import (
     CommitId,
     InstallationId,
@@ -65,18 +59,7 @@ from app.utils.branded import (
     RepoId,
     UserId,
 )
-from app.workflows.repair_and_publish.workflow import (
-    DispatchRepairAndPublishWorkflowInput,
-    dispatchRepairAndPublishWorkflow,
-)
-from app.workflows.review.helpers import (
-    classifyComment,
-    effectiveDiffBase,
-    validateCommentPayload,
-)
 from app.workflows.review.types import (
-    LastReviewSnapshot,
-    PRSizeStats,
     ReviewWorkflowCtx,
     ReviewWorkflowInput,
 )
@@ -87,6 +70,24 @@ from app.workflows.review_v2.workflow import (
     createReviewV2WorkflowId,
     reviewWorkflowV2,
 )
+from app.workflows.triggers._common import (
+    buildSandboxCtx,
+    getRepoRecord,
+    getUserIdFromInstallation,
+    handleOpencodeLLMCtx,
+    resolveLlmCtx,
+)
+from app.workflows.triggers.comment import (
+    classifyComment,
+    effectiveDiffBase,
+    validateCommentPayload,
+)
+from app.workflows.triggers.repair import triggerRepairAfterReview
+from app.workflows.triggers.types import (
+    LastReviewSnapshot,
+    PRPayload,
+    ReviewTriggerAck,
+)
 
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -94,40 +95,8 @@ log = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
-# ack                                                                          #
-# --------------------------------------------------------------------------- #
-
-
-class ReviewTriggerAck(BaseModel):
-    """What a trigger adapter hands back to the webhook handler for logging."""
-
-    accepted: bool
-    action: str
-    delivery: str
-    skip_reason: str | None = None
-
-
-# --------------------------------------------------------------------------- #
 # pure helpers                                                                 #
 # --------------------------------------------------------------------------- #
-
-
-class PRPayload(BaseModel):
-    """Flat, typed projection of a verified ``pull_request`` ``opened`` payload."""
-
-    ghRepoId: int
-    ghPrId: int
-    number: PRNumber
-    baseBranch: str
-    defaultBranch: str | None
-    baseSha: str
-    headBranch: str
-    headSha: CommitId
-    author: str
-    title: str
-    body: str
-    status: PRStatus
-    prSize: PRSizeStats
 
 
 def _prStatus(state: Any, merged: Any) -> PRStatus | None:
@@ -199,56 +168,6 @@ def extractPrPayload(payload: dict[str, Any]) -> PRPayload | None:
 def reviewConfigured() -> bool:
     """True iff the review pipeline's env prerequisites are met."""
     return settings.llm_configured and settings.sandbox_configured
-
-
-async def resolveLlmCtx(session: AsyncSession, *, userId: str) -> LLMCtx:
-    """Resolve the run's LLM context: the user's stored row, else settings."""
-    result = await createUserLLMContext(session, UserId(userId))
-    if isinstance(result, LLMContextError):
-        log.info(
-            "review.trigger: no user llm config, falling back to settings: user_id=%s",
-            userId,
-        )
-        return createDefaultLLMContext()
-    return result
-
-
-def buildSandboxCtx(*, userId: str, repoId: str, repoName: str) -> SandboxCtx:
-    """Assemble the run's sandbox context from settings-driven defaults."""
-    provider = cast(ProviderId, settings.sandbox_provider)
-    api_key = settings.e2b_api_key if provider == "e2b" else settings.daytona_api_key
-    return createSandboxCtx(
-        userId=UserId(userId),
-        repoId=RepoId(repoId),
-        repoName=repoName,
-        providerId=provider,
-        apiKey=SanboxProviderApiKey(api_key),
-        sandboxName=getDefaulSandboxName(repoName),
-        rootPath=DEFAULT_ROOT_PATH[provider],
-    )
-
-
-def handleOpencodeLLMCtx(llm_ctx: LLMCtx, commitId: str):
-    ctx = llm_ctx
-    if ctx is not None and "opencode" in str(ctx.baseUrl):
-        ctx.defaultHeaders = {"x-opencode-session": f"session-{commitId[:6]}"}
-
-    return ctx
-
-
-async def getUserIdFromInstallation(
-    session: AsyncSession, *, githubInstallationId: int
-) -> str | None:
-    """Return the WorkOS ``user_id`` that owns the installation, or ``None``."""
-    row = await InstallationRepository(session=session).find_by_github_installation_id(
-        githubInstallationId
-    )
-    return row.user_id if row is not None else None
-
-
-async def getRepoRecord(session: AsyncSession, *, ghRepoId: int) -> Repo | None:
-    """Return the local :class:`Repo` row for a GitHub repo id, or ``None``."""
-    return await RepoRepository(session=session).find_by_github_repo_id(ghRepoId)
 
 
 async def loadLastReview(
@@ -394,7 +313,7 @@ async def handleIssueCommentCreated(
     """Dispatch a verified ``issue_comment`` ``created`` delivery to the workflow.
 
     The comment must mention ``@<app_slug> review`` (classification
-    from :mod:`app.workflows.review.helpers`). The PR state is
+    from :mod:`app.workflows.triggers.comment`). The PR state is
     fetched from the GitHub API; when the head moved since the last
     successful review, ``diffBaseSha`` narrows the diff to the commits
     pushed since (incremental re-review).
@@ -484,7 +403,7 @@ async def handleIssueCommentCreated(
         lastReview=last_review,
     )
 
-    llm_ctx = await resolveLlmCtx(session, userId=user_id)
+    llm_ctx: LLMCtx = await resolveLlmCtx(session, userId=user_id)
     llm_ctx = handleOpencodeLLMCtx(llm_ctx=llm_ctx, commitId=state.headSha)
 
     sandbox_ctx = buildSandboxCtx(
@@ -527,20 +446,19 @@ async def handleIssueCommentCreated(
         workflowInput=workflow_input,
     )
 
-    repairAndPublishWorkflowId = await dispatchRepairAndPublishWorkflow(
-        input=DispatchRepairAndPublishWorkflowInput(
-            prNumber=trigger.prNumber,
-            commitId=CommitId(state.headSha),
-            llmCtx=llm_ctx,
-            sandboxCtx=sandbox_ctx,
-        )
+    repairAndPublishWorkflowId = await triggerRepairAfterReview(
+        llmCtx=llm_ctx,
+        sandboxCtx=sandbox_ctx,
+        prNumber=trigger.prNumber,
+        headSha=CommitId(state.headSha),
     )
 
     log.info(
         "review.trigger: started workflow: delivery=%s review_workflow_id=%s "
-        "gh_repo_id=%s number=%s head_sha=%s diff_base_sha=%s",
+        "repair_workflow_id=%s gh_repo_id=%s number=%s head_sha=%s diff_base_sha=%s",
         delivery,
         reviewWorkflowId,
+        repairAndPublishWorkflowId,
         trigger.ghRepoId,
         trigger.prNumber,
         state.headSha,
