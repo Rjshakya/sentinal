@@ -242,7 +242,7 @@ class Settings(BaseSettings):
         ),
     )
     llm_rate_limit_rps: float = Field(
-        default=0.5,
+        default=1.5,
         ge=0.0,
         description=(
             "Client-side requests-per-second rate limit applied via "

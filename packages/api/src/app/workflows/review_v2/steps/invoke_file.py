@@ -103,8 +103,15 @@ async def invokeFileReviewStep(
     repo: RepoSnapshot,
     input: ReviewWorkflowInput,
     limits: ReviewLimits,
+    rateLimiterKey: str | None = None,
 ) -> tuple[str, dict[str, UsageMetadata]]:
     """Durable step: review one file's chunk, return ``(text, usage)``.
+
+    When ``rateLimiterKey`` names a limiter acquired via
+    :func:`app.services.llm.service.acquireSharedLimiter`, the step's
+    chat model shares that limiter with the rest of its batch wave;
+    ``None`` keeps the legacy per-step limiter. Only the serializable
+    key crosses the DBOS boundary — never the live limiter.
 
     Raises:
         TransientReviewStepFailure: transient LLM / sandbox failure —
@@ -112,7 +119,7 @@ async def invokeFileReviewStep(
         ReviewStepFailure: agent construction failed, or the agent
             produced no text. Final for the file.
     """
-    model = createLLMModel(llmCtx)
+    model = createLLMModel(llmCtx, rateLimiterKey=rateLimiterKey)
     if isinstance(model, LLMConfigError):
         raise ReviewStepFailure(
             FileLaneError(

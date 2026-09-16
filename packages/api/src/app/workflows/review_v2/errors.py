@@ -45,6 +45,11 @@ V2-specific values:
   empty-handed). Raised by the workflow body (wrapped in
   :class:`ReviewStepFailure`) after each lane exhausted its own step
   retries.
+- :class:`SummaryStepError` — the summary synthesizer (the cheap
+  structured-output call over planner context + findings) failed.
+  Transient LLM failures carry ``retryable=True``; a schema mismatch
+  or model-build failure is a business outcome — the workflow
+  degrades to an empty summary instead of failing the run.
 """
 
 from __future__ import annotations
@@ -126,6 +131,15 @@ class CheckoutTransientError(CheckoutError):
     retryable: bool = True
 
 
+class SummaryStepError(ReviewStepError):
+    """The v2 summary synthesis call failed.
+
+    ``retryable=True`` means a transient LLM failure the step edge
+    retries; ``False`` is a business outcome (model-build failure,
+    schema mismatch) the workflow degrades to an empty summary.
+    """
+
+
 class V2AgentsError(ReviewStepError):
     """No usable agent output for the run.
 
@@ -149,5 +163,6 @@ __all__ = [
     "CloneV2TransientError",
     "FileLaneError",
     "PlannerStepError",
+    "SummaryStepError",
     "V2AgentsError",
 ]

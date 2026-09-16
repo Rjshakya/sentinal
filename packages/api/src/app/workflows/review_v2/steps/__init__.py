@@ -9,6 +9,8 @@
   the ``submit_plan`` tool) + read the structured
   :class:`PlannerContext` back from ``plan.json``.
 - :mod:`.invoke_file` — run one per-file review agent.
+- :mod:`.synthesize_summary` — synthesize the walkthrough summary
+  (info + ASCII flow tree + important files) from validated run data.
 - :mod:`.combine` — pure join / merge helpers (trivial filter,
   context join, report concat, batching, outcome combining).
 
@@ -50,6 +52,7 @@ from app.workflows.review_v2.steps.list_chunks import (
     listChunkFilesStep,
     parseChunkHeaders,
 )
+from app.workflows.review_v2.steps.synthesize_summary import synthesizeSummaryStep
 
 __all__ = [
     "BuiltJobs",
@@ -74,4 +77,5 @@ __all__ = [
     "parseCloneV2Result",
     "parsePlanText",
     "readPlanText",
+    "synthesizeSummaryStep",
 ]

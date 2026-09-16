@@ -24,7 +24,7 @@ value. The DBOS workflow calls them between durable steps:
   :class:`FileLaneError` for the workflow's failure accounting.
 - :func:`combineV2Reports` — build the merged :class:`ReviewResult`
   (via the shared verdict/combine rules) plus the per-run usage
-  envelope from the planner + file research usages.
+  envelope from the planner + file research + summary usages.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ from app.workflows.review.types import (
 from app.workflows.review_v2.errors import FileLaneError
 from app.workflows.review.steps.invoke_agent import CombinedReview
 
-V2_FANOUT_BATCH_SIZE = 10
+V2_FANOUT_BATCH_SIZE = 25
 """Max per-file agents started concurrently (one ``asyncio.gather`` batch).
 
 Bounds concurrent sandbox reconnects and keeps traces readable; the
@@ -253,8 +253,10 @@ def coerceFileLaneError(failure: BaseException, file: str) -> FileLaneError:
 def combineV2Reports(
     *,
     comments: ReviewComments,
+    summaryMarkdown: str = "",
     researchUsages: Mapping[str, dict[str, UsageMetadata]],
     plannerUsage: Mapping[str, UsageMetadata] | None,
+    summaryUsage: Mapping[str, UsageMetadata] | None = None,
     prNumber: PRNumber,
     headSha: CommitId,
     repoId: RepoId,
@@ -264,11 +266,12 @@ def combineV2Reports(
 
     ``comments`` is the extractor output over the concatenated file
     reports (or an empty list when every file reported ``NO_FINDINGS``).
-    Token usage aggregates the planner's research usage plus every
-    successful file lane's research usage; extractor calls' own tokens
-    are not counted (same convention as the v1 pipeline). The summary
-    is empty — the v2 base build is comments-only; the walkthrough
-    lands with the prompt session.
+    ``summaryMarkdown`` is the synthesizer's walkthrough (``""`` when
+    synthesis degraded — the review still completes). Token usage
+    aggregates the planner's research usage, every successful file
+    lane's research usage, and the summary synthesis usage; extractor
+    calls' own tokens are not counted (same convention as the v1
+    pipeline).
     """
     totalUsagesPerPr = TotalUsagesPerPR(
         pr_number=prNumber,
@@ -282,10 +285,12 @@ def combineV2Reports(
         _accumulateV2Usage(totalUsagesPerPr["usages"], dict(plannerUsage))
     for path in sorted(researchUsages):
         _accumulateV2Usage(totalUsagesPerPr["usages"], researchUsages[path])
+    if summaryUsage:
+        _accumulateV2Usage(totalUsagesPerPr["usages"], dict(summaryUsage))
 
     return CombinedReview(
         review=combineReviewResults(
-            summaryMarkdown="",
+            summaryMarkdown=summaryMarkdown,
             comments=comments,
         ),
         usages=totalUsagesPerPr,

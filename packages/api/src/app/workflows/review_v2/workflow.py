@@ -48,6 +48,7 @@ from traceloop.sdk import Traceloop
 from traceloop.sdk.decorators import workflow as traceloop_workflow
 
 from app.services.agent_v2.types import PlannerContext
+from app.services.llm.service import acquireSharedLimiter, releaseSharedLimiter
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import PRNumber, PrRowId, RepoId, ReviewRowId
 from app.utils.schema import ReviewComments
@@ -104,6 +105,7 @@ from app.workflows.review_v2.steps.invoke_planner import (
     invokePlannerStep,
 )
 from app.workflows.review_v2.steps.list_chunks import listChunkFilesStep
+from app.workflows.review_v2.steps.synthesize_summary import synthesizeSummaryStep
 
 log = logging.getLogger(__name__)
 
@@ -348,27 +350,46 @@ async def reviewWorkflowV2(
         )
 
         # --- Per-file fan-out: sequential batches of concurrent lanes ---
+        # One wave shares ONE rate limiter (acquired per wave, released
+        # right after), so the wave's agents draw from a single smoothed
+        # budget instead of bursting through independent per-step ones.
+        # The shared budget scales with wave width to preserve
+        # per-agent-equivalent throughput — sharing the raw configured
+        # rate would serialize the whole wave through it.
         reportsByFile: dict[str, str] = {}
         researchUsages: dict[str, dict[str, UsageMetadata]] = {}
         succeededFiles: list[str] = []
         failedOutcomes: list[tuple[str, BaseException]] = []
-        for batch in chunkedJobs(jobs):
-            batchResults = await asyncio.gather(
-                *(
-                    invokeFileReviewStep(
-                        filePath=job.filePath,
-                        job=job,
-                        sharedConcerns=plannerContext.sharedConcerns,
-                        sandboxCtx=sandbox_ctx,
-                        llmCtx=ctx.llmCtx,
-                        repo=repo,
-                        input=input,
-                        limits=_fileLimits(),
-                    )
-                    for job in batch
-                ),
-                return_exceptions=True,
-            )
+        for batchIndex, batch in enumerate(chunkedJobs(jobs)):
+            llmRps = ctx.llmCtx.rateLimitRps
+            rateLimiterKey: str | None = None
+            if llmRps is not None and llmRps > 0:
+                rateLimiterKey = f"{workflow_id}:batch-{batchIndex}"
+                acquireSharedLimiter(
+                    key=rateLimiterKey,
+                    requestsPerSecond=llmRps * len(batch),
+                )
+            try:
+                batchResults = await asyncio.gather(
+                    *(
+                        invokeFileReviewStep(
+                            filePath=job.filePath,
+                            job=job,
+                            sharedConcerns=plannerContext.sharedConcerns,
+                            sandboxCtx=sandbox_ctx,
+                            llmCtx=ctx.llmCtx,
+                            repo=repo,
+                            input=input,
+                            limits=_fileLimits(),
+                            rateLimiterKey=rateLimiterKey,
+                        )
+                        for job in batch
+                    ),
+                    return_exceptions=True,
+                )
+            finally:
+                if rateLimiterKey is not None:
+                    releaseSharedLimiter(key=rateLimiterKey)
             for job, outcome in zip(batch, batchResults):
                 if isinstance(outcome, BaseException):
                     failedOutcomes.append((job.filePath, outcome))
@@ -402,8 +423,7 @@ async def reviewWorkflowV2(
                     prNumber=input.prNumber,
                     headSha=input.headSha,
                     failedFiles=[
-                        coerceFileLaneError(exc, file)
-                        for file, exc in failedOutcomes
+                        coerceFileLaneError(exc, file) for file, exc in failedOutcomes
                     ],
                     succeededFiles=[],
                     plannerDegraded=plannerDegraded,
@@ -420,10 +440,35 @@ async def reviewWorkflowV2(
         else:
             comments = ReviewComments(List=[])
 
+        # --- Summary synthesis (degrades to empty, never fails the run) ---
+        summaryMarkdown = ""
+        summaryUsage: dict[str, UsageMetadata] | None = None
+        try:
+            synthesized, synthUsage = await synthesizeSummaryStep(
+                input=input,
+                repo=repo,
+                inventory=inventory,
+                plannerContext=plannerContext,
+                comments=comments,
+            )
+            summaryMarkdown = synthesized.summary
+            summaryUsage = synthUsage
+        except BaseException as exc:
+            log.warning(
+                "review_v2: summary degraded "
+                "(continuing with empty summary): "
+                "workflow_id=%s cause=%s: %s",
+                workflow_id,
+                type(exc).__name__,
+                exc,
+            )
+
         combined = combineV2Reports(
             comments=comments,
+            summaryMarkdown=summaryMarkdown,
             researchUsages=researchUsages,
             plannerUsage=plannerUsage or None,
+            summaryUsage=summaryUsage,
             prNumber=input.prNumber,
             headSha=input.headSha,
             repoId=repo.id,
