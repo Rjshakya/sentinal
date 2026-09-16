@@ -2,8 +2,7 @@
 
 This module owns the two v2 deep-agents — the entry points that turn
 an :class:`AgentV2Ctx` into a compiled
-:func:`deepagents.create_deep_agent` graph — plus the pure prompt
-helpers the v2 pipeline shares:
+:func:`deepagents.create_deep_agent` graph:
 
 - :func:`createAgentV2Ctx` — ctx factory: assembles identity +
   injected model + sandbox handle + run limits (the I/O boundary).
@@ -11,15 +10,18 @@ helpers the v2 pipeline shares:
   two agent builders. Each builds its own backend wrapper, empty tool
   list, and no-subagent middleware stack from the ctx, then calls
   :func:`deepagents.create_deep_agent` with ``subagents=[]`` and the
-  lane's (currently placeholder) system prompt. The agents are
-  **research-only**: they produce free-form text, never structured
-  output.
-- :func:`createPlanningUserPrompt` / :func:`createFileReviewUserPrompt`
-  — the user messages (pure formatting; the diff artefacts' location
-  comes from :func:`app.services.agent.tools.getReviewDiffDirPath`,
-  reused so the path can never drift from the v1 pipeline).
-- :func:`chunkFileForPath` — the on-disk dotted chunk name for a real
-  path (mirrors the split script's ``name.replace("/", ".")`` rule).
+  lane's system prompt built by
+  :func:`app.services.agent_v2.prompts.createPlanningSystemPrompt` /
+  :func:`app.services.agent_v2.prompts.createFileReviewSystemPrompt`
+  from the ctx's narrow scalars. The agents are **research-only**:
+  they produce free-form text, never structured output.
+
+Prompt wording lives in :mod:`app.services.agent_v2.prompts` (one
+function per prompt); this module owns no prompt text and no
+middleware assembly (imports from :mod:`._middleware`). It does own
+the ``submit_plan`` tool mechanics (:func:`buildSubmitPlanTool`,
+closed over the ctx) and the host-owned plan path
+(:func:`planFilePath`).
 
 No-delegation guarantee (two layers, both per-agent — no
 process-global profile registration, so the v1 pipeline sharing the
@@ -45,30 +47,33 @@ identifiers — the same convention as :mod:`app.services.agent`,
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Sequence
+from typing import Any, Protocol, cast
 
 from deepagents import create_deep_agent
+from deepagents.backends.protocol import FileUploadResponse
 from deepagents.backends.sandbox import BaseSandbox
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
+from langchain_core.tools import tool as langchain_tool
+from pydantic import ValidationError
 
-from app.services.agent.tools import getReviewDiffDirPath
 from app.services.agent_v2._middleware import buildNoSubMiddleware
 from app.services.agent_v2.errors import AgentV2BuildError
 from app.services.agent_v2.prompts import (
-    FILE_REVIEW_SYSTEM_PROMPT,
-    PLANNING_SYSTEM_PROMPT,
+    SUBMIT_PLAN_TOOL_DESCRIPTION,
+    createFileReviewSystemPrompt,
+    createPlanningSystemPrompt,
 )
 from app.services.agent_v2.types import (
     AgentV2Ctx,
     DeepAgentGraph,
-    FileReviewJob,
+    PlannerContext,
 )
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.service import getProvider
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import CommitId, PRNumber, RepoId, RepoName, UserId
-from app.utils.util import repo_path
 
 _DEFAULT_MODEL_CALL_RUN_LIMIT = 120
 _DEFAULT_TOOL_CALL_RUN_LIMIT = 120
@@ -83,6 +88,7 @@ def createAgentV2Ctx(
     headSha: CommitId,
     model: BaseChatModel,
     sandboxCtx: SandboxCtx,
+    systemPrompt: str,
     modelCallRunLimit: int = _DEFAULT_MODEL_CALL_RUN_LIMIT,
     toolCallRunLimit: int = _DEFAULT_TOOL_CALL_RUN_LIMIT,
 ) -> AgentV2Ctx:
@@ -103,6 +109,7 @@ def createAgentV2Ctx(
         headSha=headSha,
         model=model,
         sandboxCtx=sandboxCtx,
+        systemPrompt=systemPrompt,
         modelCallRunLimit=modelCallRunLimit,
         toolCallRunLimit=toolCallRunLimit,
     )
@@ -127,34 +134,85 @@ async def buildNoSubBackend(sandboxCtx: SandboxCtx):
     return sandbox
 
 
-def chunkFileForPath(file: str) -> str:
-    """Return the on-disk chunk file name for a real repo path.
+class _PlanWriter(Protocol):
+    """The backend surface the submit-plan tool needs (upload = overwrite)."""
 
-    Mirrors the split script's flattening rule
-    (``result.name.replace("/", ".") + ".md"``); used only to name the
-    chunk in prompts. The list-chunks step keys the inventory off the
-    ``### <real path>`` header, never off this name.
+    async def aupload_files(
+        self, files: list[tuple[str, bytes]]
+    ) -> list[FileUploadResponse]: ...
+
+
+def planFilePath(workDir: str) -> str:
+    """Return the host-owned plan location: ``{workDir}/plan.json``.
+
+    Pure helper — the submit tool (write) and ``getPlanStep`` (read)
+    recompute the identical path, so it can never drift. Prompts never
+    name this path; the agent reaches it only through ``submit_plan``.
     """
-    return file.replace("/", ".") + ".md"
+    return f"{workDir}/plan.json"
+
+
+def buildSubmitPlanTool(*, ctx: AgentV2Ctx, planPath: str) -> BaseTool:
+    """Build the ``submit_plan`` tool bound to this run's sandbox + path.
+
+    The tool closes over the ctx (not agent state — state is
+    checkpointed, and live handles must never be serialized there):
+    on each call it reconnects, validates the submission into a
+    :class:`PlannerContext`, and overwrites ``plan.json`` so a
+    duplicate submission simply wins instead of failing the run.
+    Failures are returned as error strings (the agent can retry
+    within its budget), never raised — matching the service's
+    error contract.
+    """
+
+    async def _submitPlan(**kwargs: Any) -> str:
+        try:
+            plan = PlannerContext(**kwargs)
+        except ValidationError as exc:
+            return f"plan rejected (schema): {exc.errors(include_url=False)}"
+
+        try:
+            payload = plan.model_dump_json().encode("utf-8")
+        except Exception as exc:
+            return f"plan rejected (encode): {type(exc).__name__}: {exc}"
+
+        backend = await buildNoSubBackend(ctx.sandboxCtx)
+        if isinstance(backend, SandboxProviderError):
+            return f"plan not saved (transient): {backend.message}"
+        try:
+            uploads = await cast(_PlanWriter, backend).aupload_files(
+                [(planPath, payload)]
+            )
+        except Exception as exc:
+            return f"plan not saved (transient): {type(exc).__name__}: {exc}"
+        failed = next((u.error for u in uploads if u.error is not None), None)
+        if failed is not None:
+            return f"plan not saved (transient): {failed}"
+        return f"plan saved: {len(plan.fileContexts)} file(s)"
+
+    return langchain_tool(
+        "submit_plan",
+        description=SUBMIT_PLAN_TOOL_DESCRIPTION,
+        args_schema=PlannerContext,
+    )(_submitPlan)
 
 
 async def buildNoSubAgent(
     ctx: AgentV2Ctx,
     systemPrompt: str,
+    tools: Sequence[BaseTool] = (),
 ):
     """Run ``create_deep_agent`` with delegation disabled.
 
-    The backend wrapper, empty tool list, and no-subagent middleware
-    stack are built from the ctx here, so a failure at any point
-    (backend wrapping, unknown provider, deep-agent assembly) folds
-    into the returned error value carrying the run identity.
+    The backend wrapper, tool list, and no-subagent middleware stack
+    are built from the ctx here, so a failure at any point (backend
+    wrapping, unknown provider, deep-agent assembly) folds into the
+    returned error value carrying the run identity.
     """
     try:
         backend = await buildNoSubBackend(ctx.sandboxCtx)
         if isinstance(backend, SandboxProviderError):
             return backend
-
-        tools: list[BaseTool] = []
 
         middlewares = buildNoSubMiddleware(
             modelCallRunLimit=ctx.modelCallRunLimit,
@@ -186,19 +244,30 @@ async def createPlanningAgent(ctx: AgentV2Ctx):
     """Build the planning deep-agent (no subagents, no delegation).
 
     Research-only: it explores the repo + the split chunks and ends
-    with free-form planning text. The structured
-    :class:`PlannerContext` payload is produced afterwards by the
-    plan-extractor step.
+    by calling the ``submit_plan`` tool, which persists the
+    :class:`PlannerContext` to the run's ``plan.json`` for
+    ``getPlanStep`` to read back. The tool is built here (closed over
+    the ctx, never over agent state) and is the agent's only custom
+    tool alongside the backend built-ins.
 
     Returns:
         The compiled agent graph, or an :class:`AgentV2BuildError` /
         :class:`SandboxProviderError` when the construction fails.
         Never raises.
     """
-    return await buildNoSubAgent(ctx, systemPrompt=PLANNING_SYSTEM_PROMPT)
+    return await buildNoSubAgent(
+        ctx,
+        systemPrompt=ctx.systemPrompt,
+        tools=[
+            buildSubmitPlanTool(
+                ctx=ctx,
+                planPath=planFilePath(ctx.sandboxCtx.rootPath),
+            )
+        ],
+    )
 
 
-async def createFileReviewAgent(ctx: AgentV2Ctx, *, file: str):
+async def createFileReviewAgent(ctx: AgentV2Ctx, *, filePath: str):
     """Build one per-file review deep-agent (no subagents, no delegation).
 
     Research-only: it reviews its single chunk (plus the planner
@@ -207,105 +276,32 @@ async def createFileReviewAgent(ctx: AgentV2Ctx, *, file: str):
     :class:`ReviewComments` payload is produced afterwards by the
     shared comments-extractor step over the merged reports.
 
-    ``file`` is informational (surfaces in errors); the scope lives in
-    the user prompt built by :func:`createFileReviewUserPrompt`.
+    ``filePath`` is informational (surfaces in errors); the scope lives
+    in the user prompt built by :func:`createFileReviewUserPrompt`.
 
     Returns:
         The compiled agent graph, or an :class:`AgentV2BuildError` /
         :class:`SandboxProviderError` when the construction fails.
         Never raises.
     """
-    _ = file
-    return await buildNoSubAgent(ctx, systemPrompt=FILE_REVIEW_SYSTEM_PROMPT)
-
-
-def createPlanningUserPrompt(ctx: AgentV2Ctx, *, actualFiles: list[str]) -> str:
-    """Build the user message for the planning agent.
-
-    Pure formatting — no I/O, no LLM. Carries the concrete diff-dir
-    path plus the host-side chunk inventory (so the planner spends its
-    budget exploring, not discovering what changed) and the repo root.
-    The diff itself is never inlined.
-    """
-    diff_dir = getReviewDiffDirPath(
-        workDir=ctx.sandboxCtx.rootPath,
-        prNumber=ctx.prNumber,
-        headSha=ctx.headSha,
-    )
-    files_block = "\n".join(f"- {path}" for path in actualFiles) or "- (no chunks)"
-
-    return (
-        f"Repo: {ctx.repoName} (id={ctx.repoId})\n"
-        f"User: {ctx.userId}\n"
-        f"PR number: {ctx.prNumber}\n"
-        f"Head SHA: {ctx.headSha}\n"
-        f"Diff dir: {diff_dir}/\n"
-        f"Repo root: {repo_path(ctx.repoName)}\n"
-        f"\n"
-        f"Changed files with reviewable chunks ({len(actualFiles)}):\n"
-        f"{files_block}\n"
-        f"\n"
-        f"The PR diff artefacts live in the Diff dir above. Use "
-        f"strictly overview.md and the per-file chunks under "
-        f"splitted_diffs/ for diff context — nothing else.\n"
-    )
-
-
-def createFileReviewUserPrompt(
-    ctx: AgentV2Ctx,
-    *,
-    job: FileReviewJob,
-    sharedConcerns: str,
-) -> str:
-    """Build the user message for one per-file review agent.
-
-    Pure formatting — no I/O, no LLM. Scopes the agent to its single
-    chunk (named explicitly) and attaches its planner-context slice
-    plus the shared concerns. Other files' chunks are never named, so
-    the agent has no reason to open them.
-    """
-    diff_dir = getReviewDiffDirPath(
-        workDir=ctx.sandboxCtx.rootPath,
-        prNumber=ctx.prNumber,
-        headSha=ctx.headSha,
-    )
-    focus_block = ", ".join(job.focus) if job.focus else "(general review)"
-    symbols_block = ", ".join(job.relevantSymbols) if job.relevantSymbols else "(none)"
-    context_block = job.crossFileContext or "(no planner context for this file)"
-    concerns_block = sharedConcerns or "(none)"
-
-    return (
-        f"Repo: {ctx.repoName} (id={ctx.repoId})\n"
-        f"User: {ctx.userId}\n"
-        f"PR number: {ctx.prNumber}\n"
-        f"Head SHA: {ctx.headSha}\n"
-        f"Diff dir: {diff_dir}/\n"
-        f"Repo root: {repo_path(ctx.repoName)}\n"
-        f"\n"
-        f"Review exactly this file's chunk and nothing else:\n"
-        f"- file: {job.file}\n"
-        f"- chunk: {diff_dir}/splitted_diffs/{chunkFileForPath(job.file)}\n"
-        f"- suggested focus: {focus_block}\n"
-        f"- relevant symbols: {symbols_block}\n"
-        f"\n"
-        f"Planner cross-file context for this file:\n"
-        f"{context_block}\n"
-        f"\n"
-        f"Shared concerns for this PR:\n"
-        f"{concerns_block}\n"
-        f"\n"
-        f"Anchor every finding ONLY to a gutter-visible line in this "
-        f"file's chunk. If the file is clean, answer exactly NO_FINDINGS.\n"
+    _ = filePath
+    return await buildNoSubAgent(
+        ctx,
+        systemPrompt=createFileReviewSystemPrompt(
+            repoName=ctx.repoName,
+            userId=ctx.userId,
+            modelCallRunLimit=ctx.modelCallRunLimit,
+            toolCallRunLimit=ctx.toolCallRunLimit,
+        ),
     )
 
 
 __all__ = [
     "buildNoSubAgent",
     "buildNoSubBackend",
-    "chunkFileForPath",
+    "buildSubmitPlanTool",
     "createAgentV2Ctx",
     "createFileReviewAgent",
-    "createFileReviewUserPrompt",
     "createPlanningAgent",
-    "createPlanningUserPrompt",
+    "planFilePath",
 ]

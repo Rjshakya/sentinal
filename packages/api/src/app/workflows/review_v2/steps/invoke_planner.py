@@ -1,15 +1,23 @@
 """DBOS durable steps that run the planning agent.
 
-Two steps, mirroring the v1 research + extractor split:
+Two steps, replacing the old research + LLM-extractor split:
 
 1. :func:`invokePlannerStep` — builds the run's chat model from the
    :class:`LLMCtx`, assembles an :class:`AgentV2Ctx`, builds the
    planning agent (:func:`createPlanningAgent`, no subagents, no
    delegation) and runs it with the inventory-grounded user prompt,
-   capturing token usage. Returns ``(raw_text, usage)``.
-2. :func:`extractPlanStep` — re-invokes the shared structured-output
-   extractor model with the planner's text and validates it into a
-   :class:`PlannerContext`.
+   capturing token usage. The agent persists its plan itself via the
+   ``submit_plan`` tool (``plan.json`` in the sandbox working dir).
+   Returns the usage envelope only.
+2. :func:`getPlanStep` — reconnects to the sandbox, reads back the
+   submitted ``plan.json``, and validates it into a
+   :class:`PlannerContext`. No LLM call: transcription is a file
+   read plus Pydantic validation. The I/O and parsing live in the
+   pure value-returning workers :func:`readPlanText` and
+   :func:`parsePlanText` (mirroring
+   :func:`app.workflows.review_v2.steps.list_chunks.listChunkFiles`);
+   the DBOS step is a thin edge mapping error values to raised
+   step exceptions.
 
 A transient failure (LLM 429 / 5xx / timeout, sandbox blip) raises
 :class:`TransientReviewStepFailure` (DBOS retries the step); a final
@@ -26,19 +34,22 @@ owns the stop.
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Literal, Protocol, cast
 
 from dbos import DBOS
+from deepagents.backends.protocol import ReadResult
 from langchain_core.callbacks import get_usage_metadata_callback
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage, UsageMetadata
+from langchain_core.messages import UsageMetadata
+from langgraph.store.base import Result
 
 from app.services.agent_v2.errors import AgentV2BuildError
-from app.services.agent_v2.prompts import PLAN_EXTRACTION_SYSTEM_PROMPT
+from app.services.agent_v2.prompts import createPlanningUserPrompt
+from app.services.agent_v2.prompts.planning import createPlanningSystemPrompt
 from app.services.agent_v2.service import (
+    buildNoSubBackend,
     createAgentV2Ctx,
     createPlanningAgent,
-    createPlanningUserPrompt,
+    planFilePath,
 )
 from app.services.agent_v2.types import DeepAgentGraph, PlannerContext
 from app.services.llm.errors import LLMConfigError
@@ -53,7 +64,6 @@ from app.workflows.review.errors import (
     isLlmRetryError,
     shouldRetry,
 )
-from app.workflows.review.steps.extract_result import buildExtractorLlmCtx
 from app.workflows.review.types import (
     RepoSnapshot,
     ReviewLimits,
@@ -63,33 +73,19 @@ from app.workflows.review_v2.errors import PlannerStepError
 
 log = logging.getLogger(__name__)
 
-PlannerStepOutcome = tuple[str, dict[str, UsageMetadata]] | BaseException
-"""Outcome of the planner research step: ``(raw_text, usage)`` or a
-wrapped :class:`PlannerStepError`."""
+PlannerStepOutcome = dict[str, UsageMetadata] | BaseException
+"""Outcome of the planner research step: the usage envelope or a
+wrapped :class:`PlannerStepError`. The plan itself travels via the
+sandbox (``submit_plan`` tool → ``plan.json``), read back by
+:func:`getPlanStep`."""
 
 
-def _lastAiText(result: Any) -> str:
-    """Return the text content of the last AI message in the run result."""
-    if not isinstance(result, dict):
-        return ""
-    messages = result.get("messages")
-    if not isinstance(messages, list):
-        return ""
-    for message in reversed(messages):
-        if getattr(message, "type", None) != "ai":
-            continue
-        content = getattr(message, "content", None)
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts = [
-                block.get("text", "")
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-            ]
-            if parts:
-                return "".join(parts)
-    return ""
+class _PlanReader(Protocol):
+    """The backend surface the plan reader needs (line-paginated read)."""
+
+    async def aread(
+        self, file_path: str, offset: int = 0, limit: int = 2000
+    ) -> ReadResult: ...
 
 
 def _plannerError(
@@ -126,22 +122,22 @@ async def invokePlannerStep(
     input: ReviewWorkflowInput,
     actualFiles: list[str],
     limits: ReviewLimits,
-) -> tuple[str, dict[str, UsageMetadata]]:
-    """Durable step: run the planning agent, return ``(text, usage)``.
+) -> dict[str, UsageMetadata]:
+    """Durable step: run the planning agent, return the usage envelope.
 
     Reconnects to the sandbox by id (via the agent-v2 backend build),
     builds the no-delegation planning agent with its own chat model
-    and an empty custom-tool list (context comes strictly from
-    ``overview.md`` / ``splitted_diffs/`` read through the backend's
-    built-in tools), and runs it with the inventory-grounded user
-    prompt. The sandbox is never stopped here.
+    (plus the ``submit_plan`` tool alongside the backend's built-in
+    read tools), and runs it with the inventory-grounded user prompt.
+    The agent persists its own plan via ``submit_plan``; the text it
+    ends with is irrelevant — :func:`getPlanStep` reads the plan back.
+    The sandbox is never stopped here.
 
     Raises:
         TransientReviewStepFailure: transient LLM / sandbox failure —
             DBOS retries.
-        ReviewStepFailure: agent construction failed, or the planner
-            produced no text. Final for the step (the workflow
-            degrades to an empty planner context).
+        ReviewStepFailure: agent construction failed. Final for the
+            step (the workflow degrades to an empty planner context).
     """
     model = createLLMModel(llmCtx)
     if isinstance(model, LLMConfigError):
@@ -154,6 +150,13 @@ async def invokePlannerStep(
             )
         )
 
+    planningAgentSystemPrompt = createPlanningSystemPrompt(
+        repoName=repo.repoName,
+        userId=input.userId,
+        modelCallRunLimit=limits.modelCallRunLimit,
+        toolCallRunLimit=limits.toolCallRunLimit,
+    )
+
     agentCtx = createAgentV2Ctx(
         userId=input.userId,
         repoId=repo.id,
@@ -161,6 +164,7 @@ async def invokePlannerStep(
         prNumber=input.prNumber,
         headSha=input.headSha,
         model=model,
+        systemPrompt=planningAgentSystemPrompt,
         sandboxCtx=sandboxCtx,
         modelCallRunLimit=limits.modelCallRunLimit,
         toolCallRunLimit=limits.toolCallRunLimit,
@@ -189,13 +193,18 @@ async def invokePlannerStep(
             )
         )
 
-    prompt = createPlanningUserPrompt(agentCtx, actualFiles=actualFiles)
+    prompt = createPlanningUserPrompt(
+        agentCtx,
+        actualFiles=actualFiles,
+        title=input.title,
+        body=input.body,
+        author=input.author,
+    )
     promptPayload = {"messages": [{"role": "user", "content": prompt}]}
 
-    result: Any = None
     try:
         with get_usage_metadata_callback() as usage_cb:
-            result = await agent.ainvoke(promptPayload)
+            await agent.ainvoke(promptPayload)
             usage = usage_cb.usage_metadata
     except Exception as exc:
         retryable = isLlmRetryError(exc)
@@ -224,17 +233,6 @@ async def invokePlannerStep(
             )
         ) from exc
 
-    text = _lastAiText(result)
-    if not text.strip():
-        raise ReviewStepFailure(
-            _plannerError(
-                message="planner produced no text output",
-                phase="research",
-                input=input,
-                repoId=repo.id,
-            )
-        )
-
     log.info(
         "invoke_planner_step: ok repo=%s user=%s pr_number=%s files=%d",
         repo.repoName,
@@ -242,7 +240,95 @@ async def invokePlannerStep(
         input.prNumber,
         len(actualFiles),
     )
-    return text, usage
+    return usage
+
+
+_PLAN_READ_LIMIT = 3000
+"""Page size for the paginated ``aread`` loop in :func:`readPlanText`."""
+
+
+async def readPlanText(
+    backend: _PlanReader,
+    *,
+    planPath: str,
+    input: ReviewWorkflowInput,
+    repoId: RepoId,
+) -> str | PlannerStepError:
+    """Read the submitted ``plan.json`` into its raw JSON text.
+
+    Paginates ``aread`` from ``offset=0`` until an empty page — or the
+    backend's past-EOF error (``offset`` beyond the file's line count)
+    once at least one page is accumulated. Returns the accumulated
+    text, or a :class:`PlannerStepError` value (never raises) so the
+    DBOS edge can map ``retryable`` to the raised step exception.
+    ``phase`` is always ``"research"``: a missing submission is a
+    research outcome, not an extract failure.
+    """
+    chunks: list[str] = []
+    offset = 0
+
+    while True:
+        try:
+            res: ReadResult = await backend.aread(
+                planPath,
+                offset=offset,
+                limit=_PLAN_READ_LIMIT,
+            )
+        except Exception as exc:
+            return _plannerError(
+                message=f"plan read {type(exc).__name__}: {exc}",
+                phase="research",
+                input=input,
+                repoId=repoId,
+                retryable=True,
+            )
+
+        if res.error is not None:
+            if chunks and "exceeds file length" in (res.error or ""):
+                # Past-EOF signal after progress: the accumulated text
+                # is the complete file. Only a first-page error means
+                # the agent never submitted.
+                break
+            return _plannerError(
+                message=(
+                    "planner never submitted a plan: " f"{res.error or 'empty read'}"
+                ),
+                phase="research",
+                input=input,
+                repoId=repoId,
+            )
+
+        content: str = res.file_data["content"] if res.file_data is not None else ""
+        if content:
+            chunks.append(content)
+            offset += _PLAN_READ_LIMIT
+        else:
+            break
+
+    return "".join(chunks)
+
+
+def parsePlanText(
+    text: str,
+    *,
+    input: ReviewWorkflowInput,
+    repoId: RepoId,
+) -> PlannerContext | PlannerStepError:
+    """Validate raw ``plan.json`` text into a :class:`PlannerContext`.
+
+    Pure: Pydantic validation only, no I/O. Returns the plan or a
+    :class:`PlannerStepError` value with ``phase="extract"`` (business
+    outcome — the workflow degrades to an empty planner context).
+    """
+    try:
+        return PlannerContext.model_validate_json(text)
+    except Exception as exc:
+        return _plannerError(
+            message=f"submitted plan invalid: {type(exc).__name__}: {exc}",
+            phase="extract",
+            input=input,
+            repoId=repoId,
+        )
 
 
 @DBOS.step(
@@ -251,93 +337,63 @@ async def invokePlannerStep(
     should_retry=shouldRetry,
     backoff_rate=2,
 )
-async def extractPlanStep(
+async def getPlanStep(
     *,
-    extractorLlmCtx: LLMCtx,
-    rawText: str,
-    input: ReviewWorkflowInput,
+    sandboxCtx: SandboxCtx,
     repoId: RepoId,
-) -> tuple[PlannerContext, dict[str, UsageMetadata]]:
-    """Durable step: transcribe the planner text into a :class:`PlannerContext`.
+    input: ReviewWorkflowInput,
+) -> PlannerContext:
+    """Durable step: read the submitted ``plan.json`` into a :class:`PlannerContext`.
 
-    Binds :class:`PlannerContext` via ``with_structured_output``
-    (forced tool choice) on the shared extractor model and validates
-    the returned payload.
+    Reconnects to the sandbox by id and reads the plan the agent
+    persisted via ``submit_plan`` (same host-owned path, recomputed —
+    never trusted from the agent). No LLM call: transcription is a
+    file read (:func:`readPlanText`) plus Pydantic validation
+    (:func:`parsePlanText`).
 
     Raises:
-        TransientReviewStepFailure: transient LLM failure — retried.
-        ReviewStepFailure: empty input or a schema mismatch. Business
-            outcome — the workflow degrades to an empty planner
-            context.
+        TransientReviewStepFailure: sandbox reconnect / read failed.
+            DBOS retries (the submitted file survives — no agent
+            re-run needed on read retries).
+        ReviewStepFailure: the agent never submitted (missing file)
+            or the submission is unparseable. Business outcome — the
+            workflow degrades to an empty planner context.
     """
-    if not rawText.strip():
-        raise ReviewStepFailure(
+    backend = await buildNoSubBackend(sandboxCtx)
+    if isinstance(backend, SandboxProviderError):
+        raise TransientReviewStepFailure(
             _plannerError(
-                message="planner produced no text output",
-                phase="extract",
+                message=f"plan read: sandbox backend failed: {backend.message}",
+                phase="research",
                 input=input,
                 repoId=repoId,
+                retryable=True,
             )
         )
 
-    chat: BaseChatModel | LLMConfigError = createLLMModel(extractorLlmCtx)
-    if isinstance(chat, LLMConfigError):
-        raise ReviewStepFailure(
-            _plannerError(
-                message=f"failed to build extractor model: {chat}",
-                phase="extract",
-                input=input,
-                repoId=repoId,
-            )
-        )
+    text = await readPlanText(
+        cast(_PlanReader, backend),
+        planPath=planFilePath(sandboxCtx.rootPath),
+        input=input,
+        repoId=repoId,
+    )
+    if isinstance(text, PlannerStepError):
+        if text.retryable:
+            raise TransientReviewStepFailure(text)
+        raise ReviewStepFailure(text)
 
-    structured = chat.with_structured_output(PlannerContext)
-    try:
-        with get_usage_metadata_callback() as usage_cb:
-            response = await structured.ainvoke(
-                [
-                    SystemMessage(content=PLAN_EXTRACTION_SYSTEM_PROMPT),
-                    HumanMessage(content=rawText),
-                ]
-            )
-            usage = usage_cb.usage_metadata
-    except Exception as exc:
-        if isLlmRetryError(exc):
-            raise TransientReviewStepFailure(
-                _plannerError(
-                    message=f"plan extractor {type(exc).__name__}: {exc}",
-                    phase="extract",
-                    input=input,
-                    repoId=repoId,
-                    retryable=True,
-                )
-            ) from exc
-        raise ReviewStepFailure(
-            _plannerError(
-                message=f"plan extractor {type(exc).__name__}: {exc}",
-                phase="extract",
-                input=input,
-                repoId=repoId,
-            )
-        ) from exc
+    plan = parsePlanText(text, input=input, repoId=repoId)
+    if isinstance(plan, PlannerStepError):
+        raise ReviewStepFailure(plan)
 
-    log.info("extract_plan_step: ok input_chars=%d", len(rawText))
-    return PlannerContext.model_validate(response), usage
-
-
-def buildPlanExtractorLlmCtx() -> LLMCtx:
-    """Return the shared structured-output extractor ctx.
-
-    The plan extractor uses the same small model as the v1 comment /
-    summary extractors — re-exported here under a v2 name so the v2
-    workflow never reaches into v1 step internals.
-    """
-    return buildExtractorLlmCtx()
+    log.info("get_plan_step: ok files=%d", len(plan.fileContexts))
+    return plan
 
 
 __all__ = [
     "PlannerStepOutcome",
-    "buildPlanExtractorLlmCtx",
-    "extractPlanStep",
+    "getPlanStep",
     "invokePlannerStep",
+    "parsePlanText",
+    "readPlanText",
 ]

@@ -1,7 +1,7 @@
 """Webhook trigger adapters for the review workflow.
 
 The edge that turns verified GitHub deliveries into dispatched
-:func:`app.workflows.review.workflow.reviewWorkflow` runs.
+:func:`app.workflows.review_v2.workflow.reviewWorkflowV2` runs.
 
 Two entry points, one per webhook event the review pipeline consumes:
 
@@ -26,7 +26,7 @@ Both are called by the github webhook sub-service delegation handlers
 - The run environment (:class:`ReviewWorkflowCtx` — per-user
   :class:`LLMCtx` with a settings fallback, settings-driven
   :class:`SandboxCtx`) is resolved here, at the edge.
-- Dispatch uses the deterministic ``review:{repo_id}:{pr}:{head_sha[:7]}``
+- Dispatch uses the deterministic ``review-v2:{repo_id}:{pr}:{head_sha[:7]}``
   id, so duplicate deliveries dedupe in DBOS.
 """
 
@@ -82,8 +82,10 @@ from app.workflows.review.types import (
 )
 from app.workflows.review.workflow import (
     buildReviewWorkflowInput,
-    createReviewWorkflowId,
-    reviewWorkflow,
+)
+from app.workflows.review_v2.workflow import (
+    createReviewV2WorkflowId,
+    reviewWorkflowV2,
 )
 
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -274,14 +276,14 @@ async def dispatchReview(
     workflowCtx: ReviewWorkflowCtx,
     workflowInput: ReviewWorkflowInput,
 ) -> str:
-    """Start ``reviewWorkflow`` under its deterministic id; return the id."""
-    workflow_id = createReviewWorkflowId(
+    """Start ``reviewWorkflowV2`` under its deterministic id; return the id."""
+    workflow_id = createReviewV2WorkflowId(
         repoId=RepoId(repoId),
         prNumber=PRNumber(prNumber),
         headSha=headSha,
     )
     with SetWorkflowID(workflow_id):
-        await DBOS.start_workflow_async(reviewWorkflow, workflowCtx, workflowInput)
+        await DBOS.start_workflow_async(reviewWorkflowV2, workflowCtx, workflowInput)
     return workflow_id
 
 

@@ -88,6 +88,7 @@ class AgentV2Ctx(BaseModel):
     prNumber: PRNumber
     headSha: CommitId
     model: BaseChatModel
+    systemPrompt: str
     """The agent's chat model. One instance per agent so each can carry
     its own per-agent callback handler."""
     sandboxCtx: SandboxCtx
@@ -170,19 +171,50 @@ class PlannerContext(BaseModel):
     )
 
 
+class ChunkRef(BaseModel):
+    """One observed chunk: the real code path plus its on-disk diff file.
+
+    Pure data (DBOS-serializable). Both fields are observed in the
+    sandbox by the list-chunks step — never recomputed — so dotted-name
+    collisions (``a/b.c`` vs ``a.b/c``) and odd paths (spaces, unicode)
+    cannot silently point two jobs at one chunk.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    filePath: str = Field(
+        min_length=1,
+        description="Real code path under review, exactly as it appears "
+        "in the chunk header (e.g. 'src/app/routers/ai.py').",
+    )
+    diffPath: str = Field(
+        min_length=1,
+        description="Exact on-disk chunk file name in splitted_diffs/ "
+        "(e.g. 'src.app.routers.ai.py.md') — the file whose gutter "
+        "line numbers GitHub anchors come from.",
+    )
+
+
 class ChunkInventory(BaseModel):
     """Host-side truth: what the split step actually wrote.
 
     Parsed off the ``splitted_diffs/`` chunk headers
-    (``### <real path>``) by the list-chunks step — the dotted on-disk
-    names are never trusted for the real path. ``skippedFiles`` mirrors
-    the split summary (binary / rename-only sections with no chunk).
+    (``<chunk file>:### <real path>`` via ``grep -H``) by the
+    list-chunks step — the dotted on-disk names are observed, never
+    trusted for the real path and never recomputed. ``skippedFiles``
+    mirrors the split summary (binary / rename-only sections with no
+    chunk).
     """
 
     model_config = ConfigDict(frozen=True)
 
     actualFiles: list[str] = Field(
         description="Real paths with a reviewable chunk, sorted.",
+    )
+    chunks: list[ChunkRef] = Field(
+        default_factory=list,
+        description="One ref per reviewable chunk: the real code path "
+        "plus its exact on-disk diff file. Same order as actualFiles.",
     )
     skippedFiles: list[str] = Field(
         default_factory=list,
@@ -196,16 +228,24 @@ class FileReviewJob(BaseModel):
     Built by the pure
     :func:`app.workflows.review_v2.steps.combine.buildFileReviewJobs`
     join over the :class:`ChunkInventory` (truth) and the
-    :class:`PlannerContext` (enrichment). ``hasPlannerContext`` records
-    whether the planner actually covered this file, so gaps are visible
-    in logs instead of silent.
+    :class:`PlannerContext` (enrichment). ``filePath`` is the real code
+    path (what the finding block's ``file:`` field must contain);
+    ``diffPath`` is the exact on-disk chunk file (where GitHub anchors
+    come from). ``hasPlannerContext`` records whether the planner
+    actually covered this file, so gaps are visible in logs instead of
+    silent.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    file: str = Field(
+    filePath: str = Field(
         min_length=1,
-        description="Real path under review (has a chunk).",
+        description="Real code path under review (has a chunk).",
+    )
+    diffPath: str = Field(
+        min_length=1,
+        description="Exact on-disk chunk file name in splitted_diffs/ "
+        "for this file (observed, never recomputed).",
     )
     focus: list[str] = Field(default_factory=list)
     crossFileContext: str = Field(default="")
@@ -220,6 +260,7 @@ class FileReviewJob(BaseModel):
 __all__ = [
     "AgentV2Ctx",
     "ChunkInventory",
+    "ChunkRef",
     "DeepAgentGraph",
     "FileContext",
     "FileReviewJob",

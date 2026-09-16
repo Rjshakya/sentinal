@@ -10,6 +10,14 @@ collide with production v1 runs.
 - `splitted_diffs/` is the diff truth. The host inventories it
   (`listChunkFilesStep`) and fans out over it — no LLM ever decides
   which files get reviewed.
+- Every job carries **two paths**: `filePath` (the real code path —
+  what finding blocks cite) and `diffPath` (the exact on-disk `.md`
+  chunk file, *observed* via `grep -H`, never recomputed). The file
+  agent is told to open its chunk first and copy every anchor from
+  its gutter columns — the repo copy is context only, never a
+  line-number source. Killing the old dotted-name recompute removes
+  the collision class (`a/b.c` vs `a.b/c` → one chunk) by
+  construction.
 - The v2 clone (`cloneRepoV2Step`) leaves the working tree checked
   out at the reviewed head SHA — clone + PR-ref fetch + detached
   checkout in one atomic script. Fail-closed: any checkout refusal
@@ -51,7 +59,8 @@ workflows/review_v2/
     │                    # reconnect helper; v1's is package-private).
     ├── invoke_planner.py# I/O boundary #2: planner research
     │                    # (invokePlannerStep → raw text+usage) + structured
-    │                    # transcription (extractPlanStep → PlannerContext).
+    │                    # transcription (getPlanStep reads plan.json →
+  │                    # PlannerContext, no LLM call).
     ├── invoke_file.py   # I/O boundary #3 (N-wide): one scoped file lane →
     │                    # (raw findings report + usage). Retried per file.
     └── combine.py       # NO I/O, NO DBOS — pure functions the workflow calls
@@ -99,14 +108,18 @@ for line numbers regardless.
   → join → batched fan-out → merge → extract → persist/post. Same
   `RUNNING`/`SUCCESS`/`FAILED` lifecycle, same
   `ReviewWorkflowCtx`/`ReviewWorkflowInput`/`ReviewRunResult` shapes.
-- `steps/list_chunks.py` — `grep '^### '` over chunk headers →
-  `ChunkInventory` (paths only; diff text never leaves the sandbox).
-- `steps/invoke_planner.py` — planner research + structured
-  `PlannerContext` extraction (same extractor model as v1).
+- `steps/list_chunks.py` — `grep -H '^### '` over chunk headers →
+  `ChunkInventory` (real paths + exact on-disk diff file per chunk;
+  diff text never leaves the sandbox).
+- `steps/invoke_planner.py` — planner research (the agent submits
+  via the `submit_plan` tool into the sandbox working dir's
+  `plan.json`) + `getPlanStep` (reads the file back into a
+  `PlannerContext`, no LLM call).
 - `steps/invoke_file.py` — one scoped file lane → `(raw_text, usage)`.
 - `steps/combine.py` — pure: host-side trivial filter
-  (`isTrivialFile`), context join (`buildFileReviewJobs`),
-  report concat, batching, usage aggregation (`combineV2Reports`).
+  (`isTrivialFile`), context join (`buildFileReviewJobs`, fills
+  `filePath` + observed `diffPath` on every job), report concat,
+  batching, usage aggregation (`combineV2Reports`).
   The v2 base build is comments-only (empty summary).
 - `errors.py` — `ChunkListError`, `PlannerStepError{research,extract}`,
   `FileLaneError{file}`, `CloneV2Error`/`CloneV2TransientError`,

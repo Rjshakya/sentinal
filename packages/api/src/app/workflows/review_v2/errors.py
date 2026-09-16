@@ -66,14 +66,14 @@ class ChunkListError(ReviewStepError):
 
 
 class PlannerStepError(ReviewStepError):
-    """The planning agent or the plan extractor failed.
+    """The planning agent or the plan read-back failed.
 
-    ``phase`` is ``"research"`` for the planning-agent run and
-    ``"extract"`` for the structured-output transcription.
-    ``retryable=True`` means a transient LLM / sandbox failure the
-    step edge retries; ``False`` is a business outcome (empty output,
-    schema mismatch) the workflow degrades to an empty planner
-    context.
+    ``phase`` is ``"research"`` for the planning-agent run (or a
+    missing submission) and ``"extract"`` for the ``plan.json``
+    validation. ``retryable=True`` means a transient LLM / sandbox
+    failure the step edge retries; ``False`` is a business outcome
+    (no submission, invalid plan) the workflow degrades to an empty
+    planner context.
     """
 
     phase: Literal["research", "extract"] = "research"

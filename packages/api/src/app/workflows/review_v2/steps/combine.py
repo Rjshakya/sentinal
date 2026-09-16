@@ -128,6 +128,12 @@ class BuiltJobs(BaseModel):
     """Planner entries with no matching inventory file (typos /
     hallucinations) — ignored, reported for logging."""
 
+    skippedUnpairedFiles: list[str]
+    """Inventory files with no observed chunk file — skipped, reported
+    for logging. Impossible when the inventory comes from the
+    list-chunks step (it always pairs them); a non-empty list means a
+    hand-built inventory or a parser regression."""
+
 
 def buildFileReviewJobs(
     *,
@@ -137,25 +143,39 @@ def buildFileReviewJobs(
     """Join the chunk inventory (truth) with the planner context (enrichment).
 
     Deterministic: jobs are sorted by path; planner lookup is by exact
-    file match. Trivial files are dropped. Inventory files the planner
-    never mentioned still get a job (empty context slice,
-    ``hasPlannerContext=False``). Planner entries without an
-    inventory file land in ``ignoredPlannerFiles``.
+    file match. Trivial files are dropped. Every job carries both the
+    real code path (``filePath``) and its observed on-disk chunk file
+    (``diffPath``) — the chunk name is looked up, never recomputed.
+    Inventory files the planner never mentioned still get a job (empty
+    context slice, ``hasPlannerContext=False``). Planner entries without
+    an inventory file land in ``ignoredPlannerFiles``.
     """
     byFile = {entry.file: entry for entry in plannerContext.fileContexts}
+    chunkByFile = {ref.filePath: ref.diffPath for ref in inventory.chunks}
     inventoryFiles = set(inventory.actualFiles)
 
     jobs: list[FileReviewJob] = []
+    unpaired: list[str] = []
     for path in sorted(inventoryFiles):
         if isTrivialFile(path):
             continue
+        diffPath = chunkByFile.get(path)
+        if diffPath is None:
+            # No observed chunk file for this path (older inventory
+            # shape) — skip rather than guess a file name. The
+            # list-chunks step always pairs them; this branch is
+            # defence-in-depth, not a fallback mapping.
+            unpaired.append(path)
+            continue
         entry = byFile.get(path)
+
         if entry is None:
-            jobs.append(FileReviewJob(file=path))
+            jobs.append(FileReviewJob(filePath=path, diffPath=diffPath))
             continue
         jobs.append(
             FileReviewJob(
-                file=path,
+                filePath=path,
+                diffPath=diffPath,
                 focus=list(entry.focus),
                 crossFileContext=entry.crossFileContext[:_MAX_CONTEXT_CHARS],
                 relevantSymbols=list(entry.relevantSymbols),
@@ -164,9 +184,15 @@ def buildFileReviewJobs(
         )
 
     ignored = sorted(
-        path for path in byFile if path not in inventoryFiles and not isTrivialFile(path)
+        path
+        for path in byFile
+        if path not in inventoryFiles and not isTrivialFile(path)
     )
-    return BuiltJobs(jobs=jobs, ignoredPlannerFiles=ignored)
+    return BuiltJobs(
+        jobs=jobs,
+        ignoredPlannerFiles=ignored,
+        skippedUnpairedFiles=sorted(unpaired),
+    )
 
 
 def concatFileReports(reportsByFile: Mapping[str, str]) -> str:

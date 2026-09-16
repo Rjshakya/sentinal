@@ -5,8 +5,9 @@
 - :mod:`.clone_repo_v2` — v2-native clone: default-branch clone +
   PR-ref fetch + detached head checkout in one atomic script
   (fail-closed on checkout refusal).
-- :mod:`.invoke_planner` — run the planning agent + extract the
-  structured :class:`PlannerContext`.
+- :mod:`.invoke_planner` — run the planning agent (it submits via
+  the ``submit_plan`` tool) + read the structured
+  :class:`PlannerContext` back from ``plan.json``.
 - :mod:`.invoke_file` — run one per-file review agent.
 - :mod:`.combine` — pure join / merge helpers (trivial filter,
   context join, report concat, batching, outcome combining).
@@ -38,9 +39,10 @@ from app.workflows.review_v2.steps.invoke_file import (
 )
 from app.workflows.review_v2.steps.invoke_planner import (
     PlannerStepOutcome,
-    buildPlanExtractorLlmCtx,
-    extractPlanStep,
+    getPlanStep,
     invokePlannerStep,
+    parsePlanText,
+    readPlanText,
 )
 from app.workflows.review_v2.steps.list_chunks import (
     connectV2Sandbox,
@@ -55,7 +57,6 @@ __all__ = [
     "FileStepOutcome",
     "PlannerStepOutcome",
     "buildFileReviewJobs",
-    "buildPlanExtractorLlmCtx",
     "chunkedJobs",
     "cloneRepoV2",
     "cloneRepoV2Step",
@@ -63,7 +64,7 @@ __all__ = [
     "combineV2Reports",
     "concatFileReports",
     "connectV2Sandbox",
-    "extractPlanStep",
+    "getPlanStep",
     "invokeFileReviewStep",
     "invokePlannerStep",
     "isTrivialFile",
@@ -71,4 +72,6 @@ __all__ = [
     "listChunkFilesStep",
     "parseChunkHeaders",
     "parseCloneV2Result",
+    "parsePlanText",
+    "readPlanText",
 ]

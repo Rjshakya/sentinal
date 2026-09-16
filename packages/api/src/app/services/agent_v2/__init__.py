@@ -14,32 +14,41 @@ Submodules:
   host-side join inputs (:class:`ChunkInventory` /
   :class:`FileReviewJob`).
 - :mod:`.errors`    — typed error values (:class:`AgentV2BuildError`).
-- :mod:`.prompts`   — prompt constants (placeholders — wording lands
-  in a dedicated prompt session) and the shared output markers.
+- :mod:`.prompts`   — one function per prompt: system builders take
+  narrow scalars (identity + tool budget), user builders take the
+  ctx plus run data (inventory / job / PR intent). Plus the shared
+  blocks (comment-body contract, output markers).
 - :mod:`.service`   — the entry points (camelCase): ctx factory +
-  agent builders + pure user-prompt helpers.
+  agent builders. Owns no prompt wording (imports from
+  :mod:`.prompts`) and no middleware assembly (imports from
+  :mod:`._middleware`).
 """
 
 from app.services.agent_v2.errors import AgentV2BuildError
 from app.services.agent_v2.prompts import (
-    FILE_REVIEW_SYSTEM_PROMPT,
+    COMMENT_BODY_FORMAT,
     NO_FINDINGS_MARKER,
-    PLANNING_SYSTEM_PROMPT,
-    PLAN_EXTRACTION_SYSTEM_PROMPT,
+    SUBMIT_PLAN_TOOL_DESCRIPTION,
+    createFileReviewSystemPrompt,
+    createFileReviewUserPrompt,
+    createPlanningSystemPrompt,
+    createPlanningUserPrompt,
+    identityHeader,
+    prMetaBlock,
 )
 from app.services.agent_v2.service import (
     buildNoSubAgent,
     buildNoSubBackend,
-    chunkFileForPath,
+    buildSubmitPlanTool,
     createAgentV2Ctx,
     createFileReviewAgent,
-    createFileReviewUserPrompt,
     createPlanningAgent,
-    createPlanningUserPrompt,
+    planFilePath,
 )
 from app.services.agent_v2.types import (
     AgentV2Ctx,
     ChunkInventory,
+    ChunkRef,
     DeepAgentGraph,
     FileContext,
     FileReviewJob,
@@ -49,21 +58,26 @@ from app.services.agent_v2.types import (
 __all__ = [
     "AgentV2BuildError",
     "AgentV2Ctx",
+    "COMMENT_BODY_FORMAT",
     "ChunkInventory",
+    "ChunkRef",
     "DeepAgentGraph",
     "FileContext",
     "FileReviewJob",
-    "FILE_REVIEW_SYSTEM_PROMPT",
     "NO_FINDINGS_MARKER",
-    "PLANNING_SYSTEM_PROMPT",
-    "PLAN_EXTRACTION_SYSTEM_PROMPT",
     "PlannerContext",
+    "SUBMIT_PLAN_TOOL_DESCRIPTION",
     "buildNoSubAgent",
     "buildNoSubBackend",
-    "chunkFileForPath",
+    "buildSubmitPlanTool",
     "createAgentV2Ctx",
     "createFileReviewAgent",
+    "createFileReviewSystemPrompt",
     "createFileReviewUserPrompt",
     "createPlanningAgent",
+    "createPlanningSystemPrompt",
     "createPlanningUserPrompt",
+    "identityHeader",
+    "planFilePath",
+    "prMetaBlock",
 ]

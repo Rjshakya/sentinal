@@ -31,10 +31,11 @@ from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import UsageMetadata
 
 from app.services.agent_v2.errors import AgentV2BuildError
+from app.services.agent_v2.prompts import createFileReviewUserPrompt
+from app.services.agent_v2.prompts.file_review import createFileReviewSystemPrompt
 from app.services.agent_v2.service import (
     createAgentV2Ctx,
     createFileReviewAgent,
-    createFileReviewUserPrompt,
 )
 from app.services.agent_v2.types import DeepAgentGraph, FileReviewJob
 from app.services.llm.errors import LLMConfigError
@@ -94,7 +95,7 @@ def _lastAiText(result: Any) -> str:
 )
 async def invokeFileReviewStep(
     *,
-    file: str,
+    filePath: str,
     job: FileReviewJob,
     sharedConcerns: str,
     sandboxCtx: SandboxCtx,
@@ -116,13 +117,20 @@ async def invokeFileReviewStep(
         raise ReviewStepFailure(
             FileLaneError(
                 message=f"failed to build chat model: {model}",
-                file=file,
+                file=filePath,
                 userId=input.userId,
                 repoId=repo.id,
                 prNumber=input.prNumber,
                 headSha=input.headSha,
             )
         )
+
+    fileReviewAgentSystemPrompt = createFileReviewSystemPrompt(
+        repoName=repo.repoName,
+        userId=input.userId,
+        modelCallRunLimit=limits.modelCallRunLimit,
+        toolCallRunLimit=limits.toolCallRunLimit,
+    )
 
     agentCtx = createAgentV2Ctx(
         userId=input.userId,
@@ -132,18 +140,19 @@ async def invokeFileReviewStep(
         headSha=input.headSha,
         model=model,
         sandboxCtx=sandboxCtx,
+        systemPrompt=fileReviewAgentSystemPrompt,
         modelCallRunLimit=limits.modelCallRunLimit,
         toolCallRunLimit=limits.toolCallRunLimit,
     )
 
     agent: DeepAgentGraph | AgentV2BuildError | SandboxProviderError
-    agent = await createFileReviewAgent(agentCtx, file=file)
+    agent = await createFileReviewAgent(agentCtx, filePath=filePath)
 
     if isinstance(agent, SandboxProviderError):
         raise TransientReviewStepFailure(
             FileLaneError(
-                message=f"sandbox backend failed for file={file}: {agent.message}",
-                file=file,
+                message=f"sandbox backend failed for file={filePath}: {agent.message}",
+                file=filePath,
                 userId=input.userId,
                 repoId=repo.id,
                 prNumber=input.prNumber,
@@ -154,8 +163,8 @@ async def invokeFileReviewStep(
     if isinstance(agent, AgentV2BuildError):
         raise ReviewStepFailure(
             FileLaneError(
-                message=f"file agent build failed for file={file}: {agent.message}",
-                file=file,
+                message=f"file agent build failed for file={filePath}: {agent.message}",
+                file=filePath,
                 userId=input.userId,
                 repoId=repo.id,
                 prNumber=input.prNumber,
@@ -164,7 +173,12 @@ async def invokeFileReviewStep(
         )
 
     prompt = createFileReviewUserPrompt(
-        agentCtx, job=job, sharedConcerns=sharedConcerns
+        agentCtx,
+        job=job,
+        sharedConcerns=sharedConcerns,
+        title=input.title,
+        body=input.body,
+        author=input.author,
     )
     promptPayload = {"messages": [{"role": "user", "content": prompt}]}
 
@@ -177,7 +191,7 @@ async def invokeFileReviewStep(
         retryable = isLlmRetryError(exc)
         log.warning(
             "invoke_file_step: file=%s failed (retryable=%s): %s: %s",
-            file,
+            filePath,
             retryable,
             type(exc).__name__,
             exc,
@@ -185,8 +199,8 @@ async def invokeFileReviewStep(
         if retryable:
             raise TransientReviewStepFailure(
                 FileLaneError(
-                    message=f"file={file} {type(exc).__name__}: {exc}",
-                    file=file,
+                    message=f"file={filePath} {type(exc).__name__}: {exc}",
+                    file=filePath,
                     userId=input.userId,
                     repoId=repo.id,
                     prNumber=input.prNumber,
@@ -196,8 +210,8 @@ async def invokeFileReviewStep(
             ) from exc
         raise ReviewStepFailure(
             FileLaneError(
-                message=f"file={file} {type(exc).__name__}: {exc}",
-                file=file,
+                message=f"file={filePath} {type(exc).__name__}: {exc}",
+                file=filePath,
                 userId=input.userId,
                 repoId=repo.id,
                 prNumber=input.prNumber,
@@ -209,8 +223,8 @@ async def invokeFileReviewStep(
     if not text.strip():
         raise ReviewStepFailure(
             FileLaneError(
-                message=f"file={file} produced no text output",
-                file=file,
+                message=f"file={filePath} produced no text output",
+                file=filePath,
                 userId=input.userId,
                 repoId=repo.id,
                 prNumber=input.prNumber,
@@ -220,7 +234,7 @@ async def invokeFileReviewStep(
 
     log.info(
         "invoke_file_step: ok file=%s repo=%s user=%s pr_number=%s",
-        file,
+        filePath,
         repo.repoName,
         input.userId,
         input.prNumber,

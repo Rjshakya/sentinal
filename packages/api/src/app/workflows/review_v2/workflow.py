@@ -11,7 +11,7 @@ serving traffic until an explicit future swap):
 2. :func:`app.workflows.review_v2.steps.list_chunks.listChunkFilesStep`
    inventories ``splitted_diffs/`` — the host-side diff truth that
    drives the fan-out.
-3. :func:`invokePlannerStep` + :func:`extractPlanStep` produce the
+3. :func:`invokePlannerStep` + :func:`getPlanStep` produce the
    :class:`PlannerContext` (enrichment only — a failure degrades to
    an empty context, never fails the run).
 4. The pure :func:`buildFileReviewJobs` join attaches planner context
@@ -100,8 +100,7 @@ from app.workflows.review_v2.steps.combine import (
 from app.workflows.review_v2.steps.clone_repo_v2 import cloneRepoV2Step
 from app.workflows.review_v2.steps.invoke_file import invokeFileReviewStep
 from app.workflows.review_v2.steps.invoke_planner import (
-    buildPlanExtractorLlmCtx,
-    extractPlanStep,
+    getPlanStep,
     invokePlannerStep,
 )
 from app.workflows.review_v2.steps.list_chunks import listChunkFilesStep
@@ -121,10 +120,10 @@ def createReviewV2WorkflowId(
     return f"review-v2:{repoId}:{prNumber}:{headSha[:7]}"
 
 
-_PLANNER_MODEL_CALL_LIMIT = 120
-_PLANNER_TOOL_CALL_LIMIT = 120
-_FILE_MODEL_CALL_LIMIT = 80
-_FILE_TOOL_CALL_LIMIT = 80
+_PLANNER_MODEL_CALL_LIMIT = 200
+_PLANNER_TOOL_CALL_LIMIT = 200
+_FILE_MODEL_CALL_LIMIT = 100
+_FILE_TOOL_CALL_LIMIT = 100
 
 
 def _plannerLimits() -> ReviewLimits:
@@ -282,7 +281,7 @@ async def reviewWorkflowV2(
         plannerDegraded = False
         if inventory.actualFiles:
             try:
-                plannerText, plannerUsage = await invokePlannerStep(
+                plannerUsage = await invokePlannerStep(
                     sandboxCtx=sandbox_ctx,
                     llmCtx=ctx.llmCtx,
                     repo=repo,
@@ -291,16 +290,15 @@ async def reviewWorkflowV2(
                     limits=_plannerLimits(),
                 )
                 try:
-                    plannerContext, _ = await extractPlanStep(
-                        extractorLlmCtx=buildPlanExtractorLlmCtx(),
-                        rawText=plannerText,
-                        input=input,
+                    plannerContext = await getPlanStep(
+                        sandboxCtx=sandbox_ctx,
                         repoId=repo.id,
+                        input=input,
                     )
                 except BaseException as exc:
                     plannerDegraded = True
                     log.warning(
-                        "review_v2: plan extraction degraded "
+                        "review_v2: plan read degraded "
                         "(continuing without planner context): "
                         "workflow_id=%s cause=%s: %s",
                         workflow_id,
@@ -334,6 +332,12 @@ async def reviewWorkflowV2(
                 len(built.ignoredPlannerFiles),
                 built.ignoredPlannerFiles,
             )
+        if built.skippedUnpairedFiles:
+            log.warning(
+                "review_v2: %d inventoried file(s) had no observed chunk, skipped: %s",
+                len(built.skippedUnpairedFiles),
+                built.skippedUnpairedFiles,
+            )
         jobs = built.jobs
         log.info(
             "review_v2: fanning out to %d file agent(s) "
@@ -352,7 +356,7 @@ async def reviewWorkflowV2(
             batchResults = await asyncio.gather(
                 *(
                     invokeFileReviewStep(
-                        file=job.file,
+                        filePath=job.filePath,
                         job=job,
                         sharedConcerns=plannerContext.sharedConcerns,
                         sandboxCtx=sandbox_ctx,
@@ -367,12 +371,12 @@ async def reviewWorkflowV2(
             )
             for job, outcome in zip(batch, batchResults):
                 if isinstance(outcome, BaseException):
-                    failedOutcomes.append((job.file, outcome))
+                    failedOutcomes.append((job.filePath, outcome))
                     continue
                 text, usage = outcome
-                reportsByFile[job.file] = text
-                researchUsages[job.file] = usage
-                succeededFiles.append(job.file)
+                reportsByFile[job.filePath] = text
+                researchUsages[job.filePath] = usage
+                succeededFiles.append(job.filePath)
 
         failedFiles = [file for file, _ in failedOutcomes]
         if failedFiles:
