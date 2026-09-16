@@ -32,10 +32,6 @@ Both are called by the github webhook sub-service delegation handlers
 - The repair-and-publish follow-up dispatches through
   :mod:`app.workflows.triggers.repair` (one trigger module per
   workflow), not inline.
-
-Copied from :mod:`app.workflows.review.triggers` (which remains untouched
-until the step-2 deletion); this module is the canonical home going
-forward.
 """
 
 from __future__ import annotations
@@ -59,14 +55,12 @@ from app.utils.branded import (
     RepoId,
     UserId,
 )
-from app.workflows.review.types import (
+from app.workflows.review_v2.types import (
     ReviewWorkflowCtx,
     ReviewWorkflowInput,
 )
-from app.workflows.review.workflow import (
-    buildReviewWorkflowInput,
-)
 from app.workflows.review_v2.workflow import (
+    buildReviewWorkflowInput,
     createReviewV2WorkflowId,
     reviewWorkflowV2,
 )
@@ -438,7 +432,7 @@ async def handleIssueCommentCreated(
 
     await addReaction(pr_ctx, trigger.commentId)  # best-effort ack
 
-    reviewWorkflowId = await dispatchReview(
+    reviewWorkflowV2Id = await dispatchReview(
         repoId=repo.id,
         prNumber=trigger.prNumber,
         headSha=state.headSha,
@@ -457,7 +451,7 @@ async def handleIssueCommentCreated(
         "review.trigger: started workflow: delivery=%s review_workflow_id=%s "
         "repair_workflow_id=%s gh_repo_id=%s number=%s head_sha=%s diff_base_sha=%s",
         delivery,
-        reviewWorkflowId,
+        reviewWorkflowV2Id,
         repairAndPublishWorkflowId,
         trigger.ghRepoId,
         trigger.prNumber,

@@ -24,8 +24,8 @@ from app.models.pull_request import PullRequest
 from app.repositories.pull_request import PullRequestRepository
 from app.utils.branded import PrRowId, RepoId
 from app.utils.util import uuidToStr
-from app.workflows.review.errors import ReviewStepFailure, UpsertPRError
-from app.workflows.review.types import ReviewWorkflowInput
+from app.workflows.review_v2.errors import ReviewStepFailure, UpsertPRError
+from app.workflows.review_v2.types import ReviewWorkflowInput
 
 log = logging.getLogger(__name__)
 

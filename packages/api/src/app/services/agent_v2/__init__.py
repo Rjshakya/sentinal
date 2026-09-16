@@ -1,7 +1,6 @@
 """Agent-v2 service: planning agent + per-file review agents.
 
-The isolated successor of :mod:`app.services.agent` for the v2 review
-flow: one planning agent (repo exploration + per-file enrichment)
+One planning agent (repo exploration + per-file enrichment)
 followed by one deep-agent per changed file. Every agent is built
 with delegation disabled (``subagents=[]`` plus the
 no-delegation middleware guard) — no subagents anywhere.
@@ -33,6 +32,7 @@ from app.services.agent_v2.prompts import (
     createFileReviewUserPrompt,
     createPlanningSystemPrompt,
     createPlanningUserPrompt,
+    getReviewDiffDirPath,
     identityHeader,
     prMetaBlock,
 )
@@ -77,6 +77,7 @@ __all__ = [
     "createPlanningAgent",
     "createPlanningSystemPrompt",
     "createPlanningUserPrompt",
+    "getReviewDiffDirPath",
     "identityHeader",
     "planFilePath",
     "prMetaBlock",

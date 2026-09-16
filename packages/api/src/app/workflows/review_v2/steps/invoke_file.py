@@ -43,18 +43,18 @@ from app.services.llm.service import createLLMModel
 from app.services.llm.types import LLMCtx
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.types import SandboxCtx
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
+    FileLaneError,
     ReviewStepFailure,
     TransientReviewStepFailure,
     isLlmRetryError,
     shouldRetry,
 )
-from app.workflows.review.types import (
+from app.workflows.review_v2.types import (
     RepoSnapshot,
     ReviewLimits,
     ReviewWorkflowInput,
 )
-from app.workflows.review_v2.errors import FileLaneError
 
 log = logging.getLogger(__name__)
 

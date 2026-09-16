@@ -5,10 +5,6 @@ No I/O, no DBOS, no sessions, no clock. The comment trigger adapter
 these in its body to project the raw webhook payload onto typed models
 and to short-circuit on the first failing check.
 
-Copied from :mod:`app.workflows.review.helpers` (which remains untouched
-until the step-2 deletion); this module is the canonical home going
-forward.
-
 Public surface:
 
 - :func:`validateCommentPayload` — project a raw payload onto
@@ -236,7 +232,7 @@ def effectiveDiffBase(
     - no prior successful review (``lastReview`` is ``None``), and
     - an unchanged head (``lastReview.commitId == apiHeadSha``), where
       the deterministic inner workflow id
-      (``review:{repo}:{pr}:{head_sha[:7]}``) already dedupes the
+      (``review-v2:{repo}:{pr}:{head_sha[:7]}``) already dedupes the
       re-trigger to the previous run.
 
     When the head **has** moved, the function returns the last

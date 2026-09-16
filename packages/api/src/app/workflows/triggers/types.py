@@ -1,17 +1,11 @@
 """Trigger contract: serializable models for the workflow trigger adapters.
 
-Copied from :mod:`app.workflows.review.triggers` (``ReviewTriggerAck``,
-``PRPayload``) and :mod:`app.workflows.review.types`
-(``CommentTriggerInput``, ``ClassifyCommentResult``,
-``LastReviewSnapshot``) — those modules remain untouched until the
-step-2 deletion; this module is the canonical home going forward.
-
 All models are plain Pydantic ``BaseModel`` subclasses carrying only
 JSON-serializable data. Ids are **branded types** from
 :mod:`app.utils.branded` (erase at runtime; enforced statically by
 pyright). The workflow contract itself (``ReviewWorkflowCtx`` /
 ``ReviewWorkflowInput`` / ``PRSizeStats``) stays in
-:mod:`app.workflows.review.types` — triggers import it, not duplicate it.
+:mod:`app.workflows.review_v2.types` — triggers import it, not duplicate it.
 """
 
 from __future__ import annotations
@@ -28,7 +22,7 @@ from app.utils.branded import (
     RepoName,
     RepoOwner,
 )
-from app.workflows.review.types import PRSizeStats
+from app.workflows.review_v2.types import PRSizeStats
 
 
 class ReviewTriggerAck(BaseModel):

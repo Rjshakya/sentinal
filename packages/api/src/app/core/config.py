@@ -379,7 +379,7 @@ class Settings(BaseSettings):
 
     # --- Eval API token (gates ``POST /api/review``) ---
     # The eval harness calls ``POST /api/review`` to drive the production
-    # reviewWorkflow end-to-end. The route is unauthenticated (no sealed
+    # reviewWorkflowV2 end-to-end. The route is unauthenticated (no sealed
     # session cookie) — it relies on a static shared secret carried in the
     # ``X-Eval-Token`` request header, matched against this setting. Leave
     # empty to disable the route (503 on every call). Same secret is read

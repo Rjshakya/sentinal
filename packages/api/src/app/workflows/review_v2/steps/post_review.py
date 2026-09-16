@@ -38,7 +38,7 @@ from app.services.github.pr.types import PRCommentDraft, PRCtx, PRReviewDraft
 from app.utils.branded import CommitId, PRNumber, RepoId, ReviewRowId
 from app.utils.schema import CodeCommentDraft, ReviewResult
 from app.utils.severity_badge import withSeverityBadge
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
     PersistError,
     PostReviewError,
     ReviewStepFailure,
@@ -46,7 +46,7 @@ from app.workflows.review.errors import (
     isRetryableStatusCode,
     shouldRetry,
 )
-from app.workflows.review.types import (
+from app.workflows.review_v2.types import (
     PostReviewResult,
     RepoSnapshot,
     ReviewWorkflowInput,

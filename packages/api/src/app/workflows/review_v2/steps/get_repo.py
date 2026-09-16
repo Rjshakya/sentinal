@@ -20,8 +20,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.db import async_session_maker
 from app.repositories.repo import RepoRepository
 from app.utils.branded import RepoId, RepoName, RepoOwner
-from app.workflows.review.errors import RepoGetError, ReviewStepFailure
-from app.workflows.review.types import RepoSnapshot
+from app.workflows.review_v2.errors import RepoGetError, ReviewStepFailure
+from app.workflows.review_v2.types import RepoSnapshot
 
 
 async def getRepo(

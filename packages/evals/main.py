@@ -136,13 +136,15 @@ async def run_pr(pr_id: str) -> tuple[Path, Path]:
 
     api_url = _require_env("EVAL_API_URL")
     api_token = _require_env("EVAL_API_TOKEN")
+    model = _require_env("LLM_MODEL")
+    baseurl = _require_env("LLM_BASE_URL")
 
     review_input.github_installation_id = int(_require_env("GITHUB_INSTALLATION_ID"))
 
     request_body = review_input.model_dump(mode="json")
     request_body["session_id"] = session_id
-    request_body["model"] = "openai:deepseek-v4.1-flash"
-    request_body["baseUrl"] = "https://opencode.ai/zen/go/v1"
+    request_body["model"] = model
+    request_body["baseUrl"] = baseurl
 
     # request_body["baseUrl"] = "https://opencode.ai/zen/go"
 

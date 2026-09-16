@@ -2,9 +2,9 @@
 
 The v2 review pipeline is stateless: :func:`cloneRepoV2Step` prepares
 the repo at review time inside the fresh sandbox created by
-:func:`app.workflows.review.steps.create_sandbox.createSandboxStep`.
+:func:`app.workflows.review_v2.steps.create_sandbox.createSandboxStep`.
 
-Unlike the v1 clone (default-branch tree + best-effort ref fetch),
+Unlike the old default-branch-tree clone (best-effort ref fetch),
 this step leaves the working tree **checked out at the reviewed head
 SHA** — one in-sandbox Python script (:data:`_CLONE_V2_SCRIPT_SRC`)
 runs clone → fetch → checkout → verify as a single invocation, so the
@@ -68,17 +68,15 @@ from app.utils.branded import (
     UserId,
 )
 from app.utils.util import repo_path, workspace_path
-from app.workflows.review.errors import (
-    ReviewStepFailure,
-    SandboxConnectError,
-    TransientReviewStepFailure,
-    shouldRetry,
-)
 from app.workflows.review_v2.errors import (
     CheckoutError,
     CheckoutTransientError,
     CloneV2Error,
     CloneV2TransientError,
+    ReviewStepFailure,
+    SandboxConnectError,
+    TransientReviewStepFailure,
+    shouldRetry,
 )
 
 log = logging.getLogger(__name__)

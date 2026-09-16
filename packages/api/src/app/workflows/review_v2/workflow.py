@@ -1,8 +1,7 @@
 """V2 review durable workflow: planner + per-file agents.
 
-The isolated successor of :func:`app.workflows.review.workflow.reviewWorkflow`
-(same infra, new agent phase — the v1 workflow is untouched and keeps
-serving traffic until an explicit future swap):
+Durable review pipeline (planner + per-file agents over shared
+infra steps):
 
 1. Infra: resolve repo → create ephemeral sandbox → v2 clone
    (default-branch clone + PR-ref fetch + detached head checkout,
@@ -26,15 +25,15 @@ serving traffic until an explicit future swap):
 7. Persist (summary / comments / usage), inline GitHub post, mark
    ``SUCCESS`` / ``FAILED``, destroy the sandbox in ``finally``.
 
-- All workflow inputs and outputs are the v1 Pydantic models
+- All workflow inputs and outputs are Pydantic models
   (:class:`ReviewWorkflowCtx` / :class:`ReviewWorkflowInput` /
   :class:`ReviewRunResult`) so DBOS serialisation and the
   persistence layer behave identically.
 - The sandbox object is never passed between steps — only the
   :class:`SandboxCtx` travels; each step reconnects by id.
 - Deterministic workflow id ``review-v2:{repo_id}:{pr}:{head_sha[:7]}``
-  (distinct namespace from v1, so v2 eval runs never collide with
-  production v1 runs).
+  (the idempotency key: duplicate triggers for the same head SHA
+  dedupe to the same DBOS workflow).
 """
 
 from __future__ import annotations
@@ -47,43 +46,53 @@ from langchain_core.messages import UsageMetadata
 from traceloop.sdk import Traceloop
 from traceloop.sdk.decorators import workflow as traceloop_workflow
 
+from app.models.enums import PRStatus
 from app.services.agent_v2.types import PlannerContext
 from app.services.llm.service import acquireSharedLimiter, releaseSharedLimiter
 from app.services.sandbox.types import SandboxCtx
-from app.utils.branded import PRNumber, PrRowId, RepoId, ReviewRowId
+from app.utils.branded import (
+    CommitId,
+    InstallationId,
+    PRNumber,
+    PrRowId,
+    RepoId,
+    ReviewRowId,
+    UserId,
+)
 from app.utils.schema import ReviewComments
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
     CloneError,
     ReviewStepFailure,
     SandboxCreateError,
 )
-from app.workflows.review.steps.create_sandbox import createSandboxStep
-from app.workflows.review.steps.extract_result import (
+from app.workflows.review_v2.steps.create_sandbox import createSandboxStep
+from app.workflows.review_v2.steps.extract_result import (
     buildExtractorLlmCtx,
     extractCommentsStep,
 )
-from app.workflows.review.steps.fetch_diff import fetchDiffStep
-from app.workflows.review.steps.get_repo import getRepoTx
-from app.workflows.review.steps.kill_sandbox import killSandboxStep
-from app.workflows.review.steps.persist import (
+from app.workflows.review_v2.steps.fetch_diff import fetchDiffStep
+from app.workflows.review_v2.steps.get_repo import getRepoTx
+from app.workflows.review_v2.steps.kill_sandbox import killSandboxStep
+from app.workflows.review_v2.steps.persist import (
     persistCodeCommentsTx,
     persistReviewSummaryTx,
     persistReviewUsageTx,
     sumTotalUsages,
 )
-from app.workflows.review.steps.post_review import (
+from app.workflows.review_v2.steps.post_review import (
     postReviewStep,
     updatePostBacklinksTx,
 )
-from app.workflows.review.steps.review_lifecycle import (
+from app.workflows.review_v2.steps.review_lifecycle import (
     buildErrorContext,
     markReviewErroredStep,
     markReviewRunningStep,
     markReviewStoppedStep,
 )
-from app.workflows.review.steps.split_diff import splitDiffStep
-from app.workflows.review.steps.upsert_pr import upsertPullRequestTx
-from app.workflows.review.types import (
+from app.workflows.review_v2.steps.split_diff import splitDiffStep
+from app.workflows.review_v2.steps.upsert_pr import upsertPullRequestTx
+from app.workflows.review_v2.types import (
+    PRSizeStats,
     RepoSnapshot,
     ReviewLimits,
     ReviewRunResult,
@@ -116,10 +125,58 @@ def createReviewV2WorkflowId(
     """Build the deterministic v2 review workflow id.
 
     The id is the idempotency key: duplicate triggers for the same
-    head SHA dedupe to the same DBOS workflow. The ``review-v2:``
-    namespace keeps v2 runs distinct from v1 ``review:`` runs.
+    head SHA dedupe to the same DBOS workflow.
     """
     return f"review-v2:{repoId}:{prNumber}:{headSha[:7]}"
+
+
+def buildReviewWorkflowInput(
+    *,
+    userId: UserId,
+    ghRepoId: int,
+    ghPrId: int,
+    prNumber: PRNumber,
+    baseBranch: str,
+    defaultBranch: str | None,
+    baseSha: str,
+    headBranch: str,
+    headSha: CommitId,
+    author: str,
+    title: str,
+    body: str,
+    status: PRStatus,
+    prSize: PRSizeStats,
+    githubInstallationId: InstallationId | None,
+    postToGithub: bool,
+    trigger: str = "opened",
+    diffBaseSha: CommitId | None = None,
+) -> ReviewWorkflowInput:
+    """Assemble the PR-specific workflow input (for trigger adapters).
+
+    Pure data transformation — the resolved run environment
+    (:class:`LLMCtx` / :class:`SandboxCtx`) goes on the
+    :class:`ReviewWorkflowCtx` built by the caller.
+    """
+    return ReviewWorkflowInput(
+        userId=userId,
+        ghRepoId=ghRepoId,
+        ghPrId=ghPrId,
+        prNumber=prNumber,
+        baseBranch=baseBranch,
+        defaultBranch=defaultBranch,
+        baseSha=baseSha,
+        headBranch=headBranch,
+        headSha=headSha,
+        author=author,
+        title=title,
+        body=body,
+        status=status,
+        trigger=trigger,
+        postToGithub=postToGithub,
+        githubInstallationId=githubInstallationId,
+        prSize=prSize,
+        diffBaseSha=diffBaseSha,
+    )
 
 
 _PLANNER_MODEL_CALL_LIMIT = 200
@@ -158,7 +215,7 @@ async def reviewWorkflowV2(
 
     Body is a straight-line sequence of step calls. Steps raise on
     failure; transient ones are retried by DBOS via
-    :func:`app.workflows.review.errors.shouldRetry`, business outcomes
+    :func:`app.workflows.review_v2.errors.shouldRetry`, business outcomes
     propagate and the DBOS workflow record is marked ERROR.
 
     The :func:`killSandboxStep` cleanup runs in a ``finally`` that
@@ -586,6 +643,7 @@ async def reviewWorkflowV2(
 
 
 __all__ = [
+    "buildReviewWorkflowInput",
     "createReviewV2WorkflowId",
     "reviewWorkflowV2",
 ]

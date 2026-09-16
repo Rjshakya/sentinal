@@ -2,7 +2,7 @@
 
 The review pipeline is **stateless**: every run creates its own fresh
 sandbox, clones the repo into it, and destroys it in the workflow's
-``finally`` (:func:`app.workflows.review.steps.kill_sandbox.killSandboxStep`).
+``finally`` (:func:`app.workflows.review_v2.steps.kill_sandbox.killSandboxStep`).
 No dependency on the setup-time per-repo ``sandboxes`` row.
 
 Two layers:
@@ -25,7 +25,7 @@ from dbos import DBOS
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.service import getProvider
 from app.services.sandbox.types import SandboxCtx
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
     SandboxCreateError,
     TransientReviewStepFailure,
     shouldRetry,

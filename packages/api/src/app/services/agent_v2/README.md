@@ -1,7 +1,8 @@
 # agent_v2 — planning agent + per-file review agents
 
-Isolated successor of `services/agent` for the v2 review flow.
-Not yet dispatched by any trigger; the v1 pipeline keeps serving traffic.
+The agent layer for the review pipeline (`workflows/review_v2`):
+planner + per-file review agents, built on the run's chat model with
+the sandbox as backend.
 
 ## Intent
 

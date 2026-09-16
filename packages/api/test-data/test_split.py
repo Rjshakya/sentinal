@@ -4,11 +4,11 @@ Usage: ``python test_split.py <file.diff> [out_dir]``
 
 - Reads ``<file.diff>`` (default: ``dataset/test.diff``).
 - Wipes and recreates ``out_dir`` (default: ``dataset/splitted_diff/``).
-- Runs ``services/review/scripts/split_diff.py`` via a subprocess
+- Runs ``workflows/review_v2/scripts/split_diff.py`` via a subprocess
   (the same CLI contract the host step consumes), passing
   ``--pr 42 --commit abc1234`` so the overview header is exercised.
 - Parses stdout with the *shared* parser
-  :func:`app.services.review.helpers.parse_split_summary` — the exact
+  :func:`app.workflows.review_v2.steps.split_diff.parseSplitSummary` — the exact
   code the host step uses — so the two never drift.
 - Asserts:
   - ``files_changed`` + ``len(skipped)`` equals the number of
@@ -38,8 +38,8 @@ _SPLIT_SCRIPT = (
     _DATASET_DIR.parent
     / "src"
     / "app"
-    / "services"
-    / "review"
+    / "workflows"
+    / "review_v2"
     / "scripts"
     / "split_diff.py"
 )
@@ -51,7 +51,7 @@ _OVERVIEW_HEADERS = (
 )
 
 sys.path.insert(0, str(_SRC_DIR))
-from app.services.review.helpers import parse_split_summary
+from app.workflows.review_v2.steps.split_diff import parseSplitSummary
 
 
 def count_diff_sections(diff_text: str) -> int:
@@ -102,7 +102,7 @@ def main() -> int:
         print(result.stderr, file=sys.stderr)
         return 1
 
-    summary = parse_split_summary(result.stdout)
+    summary = parseSplitSummary(result.stdout)
 
     if summary["files_changed"] + len(summary["skipped"]) != expected_files:
         print(

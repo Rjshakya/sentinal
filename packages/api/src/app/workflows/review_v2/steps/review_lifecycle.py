@@ -35,13 +35,13 @@ from app.core.db import async_session_maker
 from app.models.review import Review, ReviewState
 from app.repositories.review import ReviewRepository
 from app.utils.branded import PrRowId, RepoId, ReviewRowId, UserId
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
     LifecycleUpdateError,
-    ReviewAgentsError,
     TransientReviewStepFailure,
+    V2AgentsError,
     shouldRetry,
 )
-from app.workflows.review.types import RepoSnapshot, ReviewWorkflowInput
+from app.workflows.review_v2.types import RepoSnapshot, ReviewWorkflowInput
 
 log = logging.getLogger(__name__)
 
@@ -210,18 +210,19 @@ async def markReviewErrored(
 def buildErrorContext(exc: BaseException) -> dict[str, Any] | None:
     """Project an exception onto the ``error_context`` JSONB shape.
 
-    Full payload for :class:`ReviewAgentsError` (the dominant failure
-    mode — both agent lanes exhausted their retries); ``None`` for
+    Full payload for :class:`V2AgentsError` (the dominant failure
+    mode — every file lane exhausted its retries); ``None`` for
     everything else (the row keeps just ``error_name`` /
     ``error_message``). Wrapped step failures are unwrapped to their
     underlying error value first.
     """
     error = getattr(exc, "error", None)
-    if isinstance(error, ReviewAgentsError):
+    if isinstance(error, V2AgentsError):
         return {
-            "error_name": ", ".join(type(f).__name__ for f in error.failedLanes)
+            "error_name": ", ".join(type(f).__name__ for f in error.failedFiles)
             or type(error).__name__,
-            "succeeded_agents": list(error.succeededLanes),
+            "succeeded_agents": list(error.succeededFiles),
+            "planner_degraded": error.plannerDegraded,
         }
     return None
 

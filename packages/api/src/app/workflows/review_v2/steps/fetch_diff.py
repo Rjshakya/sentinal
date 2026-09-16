@@ -29,14 +29,14 @@ from pydantic import BaseModel
 
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import CommitId, PRNumber, RepoId
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
     DiffUnavailableError,
     ReviewStepFailure,
     SandboxConnectError,
     TransientReviewStepFailure,
     shouldRetry,
 )
-from app.workflows.review.steps._helpers import (
+from app.workflows.review_v2.steps._helpers import (
     asAsyncSandbox,
     connectSandbox,
     getRepoPath,

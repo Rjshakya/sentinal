@@ -36,8 +36,9 @@ from app.routers import (
 # import their adapters lazily (cycle avoidance) — so the workflows
 # must be imported here to register their @DBOS.workflow decorated
 # entry points before DBOS.launch(). The review workflow (and its
-# triggers) live in app.workflows.review; the setup and indexing
-# pipelines register through their routers' imports.
+# triggers) live in app.workflows.review_v2 and app.workflows.triggers;
+# the setup and indexing pipelines register through their routers'
+# imports.
 
 
 logging.basicConfig(

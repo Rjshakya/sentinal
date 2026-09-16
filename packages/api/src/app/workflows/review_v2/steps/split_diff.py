@@ -30,7 +30,7 @@ from deepagents.backends.sandbox import BaseSandbox
 
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import CommitId, PRNumber, RepoId
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
     DiffSplitError,
     DiffSplitSetupError,
     ReviewStepFailure,
@@ -38,13 +38,13 @@ from app.workflows.review.errors import (
     TransientReviewStepFailure,
     shouldRetry,
 )
-from app.workflows.review.steps._helpers import (
+from app.workflows.review_v2.steps._helpers import (
     asAsyncSandbox,
     connectSandbox,
     getReviewDiffDirPath,
     truncateOutput,
 )
-from app.workflows.review.types import SplitDiffResult
+from app.workflows.review_v2.types import SplitDiffResult
 
 log = logging.getLogger(__name__)
 

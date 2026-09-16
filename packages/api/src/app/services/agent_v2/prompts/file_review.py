@@ -23,10 +23,10 @@ the shared comments extractor over the merged reports.
 
 from __future__ import annotations
 
-from app.services.agent.tools import getReviewDiffDirPath
 from app.services.agent_v2.prompts.shared import (
     COMMENT_BODY_FORMAT,
     NO_FINDINGS_MARKER,
+    getReviewDiffDirPath,
     identityHeader,
     prMetaBlock,
 )

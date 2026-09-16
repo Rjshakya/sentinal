@@ -23,8 +23,11 @@ planner miss costs context, never a review.
 
 from __future__ import annotations
 
-from app.services.agent.tools import getReviewDiffDirPath
-from app.services.agent_v2.prompts.shared import identityHeader, prMetaBlock
+from app.services.agent_v2.prompts.shared import (
+    getReviewDiffDirPath,
+    identityHeader,
+    prMetaBlock,
+)
 from app.services.agent_v2.types import AgentV2Ctx
 from app.utils.util import repo_path
 

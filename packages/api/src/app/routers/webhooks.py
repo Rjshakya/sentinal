@@ -10,7 +10,7 @@ dispatches the ``(event, action)`` pair through its registry:
   handlers (install-flow bookkeeping the setup callback does not
   cover).
 - ``pull_request`` (``opened``) -> dispatches the review workflow
-  (:func:`app.workflows.review.workflow.reviewWorkflow`).
+  (:func:`app.workflows.review_v2.workflow.reviewWorkflowV2`).
 - ``issue_comment`` (``created``) -> dispatches the review workflow
   (incremental re-review when the head moved since the last run).
 - ``push`` -> dispatches the incremental indexing workflow (legacy

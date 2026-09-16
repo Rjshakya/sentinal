@@ -1,9 +1,8 @@
 # review_v2 — planner + per-file-agent review workflow
 
-Isolated successor of `workflows/review`: same infra, new agent phase.
-Not wired to any webhook trigger (no swap); v1 keeps serving traffic.
-Workflow ids live in the `review-v2:` namespace so eval runs can never
-collide with production v1 runs.
+The review pipeline: planner + per-file agents over shared infra
+steps (sandbox, clone, diff, split, persist, post, lifecycle — all
+owned by this package).
 
 ## Intent
 
@@ -27,8 +26,7 @@ collide with production v1 runs.
   A planner miss costs context, never a review (the file is still
   reviewed with an empty slice). Planner failure degrades to an empty
   `PlannerContext`, never fails the run.
-- Per-file agents run in sequential batches of 10
-  (`V2_FANOUT_BATCH_SIZE`); each file retries alone; failed files
+- Per-file agents run in sequential batches (`V2_FANOUT_BATCH_SIZE`); each file retries alone; failed files
   degrade to nothing. Surviving reports are concatenated and
   transcribed once by the shared comments extractor.
 
@@ -36,49 +34,66 @@ collide with production v1 runs.
 
 ```
 workflows/review_v2/
-├── __init__.py      # Public surface: workflow + v2 errors only.
+├── __init__.py      # Public surface: types + errors + workflow.
 ├── README.md        # This file.
-├── errors.py        # V2 error VALUES (ChunkListError, PlannerStepError,
-│                    # FileLaneError, CloneV2Error/CloneV2TransientError,
-│                    # CheckoutError/CheckoutTransientError, V2AgentsError).
-│                    # Raised wrappers (ReviewStepFailure/Transient) +
-│                    # shouldRetry are REUSED from workflows/review/errors —
-│                    # not duplicated.
-├── workflow.py      # reviewWorkflowV2 orchestrator + createReviewV2WorkflowId
+├── types.py         # The serializable contract: ReviewWorkflowCtx /
+│                    # ReviewWorkflowInput / RepoSnapshot / ReviewRunResult /
+│                    # usage envelopes. Ids are branded types.
+├── errors.py        # Error VALUES (ReviewStepError subclasses:
+│                    # ChunkListError, PlannerStepError, FileLaneError,
+│                    # CloneV2Error/CloneV2TransientError,
+│                    # CheckoutError/CheckoutTransientError,
+│                    # V2AgentsError, + the shared infra values) and the
+│                    # raised wrappers (ReviewStepFailure/Transient) +
+│                    # shouldRetry and the transient classifiers.
+├── workflow.py      # reviewWorkflowV2 orchestrator +
+│                    # createReviewV2WorkflowId + buildReviewWorkflowInput
 │                    # + fixed planner/file call-limit helpers. Straight-line:
-│                    # infra (imported from v1 steps) → v2 agent phase below →
-│                    # persist/post/lifecycle (imported from v1 steps).
+│                    # infra → agent phase below → persist/post/lifecycle.
+├── scripts/
+│   └── split_diff.py# In-sandbox splitter (stdlib-only, uploaded as
+│                    # bytes, never imported on the host).
 └── steps/
-    ├── __init__.py      # Re-exports the v2 steps + pure helpers.
-    ├── clone_repo_v2.py # V2-native clone (I/O boundary #0): default-branch
-    │                    # clone + PR-ref fetch + detached head checkout in
-    │                    # ONE atomic in-sandbox script, verify-gated.
+    ├── __init__.py      # Re-exports every step + pure helper.
+    ├── _helpers.py      # Shared pure helpers (sandbox reconnect,
+    │                    # in-sandbox paths, output truncation).
+    ├── create_sandbox.py# Per-run ephemeral sandbox.
+    ├── clone_repo_v2.py # V2-native clone (I/O boundary #0):
+    │                    # default-branch clone + PR-ref fetch +
+    │                    # detached head checkout in ONE atomic
+    │                    # in-sandbox script, verify-gated.
     │                    # Fail-closed: checkout refusal fails the run.
+    ├── fetch_diff.py    # git diff into the sandbox.
+    ├── split_diff.py    # Upload + run the split script.
+    ├── get_repo.py      # Local repos-row lookup.
+    ├── upsert_pr.py     # pull_requests row upsert.
+    ├── review_lifecycle.py # review lifecycle-row transitions +
+    │                    # buildErrorContext.
+    ├── extract_result.py# Structured extractor steps
+    │                    # (extractCommentsStep / extractSummaryStep).
+    ├── persist.py       # Summary / comments / usage rows.
+    ├── post_review.py   # Inline GitHub post + back-links.
+    ├── kill_sandbox.py  # Best-effort sandbox destroy (finally).
     ├── list_chunks.py   # I/O boundary #1: `grep '^### '` in sandbox →
     │                    # ChunkInventory. Owns connectV2Sandbox (local
-    │                    # reconnect helper; v1's is package-private).
+    │                    # reconnect helper).
     ├── invoke_planner.py# I/O boundary #2: planner research
     │                    # (invokePlannerStep → raw text+usage) + structured
     │                    # transcription (getPlanStep reads plan.json →
-  │                    # PlannerContext, no LLM call).
+    │                    # PlannerContext, no LLM call).
     ├── invoke_file.py   # I/O boundary #3 (N-wide): one scoped file lane →
     │                    # (raw findings report + usage). Retried per file.
+    ├── synthesize_summary.py # Walkthrough summary synthesis
+    │                    # (degrades to empty, never fails the run).
     └── combine.py       # NO I/O, NO DBOS — pure functions the workflow calls
                          # between steps: isTrivialFile → buildFileReviewJobs
                          # (inventory ⋈ planner context) → chunkedJobs
-                         # (batches of 10) → concatFileReports →
+                         # (batches of `V2_FANOUT_BATCH_SIZE`) → concatFileReports →
                          # coerceFileLaneError / combineV2Reports
-                         # (merged review + token envelope).
+                         # (merged review + token envelope) over the
+                         # local CombinedReview / combineReviewResults /
+                         # verdictFor merge rules.
 ```
-
-The key structural rule: **infra steps are imported, never copied**
-(`create_sandbox`, `fetch_diff`, `split_diff`, `persist_*`,
-`post_review`, `review_lifecycle`, `extractCommentsStep` all come
-from `workflows/review/steps`). The clone is the one deliberate
-exception — v2 owns `clone_repo_v2.py` because the tree-at-head
-invariant is a v2 requirement the shared v1 clone must never adopt
-unilaterally. That's what makes the future swap a trigger-line change
-rather than a migration.
 
 ## Clone contract (`cloneRepoV2Step`)
 
@@ -89,7 +104,7 @@ trusted) → `cat-file -e` gate → `checkout --detach {headSha}` →
 
 | Stage fails | Outcome |
 |---|---|
-| `git clone` | Fatal — no repo, nothing to review (as v1) |
+| `git clone` | Fatal — no repo, nothing to review |
 | PR-ref fetch | Fatal *only if* it makes checkout impossible (SHA gate); flag recorded for logs |
 | `checkout --detach` / verify gate | **Fatal** — run ERROR, no partial-truth review |
 | Runner dropout / timeout | Transient — DBOS retries ×3 |
@@ -120,23 +135,12 @@ for line numbers regardless.
   (`isTrivialFile`), context join (`buildFileReviewJobs`, fills
   `filePath` + observed `diffPath` on every job), report concat,
   batching, usage aggregation (`combineV2Reports`).
-  The v2 base build is comments-only (empty summary).
-- `errors.py` — `ChunkListError`, `PlannerStepError{research,extract}`,
-  `FileLaneError{file}`, `CloneV2Error`/`CloneV2TransientError`,
-  `CheckoutError`/`CheckoutTransientError` (checkout refusal is final),
-  `V2AgentsError`. Raised step exceptions and retry predicates reused
-  from v1.
-- Verified: compiles, all modules import, pyright 0 errors/warnings,
-  pure join/merge logic + clone-summary parser + fail-closed worker
-  mapping sanity-checked (repo test suite untouched — some of its
-  tests are broken).
+- Dispatched by the webhook triggers
+  (`workflows/triggers/review.py`) and the eval `POST /review`
+  route; workflow ids live in the `review-v2:` namespace.
 
 ## What's left
 
-- Real prompts (see `services/agent_v2` README) — the pipeline runs
-  end-to-end today but agents carry placeholder instructions.
-- Eval comparison vs v1 (judge F1/FP) on the same datasets, then the
-  trigger swap (explicit future step, out of scope here).
 - Possible follow-ups, only if evals demand: per-file extractor
   fallback when the concatenated report strains extractor context;
   cheaper planner/extractor models; a walkthrough summary derived

@@ -12,7 +12,7 @@ Submodules:
   (registry dispatch + per-event handlers).
 
 The GitHub post-pipeline (posting a review + the back-link updates)
-lives in :mod:`app.workflows.review.steps.post_review`, built on the
+lives in :mod:`app.workflows.review_v2.steps.post_review`, built on the
 :mod:`.pr` sub-service.
 """
 

@@ -37,13 +37,13 @@ from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.service import getProvider
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import CommitId, PRNumber, RepoId
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
+    ChunkListError,
     ReviewStepFailure,
     SandboxConnectError,
     TransientReviewStepFailure,
     shouldRetry,
 )
-from app.workflows.review_v2.errors import ChunkListError
 
 log = logging.getLogger(__name__)
 

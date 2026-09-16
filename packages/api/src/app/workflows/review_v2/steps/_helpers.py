@@ -9,7 +9,8 @@ outside the review workflow package needs these:
   that touches the sandbox after the create step uses it.
 - :func:`getReviewDiffDirPath` / :func:`getRepoPath` — the in-sandbox
   layout helpers shared by the diff, split, and agent steps (kept in
-  lockstep with :func:`app.services.agent.tools.getReviewDiffDirPath`).
+  lockstep with
+  :func:`app.services.agent_v2.prompts.shared.getReviewDiffDirPath`).
 - :func:`truncateOutput` — trims a command's output tail for inclusion
   in an error message.
 
@@ -27,7 +28,7 @@ from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.service import getProvider
 from app.services.sandbox.types import SandboxCtx
 from app.utils.util import repo_path
-from app.workflows.review.errors import SandboxConnectError
+from app.workflows.review_v2.errors import SandboxConnectError
 
 
 class AsyncSandboxBackend(Protocol):
@@ -75,8 +76,8 @@ def getReviewDiffDirPath(prNumber: int, headSha: str) -> str:
     Layout: ``/home/user/tmp/{pr_number}/{head_sha}/`` — ``file.diff``
     (the raw unified diff), ``overview.md``, and ``splitted_diffs/``
     (the per-file annotated chunks). Mirrors
-    :func:`app.services.agent.tools.getReviewDiffDirPath` with the
-    default root path.
+    :func:`app.services.agent_v2.prompts.shared.getReviewDiffDirPath`
+    with the default root path.
     """
     return f"/home/user/tmp/{prNumber}/{headSha}"
 

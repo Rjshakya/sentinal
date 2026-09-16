@@ -37,7 +37,7 @@ async def stop_setup_sandbox_step(
 
     Named with the ``setup_`` infix to avoid clashing with the
     review pipeline's identically-named
-    :func:`app.workflows.review.steps.kill_sandbox.killSandboxStep`
+    :func:`app.workflows.review_v2.steps.kill_sandbox.killSandboxStep`
     (DBOS registers steps by name, not by module).
     """
     spec: E2BSandboxSpec = cast(E2BSandboxSpec, build_default_spec("e2b"))

@@ -49,8 +49,8 @@ from app.utils.branded import (
     SanboxProviderApiKey,
     UserId,
 )
-from app.workflows.review.types import ReviewWorkflowInput
 from app.workflows.review_v2.errors import PlannerStepError
+from app.workflows.review_v2.types import ReviewWorkflowInput
 from app.workflows.review_v2.steps.invoke_planner import (
     parsePlanText,
     readPlanText,

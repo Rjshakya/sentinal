@@ -49,14 +49,12 @@ from app.utils.branded import (
 from app.utils.schema import CommentSeverityStr, CommentSideStr, ReviewVerdictStr
 from app.utils.util import uuidToStr
 from app.workflows.triggers._common import buildSandboxCtx
-from app.workflows.review.types import (
+from app.workflows.review_v2.types import (
     emptyPrSize,
     ReviewWorkflowCtx,
 )
-from app.workflows.review.workflow import (
-    buildReviewWorkflowInput,
-)
 from app.workflows.review_v2.workflow import (
+    buildReviewWorkflowInput,
     createReviewV2WorkflowId,
     reviewWorkflowV2,
 )

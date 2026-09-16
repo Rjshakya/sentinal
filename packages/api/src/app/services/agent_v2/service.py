@@ -40,9 +40,8 @@ failures (agent-construction errors) are returned as
 durable step's exception) how to handle them.
 
 Naming convention: this package intentionally uses **camelCase**
-identifiers — the same convention as :mod:`app.services.agent`,
-:mod:`app.services.github`, :mod:`app.services.llm`, and
-:mod:`app.services.sandbox`.
+identifiers — the same convention as :mod:`app.services.github`,
+:mod:`app.services.llm`, and :mod:`app.services.sandbox`.
 """
 
 from __future__ import annotations
@@ -120,9 +119,7 @@ async def buildNoSubBackend(sandboxCtx: SandboxCtx):
 
     Each agent gets its own backend wrapper over the same underlying
     sandbox; the connection is held by the caller and reused by every
-    concurrent ``ainvoke``. Mirrors
-    :func:`app.services.agent.service.buildAgentBackend` so the v2
-    backend behaves identically.
+    concurrent ``ainvoke``.
     """
     ProviderCls = getProvider(sandboxCtx.providerId)
     provider = ProviderCls(ctx=sandboxCtx)

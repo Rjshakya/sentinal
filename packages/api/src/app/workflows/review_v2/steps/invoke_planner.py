@@ -27,7 +27,7 @@ degrades a final planner failure to an empty :class:`PlannerContext`
 (the planner is enrichment-only) — it never fails the run over it.
 
 The invoke step never stops the sandbox — the workflow's ``finally``
-(:func:`app.workflows.review.steps.kill_sandbox.killSandboxStep`)
+(:func:`app.workflows.review_v2.steps.kill_sandbox.killSandboxStep`)
 owns the stop.
 """
 
@@ -58,18 +58,18 @@ from app.services.llm.types import LLMCtx
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import RepoId
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
+    PlannerStepError,
     ReviewStepFailure,
     TransientReviewStepFailure,
     isLlmRetryError,
     shouldRetry,
 )
-from app.workflows.review.types import (
+from app.workflows.review_v2.types import (
     RepoSnapshot,
     ReviewLimits,
     ReviewWorkflowInput,
 )
-from app.workflows.review_v2.errors import PlannerStepError
 
 log = logging.getLogger(__name__)
 

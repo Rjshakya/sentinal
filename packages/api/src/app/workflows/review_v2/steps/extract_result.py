@@ -1,11 +1,9 @@
 """Structured-extractor steps: turn the research agents' free-form
 output into validated review payloads.
 
-The two research agents (:func:`app.services.agent.service.createSummaryAgent`
-and :func:`app.services.agent.service.createCommentsAgent`) end their
-runs with free-form text — the summarizer writes the markdown walkthrough
-directly, the comments agent writes a findings report. Neither produces
-a structured payload.
+The v2 research agents (the planner and the per-file reviewers) end
+their runs with free-form text — the file agents write findings
+reports. None produces a structured payload.
 
 These steps re-invoke a small structured-output-capable OpenAI model
 (:data:`_EXTRACTOR_MODEL`) with the agent's text and the target schema
@@ -19,7 +17,7 @@ bound via ``with_structured_output``:
   comment body to the shared comment-body contract.
 
 Both are durable steps: transient LLM failures (classified by
-:func:`app.workflows.review.errors.isLlmRetryError`) raise
+:func:`app.workflows.review_v2.errors.isLlmRetryError`) raise
 :class:`TransientReviewStepFailure`; a schema mismatch is a business
 outcome (:class:`ExtractionError` with ``retryable=False``) that the
 workflow's combine step degrades instead of failing the whole review.
@@ -27,8 +25,9 @@ workflow's combine step degrades instead of failing the whole review.
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import cast
+from typing import TypeVar, cast
 
 from dbos import DBOS
 from langchain_core.callbacks import get_usage_metadata_callback
@@ -36,12 +35,12 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage, UsageMetadata
 
 from app.core.config import settings
-from app.services.agent.prompts import COMMENT_BODY_FORMAT, _render_schema
+from app.services.agent_v2.prompts.shared import COMMENT_BODY_FORMAT
 from app.services.llm.service import createLLMModel
 from app.services.llm.types import LLMCtx
 from app.utils.branded import ApiKey
 from app.utils.schema import ReviewComments, SummaryResult
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
     AgentLane,
     ExtractionError,
     ReviewStepFailure,
@@ -60,6 +59,13 @@ Small, cheap, and reliable at forced-tool structured output — the
 research agents are free to end with any text, and this model turns it
 into the validated schema payload.
 """
+
+_OutputModel = TypeVar("_OutputModel", SummaryResult, ReviewComments)
+
+
+def _render_schema(model_cls: type[_OutputModel]) -> str:
+    """Render the Pydantic JSON schema of a response model as a compact block."""
+    return json.dumps(model_cls.model_json_schema(), indent=2)
 
 
 def buildExtractorLlmCtx() -> LLMCtx:

@@ -31,6 +31,7 @@ from app.services.agent_v2.prompts.planning import (
 from app.services.agent_v2.prompts.shared import (
     COMMENT_BODY_FORMAT,
     NO_FINDINGS_MARKER,
+    getReviewDiffDirPath,
     identityHeader,
     prMetaBlock,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "createPlanningUserPrompt",
     "createSummarySystemPrompt",
     "createSummaryUserPrompt",
+    "getReviewDiffDirPath",
     "identityHeader",
     "prMetaBlock",
 ]

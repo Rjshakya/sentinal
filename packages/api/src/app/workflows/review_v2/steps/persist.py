@@ -50,8 +50,8 @@ from app.utils.branded import (
 from app.utils.schema import CodeCommentDraft, ReviewResult
 from app.utils.severity_badge import withSeverityBadge
 from app.utils.util import uuidToStr
-from app.workflows.review.errors import PersistError, ReviewStepFailure
-from app.workflows.review.types import InputTokenDetails, TotalUsagesPerPR
+from app.workflows.review_v2.errors import PersistError, ReviewStepFailure
+from app.workflows.review_v2.types import InputTokenDetails, TotalUsagesPerPR
 
 log = logging.getLogger(__name__)
 

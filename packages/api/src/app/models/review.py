@@ -1,7 +1,7 @@
 """``review`` table — durable per-run record of one review workflow run.
 
-One row per DBOS invocation of ``review_workflow``, keyed by the
-deterministic workflow id (``review:{repo_id}:{pr_number}:{head_sha[:7]}``).
+One row per DBOS invocation of ``review_workflow_v2``, keyed by the
+deterministic workflow id (``review-v2:{repo_id}:{pr_number}:{head_sha[:7]}``).
 Mirrors the workflow lifecycle so the dashboard and analytics can query
 review runs — including failures, which currently leave no record beyond
 DBOS's own workflow table — without depending on DBOS state.
@@ -19,8 +19,8 @@ records the config source (``"system"`` for the settings default,
 records the actual provider from the ``"provider:model"`` string (e.g.
 ``"openai"``, ``"anthropic"``). ``error_context``
 carries the JSON payload built by
-:func:`app.workflows.review.steps.review_lifecycle.buildErrorContext`
-(error name, cause, failed/succeeded agent lanes) when the workflow
+:func:`app.workflows.review_v2.steps.review_lifecycle.buildErrorContext`
+(error name, cause, failed/succeeded files) when the workflow
 errored.
 """
 

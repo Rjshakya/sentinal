@@ -33,15 +33,15 @@ from app.services.llm.errors import LLMConfigError
 from app.services.llm.service import createLLMModel
 from app.utils.branded import RepoId
 from app.utils.schema import ReviewComments, SummaryResult
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
     ReviewStepFailure,
+    SummaryStepError,
     TransientReviewStepFailure,
     isLlmRetryError,
     shouldRetry,
 )
-from app.workflows.review.steps.extract_result import buildExtractorLlmCtx
-from app.workflows.review.types import RepoSnapshot, ReviewWorkflowInput
-from app.workflows.review_v2.errors import SummaryStepError
+from app.workflows.review_v2.steps.extract_result import buildExtractorLlmCtx
+from app.workflows.review_v2.types import RepoSnapshot, ReviewWorkflowInput
 
 log = logging.getLogger(__name__)
 

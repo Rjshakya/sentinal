@@ -5,12 +5,9 @@ small builder the lane modules (:mod:`.planning`,
 :mod:`.file_review`) compose into full prompts:
 
 - :data:`COMMENT_BODY_FORMAT` — the comment-body contract (bold
-  headline → grounded issue bullets → ``**Fix:**`` line). This is a
-  v2-owned **copy** of the v1 contract in
-  :mod:`app.services.agent.prompts`: the file-review findings format
-  must match what the shared comments extractor enforces, and the
-  copy keeps ``agent_v2`` isolated from the v1 package. If the v1
-  wording changes, update this copy in the same commit.
+  headline → grounded issue bullets → ``**Fix:**`` line), owned by
+  this package: the file-review findings format must match what the
+  shared comments extractor enforces.
 - :data:`NO_FINDINGS_MARKER` — the exact marker a file agent emits
   when its file is clean (the combine step treats it as a
   successful empty outcome).
@@ -52,6 +49,18 @@ extractor call for that file's text beyond the shared merge).
 """
 
 
+def getReviewDiffDirPath(workDir: str, prNumber: int, headSha: str) -> str:
+    """Return the in-sandbox directory holding the PR diff artefacts.
+
+    Layout: ``{workDir}/tmp/{pr_number}/{head_sha}/`` — ``file.diff``
+    (the raw unified diff), ``overview.md``, and ``splitted_diffs/``
+    (the per-file annotated chunks written by the split step). The
+    single definition both the prompt builders and the pipeline steps
+    use, so the path can never drift apart.
+    """
+    return workDir + f"/tmp/{prNumber}/{headSha}"
+
+
 def identityHeader(
     *,
     repoName: str,
@@ -91,6 +100,7 @@ def prMetaBlock(*, title: str, body: str, author: str) -> str:
 __all__ = [
     "COMMENT_BODY_FORMAT",
     "NO_FINDINGS_MARKER",
+    "getReviewDiffDirPath",
     "identityHeader",
     "prMetaBlock",
 ]

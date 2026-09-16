@@ -4,10 +4,6 @@ Generic run-environment resolvers used by every trigger adapter in this
 package — no workflow knowledge lives here. Each helper takes the
 caller's :class:`AsyncSession` (I/O at the edge, per the service
 conventions); nothing here opens its own session.
-
-Copied from :mod:`app.workflows.review.triggers` (which remains untouched
-until the step-2 deletion); this module is the canonical home going
-forward.
 """
 
 from __future__ import annotations

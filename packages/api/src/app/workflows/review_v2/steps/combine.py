@@ -34,7 +34,6 @@ from collections.abc import Mapping, Sequence
 from langchain_core.messages import UsageMetadata
 from pydantic import BaseModel, ConfigDict
 
-from app.services.agent.service import combineReviewResults
 from app.services.agent_v2.prompts import NO_FINDINGS_MARKER
 from app.services.agent_v2.types import (
     ChunkInventory,
@@ -42,14 +41,18 @@ from app.services.agent_v2.types import (
     PlannerContext,
 )
 from app.utils.branded import CommitId, PRNumber, RepoId, UserId
-from app.utils.schema import ReviewComments
-from app.workflows.review.types import (
+from app.utils.schema import (
+    CodeCommentDraft,
+    ReviewComments,
+    ReviewResult,
+    ReviewVerdictStr,
+)
+from app.workflows.review_v2.types import (
     InputTokenDetails,
     TotalUsages,
     TotalUsagesPerPR,
 )
-from app.workflows.review_v2.errors import FileLaneError
-from app.workflows.review.steps.invoke_agent import CombinedReview
+from app.workflows.review_v2.errors import FileLaneError, ReviewStepError
 
 V2_FANOUT_BATCH_SIZE = 25
 """Max per-file agents started concurrently (one ``asyncio.gather`` batch).
@@ -232,8 +235,6 @@ def coerceFileLaneError(failure: BaseException, file: str) -> FileLaneError:
     Public so the workflow body can record per-batch failures the
     gather surface returns.
     """
-    from app.workflows.review.errors import ReviewStepError
-
     err = getattr(failure, "error", None)
     if isinstance(err, FileLaneError):
         return err
@@ -248,6 +249,63 @@ def coerceFileLaneError(failure: BaseException, file: str) -> FileLaneError:
             retryable=err.retryable,
         )
     return FileLaneError(message=str(failure), file=file)
+
+
+class CombinedReview(BaseModel):
+    """The merged review payload plus the per-run usage envelope."""
+
+    review: ReviewResult
+    usages: TotalUsagesPerPR
+
+
+_SEVERITY_RANK: dict[str, int] = {
+    "P1_CRITICAL": 0,
+    "P2_WARNING": 1,
+    "P3_NITPICK": 2,
+}
+
+
+def verdictFor(comments: Sequence[CodeCommentDraft]) -> ReviewVerdictStr:
+    """Return the review verdict implied by ``comments``.
+
+    Pure rule:
+
+    - any ``P1_CRITICAL`` → ``REQUEST_CHANGES``
+    - else any ``P2_WARNING`` / ``P3_NITPICK`` → ``COMMENT``
+    - else → ``APPROVE``
+    """
+    for draft in comments:
+        if draft.severity == "P1_CRITICAL":
+            return "REQUEST_CHANGES"
+    for draft in comments:
+        if draft.severity in ("P2_WARNING", "P3_NITPICK"):
+            return "COMMENT"
+    return "APPROVE"
+
+
+def combineReviewResults(
+    *,
+    summaryMarkdown: str,
+    comments: ReviewComments,
+) -> ReviewResult:
+    """Merge the agent outputs into one :class:`ReviewResult`.
+
+    Comments are sorted in severity order (P1 → P2 → P3) so the
+    GitHub review renders with the most important findings first. The
+    summary is the synthesizer's markdown verbatim. The verdict is
+    computed from the merged comments by :func:`verdictFor`.
+
+    No dedup: each file agent is asked not to repeat itself, and the
+    extractor already drops anchor-less findings.
+    """
+    return ReviewResult(
+        comments=sorted(
+            comments.List,
+            key=lambda draft: _SEVERITY_RANK.get(draft.severity, len(_SEVERITY_RANK)),
+        ),
+        summary=summaryMarkdown,
+        verdict=verdictFor(comments.List),
+    )
 
 
 def combineV2Reports(
@@ -338,11 +396,14 @@ def _accumulateV2Usage(
 
 __all__ = [
     "BuiltJobs",
+    "CombinedReview",
     "V2_FANOUT_BATCH_SIZE",
     "buildFileReviewJobs",
     "chunkedJobs",
     "coerceFileLaneError",
+    "combineReviewResults",
     "combineV2Reports",
     "concatFileReports",
     "isTrivialFile",
+    "verdictFor",
 ]

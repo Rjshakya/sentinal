@@ -7,15 +7,13 @@ payloads (:class:`PlannerContext` / :class:`FileContext`) plus the
 host-side join inputs (:class:`ChunkInventory` / :class:`FileReviewJob`).
 
 Naming convention: this package intentionally uses **camelCase**
-identifiers — the same convention as :mod:`app.services.agent`,
-:mod:`app.services.github`, :mod:`app.services.llm`, and
-:mod:`app.services.sandbox`. Ids that are also identifiers (id, ctx)
-keep their single-word lowercase form.
+identifiers — the same convention as :mod:`app.services.github`,
+:mod:`app.services.llm`, and :mod:`app.services.sandbox`. Ids that
+are also identifiers (id, ctx) keep their single-word lowercase form.
 
 Design notes:
 
-- :class:`AgentV2Ctx` mirrors :class:`app.services.agent.types.ReviewAgentCtx`:
-  identity plus injected live dependencies (the lane's chat model and
+- :class:`AgentV2Ctx` carries identity plus injected live dependencies (the lane's chat model and
   the sandbox handle), assembled by the ctx factory
   (:func:`app.services.agent_v2.service.createAgentV2Ctx`) at the
   edge. **Not serializable** — it carries a :class:`BaseChatModel`,
@@ -55,8 +53,7 @@ The four ``Any`` type arguments mirror the graph's
 explicit so the alias stays fully typed under strict checking and any
 ``CompiledStateGraph`` instance is assignable to it.
 
-Re-declared here (mirroring :mod:`app.services.agent.types`) so the v2
-package never imports the v1 agent service it is isolated from.
+Re-declared here so the v2 package owns its own graph alias.
 """
 
 _DEFAULT_MODEL_CALL_RUN_LIMIT = 120
