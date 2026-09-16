@@ -5,7 +5,7 @@ Usage: ``python main.py <pr-id>``
 The whole flow, in order:
 
 1. **review** — POST ``input.json`` to the production ``POST /api/review``
-   route (gated by ``X-Eval-Token``); consume the typed
+   route (``reviewWorkflowV2``, gated by ``X-Eval-Token``); consume the typed
    :class:`EvalReviewResponse` and adapt it onto
    :class:`ReviewOutput`; render ``results/<pr-id>/result.md``.
 2. **judge** — an isolated structured-output LLM judge scores the

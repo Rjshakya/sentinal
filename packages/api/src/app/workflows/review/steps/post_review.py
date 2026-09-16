@@ -37,6 +37,7 @@ from app.services.github.pr.service import createPRCtx, postReview
 from app.services.github.pr.types import PRCommentDraft, PRCtx, PRReviewDraft
 from app.utils.branded import CommitId, PRNumber, RepoId, ReviewRowId
 from app.utils.schema import CodeCommentDraft, ReviewResult
+from app.utils.severity_badge import withSeverityBadge
 from app.workflows.review.errors import (
     PersistError,
     PostReviewError,
@@ -78,7 +79,7 @@ def convertToGithubComments(
                 fileName=draft.file_name,
                 line=draft.from_line,
                 side=draft.side,
-                body=draft.comment,
+                body=withSeverityBadge(draft.severity, draft.comment),
             )
         )
     return github_comments

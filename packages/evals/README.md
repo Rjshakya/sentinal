@@ -10,9 +10,9 @@ AGENTS.md §3.8) against authored PR datasets.
 1. **review** — POST the dataset `input.json` to
    `POST /api/review` on the production API (gated by the
    `X-Eval-Token` header). The API runs the full production
-   `reviewWorkflow` — sandbox create, clone, diff split, the two
-   research-agent lanes, the extractor steps, persistence — and
-   returns the typed review output synchronously. The eval runner
+   `reviewWorkflowV2` — sandbox create, v2 clone, diff split,
+   chunk inventory, planner, per-file fan-out, extractor,
+   persistence — and returns the typed review output synchronously. The eval runner
    adapts the response onto a `ReviewOutput` and renders
    `results/<pr-id>/result.md`.
 2. **judge** — an isolated structured-output LLM judge scores the

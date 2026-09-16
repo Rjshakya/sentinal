@@ -8,8 +8,8 @@ changes, renderer and parser change together.
 
 The eval runner is now a thin HTTP client: the review stage no longer
 runs the production agents locally. It POSTs the dataset input to
-``POST /api/review`` (the production ``reviewWorkflow`` exposed as a
-synchronous API) and consumes the typed :class:`EvalReviewResponse`
+``POST /api/review`` (the production ``reviewWorkflowV2`` — planner +
+per-file agents — exposed as a synchronous API) and consumes the typed :class:`EvalReviewResponse`
 shape. :meth:`ReviewOutput.from_api_response` adapts that shape onto
 :class:`ReviewOutput` so the existing ``render_markdown`` helper stays
 unchanged. The dataset ``input.json`` schema is the canonical request

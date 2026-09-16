@@ -48,6 +48,7 @@ from app.utils.branded import (
     UserId,
 )
 from app.utils.schema import CodeCommentDraft, ReviewResult
+from app.utils.severity_badge import withSeverityBadge
 from app.utils.util import uuidToStr
 from app.workflows.review.errors import PersistError, ReviewStepFailure
 from app.workflows.review.types import InputTokenDetails, TotalUsagesPerPR
@@ -77,7 +78,7 @@ def mapDraftsToCommentRows(
                 review_id=reviewRowId,
                 commit_id=commitId,
                 file_name=draft.file_name,
-                comment=draft.comment,
+                comment=withSeverityBadge(draft.severity, draft.comment),
                 severity=CommentSeverity(draft.severity),
                 from_line=draft.from_line,
                 to_line=draft.to_line,

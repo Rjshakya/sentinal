@@ -1,10 +1,10 @@
-"""V2 review workflow package (isolated, not yet dispatched).
+"""V2 review workflow package.
 
 The planner + per-file-agent successor of
 :mod:`app.workflows.review`: same infra steps (sandbox, clone, diff,
 split, persist, post, lifecycle — reused by import), new agent phase.
-Nothing here is wired to the webhook triggers yet (no swap); the v1
-workflow keeps serving traffic.
+Dispatched by the webhook triggers and the eval ``POST /review`` route;
+v1 is superseded on those paths.
 
 Submodules:
 

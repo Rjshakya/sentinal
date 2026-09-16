@@ -4,8 +4,8 @@ table, joined with the repo / PR context and the token usage row.
 All endpoints are user-scoped: they read ``request.state.user_id`` (set by
 ``AuthMiddleware``) and filter every query on it.
 
-The eval-only ``POST /review`` triggers the production ``reviewWorkflow``
-synchronously and returns its output. It is gated on the
+The eval-only ``POST /review`` triggers the production ``reviewWorkflowV2``
+(planner + per-file agents) synchronously and returns its output. It is gated on the
 ``X-Eval-Token`` request header (compared against
 :attr:`Settings.eval_api_token`) rather than the WorkOS session cookie,
 because the eval harness is a CLI process that cannot seal a session.
@@ -55,8 +55,10 @@ from app.workflows.review.types import (
 )
 from app.workflows.review.workflow import (
     buildReviewWorkflowInput,
-    createReviewWorkflowId,
-    reviewWorkflow,
+)
+from app.workflows.review_v2.workflow import (
+    createReviewV2WorkflowId,
+    reviewWorkflowV2,
 )
 
 router = APIRouter(prefix="/review", tags=["review"])
@@ -168,10 +170,11 @@ class EvalReviewResponse(BaseModel):
     """What ``POST /review`` returns on success.
 
     ``workflow_id`` is the deterministic
-    ``review:{repo_id}:{pr_number}:{head_sha[:7]}`` id, so duplicate
-    POSTs for the same head SHA dedupe in DBOS and the second caller
-    receives the first run's cached result. ``comments`` are sorted
-    P1_CRITICAL → P2_WARNING → P3_NITPICK by the workflow's combine step.
+    ``review-v2:{repo_id}:{pr_number}:{head_sha[:7]}`` id (plus the eval
+    route's ``:{rand6}`` suffix so repeated eval POSTs re-run instead of
+    deduping). ``comments`` are the extractor output over the concatenated
+    per-file reports, merged by the v2 combine step; ``summary`` is currently
+    empty (the v2 base build is comments-only).
     """
 
     workflow_id: str
@@ -272,7 +275,7 @@ async def trigger_review(
     session: AsyncSession = Depends(get_session),
     _eval_token: None = Depends(get_eval_token),
 ) -> EvalReviewResponse:
-    """Dispatch the production ``reviewWorkflow`` and return its output.
+    """Dispatch the production ``reviewWorkflowV2`` and return its output.
 
     See :class:`EvalReviewRequest` for the body shape. The handler
     upserts the local ``repos`` row, builds the ``ReviewWorkflowCtx``
@@ -342,7 +345,7 @@ async def trigger_review(
     )
 
     workflow_ctx = ReviewWorkflowCtx(llmCtx=llm_ctx, sandboxCtx=sandbox_ctx)
-    workflow_id = createReviewWorkflowId(
+    workflow_id = createReviewV2WorkflowId(
         repoId=RepoId(repo.id),
         prNumber=PRNumber(body.pr_number),
         headSha=body.head_sha,
@@ -353,7 +356,7 @@ async def trigger_review(
 
     with SetWorkflowID(workflow_id):
         handle = await DBOS.start_workflow_async(
-            reviewWorkflow, workflow_ctx, workflow_input
+            reviewWorkflowV2, workflow_ctx, workflow_input
         )
 
     try:
