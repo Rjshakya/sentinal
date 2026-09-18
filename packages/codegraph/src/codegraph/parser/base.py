@@ -1,0 +1,158 @@
+"""Shared intermediate representation for the language parsers.
+
+Each parser turns source text into a :class:`ParsedFile` — flat lists
+of definitions and imports with 1-based line spans. The ``graph``
+builder (``parser/__init__.py``) then converts the IR into ``Node``
+/ ``Edge`` rows, so parsers never touch the database layer.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+
+from tree_sitter_language_pack import StructureItem
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedDefinition:
+    """A class or function found in a source file."""
+
+    kind: str  # "class" | "function"
+    name: str
+    start_line: int  # 1-based, inclusive
+    end_line: int  # 1-based, inclusive
+    parent: str | None = None  # enclosing class name for methods
+    is_method: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedImport:
+    """A single imported name (one row per name, not per statement)."""
+
+    module: str  # raw module specifier, e.g. "os" | "./utils"
+    name: str  # imported symbol, or "*" / module for bare imports
+    start_line: int  # 1-based
+    end_line: int  # 1-based
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedFile:
+    """Parser output for one source file."""
+
+    language: str
+    definitions: tuple[ParsedDefinition, ...] = ()
+    imports: tuple[ParsedImport, ...] = ()
+    total_lines: int = 1
+    has_error: bool = False
+
+
+def empty_file(language: str, total_lines: int = 1) -> ParsedFile:
+    """Return an empty :class:`ParsedFile` (unparseable or blank source)."""
+    return ParsedFile(
+        language=language,
+        definitions=(),
+        imports=(),
+        total_lines=max(total_lines, 1),
+        has_error=True,
+    )
+
+
+@dataclass(slots=True)
+class FileAccumulator:
+    """Mutable builder collected during a tree walk."""
+
+    language: str
+    total_lines: int = 1
+    has_error: bool = False
+    definitions: list[ParsedDefinition] = field(default_factory=list)
+    imports: list[ParsedImport] = field(default_factory=list)
+
+    def build(self) -> ParsedFile:
+        """Freeze the accumulator into a :class:`ParsedFile`."""
+        return ParsedFile(
+            language=self.language,
+            definitions=tuple(self.definitions),
+            imports=tuple(self.imports),
+            total_lines=max(self.total_lines, 1),
+            has_error=self.has_error,
+        )
+
+
+CLASS_KINDS: frozenset[str] = frozenset({"class", "interface", "enum", "struct"})
+"""Structure kinds recorded as ``class`` nodes (``str(kind).lower()``)."""
+
+FUNCTION_KINDS: frozenset[str] = frozenset({"function", "method"})
+"""Structure kinds recorded as ``function`` nodes."""
+
+
+def definitions_from_structure(
+    items: Sequence[StructureItem],
+    enclosing_class: str | None = None,
+) -> list[ParsedDefinition]:
+    """Convert pack ``StructureItem`` rows into :class:`ParsedDefinition`.
+
+    ``enclosing_class`` names the class whose body is being walked: any
+    function-kind item found inside it is a method. Closures (functions
+    nested in functions) reset the scope to ``None``. Items whose name
+    is empty or whose kind is outside the v1 sets are skipped
+    (descending into their children regardless).
+    """
+    from codegraph.parser._ts import one_based
+
+    found: list[ParsedDefinition] = []
+    stack: list[tuple[StructureItem, str | None]] = [
+        (item, enclosing_class) for item in reversed(items)
+    ]
+    while stack:
+        item, enclosing = stack.pop()
+        kind: str = str(item.kind).lower()
+        name: str = item.name or ""
+        if item.span is not None:
+            start_line: int = one_based(item.span.start_line)
+            end_line: int = one_based(item.span.end_line)
+        else:
+            start_line = 1
+            end_line = 1
+        end_line = max(end_line, start_line)
+        if kind in CLASS_KINDS and name:
+            found.append(
+                ParsedDefinition(
+                    kind="class",
+                    name=name,
+                    start_line=start_line,
+                    end_line=end_line,
+                    parent=None,
+                    is_method=False,
+                )
+            )
+            stack.extend((child, name) for child in reversed(item.children))
+        elif kind in FUNCTION_KINDS and name:
+            is_method: bool = enclosing is not None
+            found.append(
+                ParsedDefinition(
+                    kind="function",
+                    name=name,
+                    start_line=start_line,
+                    end_line=end_line,
+                    parent=enclosing if is_method else None,
+                    is_method=is_method,
+                )
+            )
+            # Closures are not methods: reset the enclosing scope.
+            stack.extend((child, None) for child in reversed(item.children))
+        else:
+            stack.extend((child, enclosing) for child in reversed(item.children))
+    return found
+
+
+__all__ = [
+    "CLASS_KINDS",
+    "FUNCTION_KINDS",
+    "FileAccumulator",
+    "ParsedDefinition",
+    "ParsedFile",
+    "ParsedImport",
+    "definitions_from_structure",
+    "empty_file",
+]
