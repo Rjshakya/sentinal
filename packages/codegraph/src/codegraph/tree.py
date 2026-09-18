@@ -2,9 +2,10 @@
 
 :func:`load_snapshot` reads one root's rows; :func:`render_tree` turns
 them into a nested unicode tree (pure, no I/O — unit-testable).
-``contains`` edges drive the nesting (file → class/function,
-class → method); ``imports`` edges render as a leaf group carrying
-each edge's ``target_module``.
+``contains`` edges drive the nesting (file → def, class → method,
+function → nested def); ``calls`` edges (caller → callee) render as a
+``calls (N)`` subgroup under each function; ``imports`` edges render as
+a leaf group carrying each edge's ``target_module``.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ async def load_snapshot(store: GraphStore, root: str) -> GraphSnapshot:
     return GraphSnapshot(root=root, nodes=tuple(nodes), edges=tuple(edges))
 
 
-def _kind_label(kind: NodeKind | EdgeKind | str) -> str:
+def kind_label(kind: NodeKind | EdgeKind | str) -> str:
     """Normalise a kind to its plain lowercase value (``file``, …)."""
     if isinstance(kind, enum.Enum):
         return str(kind.value).lower()
@@ -62,17 +63,21 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
     stem_last: str = "    "
     stem_mid: str = "│   " if use_unicode else "|   "
     files: list[Node] = sorted(
-        (n for n in snapshot.nodes if _kind_label(n.kind) == "file"),
+        (n for n in snapshot.nodes if kind_label(n.kind) == "file"),
         key=lambda n: n.file_path,
     )
     by_id: dict[str, Node] = {n.id: n for n in snapshot.nodes}
-    children: dict[str, list[str]] = {}
+    contains: dict[str, list[str]] = {}
+    calls: dict[str, list[str]] = {}
     import_targets: dict[str, str | None] = {}
     for edge in snapshot.edges:
-        if _kind_label(edge.kind) == "contains":
-            children.setdefault(edge.src_id, []).append(edge.dst_id)
-        elif _kind_label(edge.kind) == "imports":
-            children.setdefault(edge.src_id, []).append(edge.dst_id)
+        label: str = kind_label(edge.kind)
+        if label == "contains":
+            contains.setdefault(edge.src_id, []).append(edge.dst_id)
+        elif label == "calls":
+            calls.setdefault(edge.src_id, []).append(edge.dst_id)
+        elif label == "imports":
+            contains.setdefault(edge.src_id, []).append(edge.dst_id)
             import_targets[edge.dst_id] = edge.target_module
 
     def ordered(node_ids: list[str]) -> list[Node]:
@@ -80,6 +85,61 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
         resolved: list[Node] = [by_id[i] for i in node_ids if i in by_id]
         resolved.sort(key=lambda n: (n.start_line, n.name))
         return resolved
+
+    def render_children(prefix: str, node: Node, lines: list[str]) -> None:
+        """Render the subtree under one def node.
+
+        Classes show methods as leaves; functions show nested classes
+        as nested blocks plus a ``calls (N)`` subgroup of function-kind
+        callees. Every node appears exactly once.
+        """
+        label: str = kind_label(node.kind)
+        if label == "class":
+            methods: list[Node] = [
+                m
+                for m in ordered(contains.get(node.id, []))
+                if kind_label(m.kind) == "function"
+            ]
+            for method_index, method in enumerate(methods):
+                last: bool = method_index == len(methods) - 1
+                branch: str = branch_last if last else branch_mid
+                lines.append(f"{prefix}{branch}function {method.name} {_span(method)}")
+        elif label == "function":
+            nested: list[Node] = [
+                n
+                for n in ordered(contains.get(node.id, []))
+                if kind_label(n.kind) == "class"
+            ]
+            callees: list[Node] = [
+                n
+                for n in ordered(calls.get(node.id, []))
+                if kind_label(n.kind) == "function"
+            ]
+            # Each block is (header, nested node XOR leaf lines).
+            blocks: list[tuple[str, Node | None, list[str]]] = [
+                (f"class {n.name} {_span(n)}", n, []) for n in nested
+            ]
+            if callees:
+                blocks.append((
+                    f"calls ({len(callees)})",
+                    None,
+                    [f"function {c.name} {_span(c)}" for c in callees],
+                ))
+            for block_index, (header, nested_node, leaves) in enumerate(blocks):
+                last_block: bool = block_index == len(blocks) - 1
+                branch = branch_last if last_block else branch_mid
+                lines.append(f"{prefix}{branch}{header}")
+                stem: str = stem_last if last_block else stem_mid
+                if nested_node is not None:
+                    render_children(f"{prefix}{stem}", nested_node, lines)
+                else:
+                    for leaf_index, leaf in enumerate(leaves):
+                        leaf_branch: str = (
+                            branch_last
+                            if leaf_index == len(leaves) - 1
+                            else branch_mid
+                        )
+                        lines.append(f"{prefix}{stem}{leaf_branch}{leaf}")
 
     lines: list[str] = [
         f"root: {snapshot.root}  "
@@ -92,44 +152,36 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
         lines.append(
             f"file {file_node.file_path} [{file_node.language}] {_span(file_node)}"
         )
-        contained: list[Node] = ordered(children.get(file_node.id, []))
-        classes: list[Node] = [n for n in contained if _kind_label(n.kind) == "class"]
+        contained: list[Node] = ordered(contains.get(file_node.id, []))
+        classes: list[Node] = [n for n in contained if kind_label(n.kind) == "class"]
         top_functions: list[Node] = [
-            n for n in contained if _kind_label(n.kind) == "function"
+            n for n in contained if kind_label(n.kind) == "function"
         ]
         imports: list[Node] = [
-            n for n in contained if _kind_label(n.kind) == "import"
+            n for n in contained if kind_label(n.kind) == "import"
         ]
-        blocks: list[tuple[str, list[str]]] = []
-        for cls in classes:
-            method_lines: list[str] = [
-                f"function {m.name} {_span(m)}"
-                for m in ordered(children.get(cls.id, []))
-                if _kind_label(m.kind) == "function"
-            ]
-            blocks.append((f"class {cls.name} {_span(cls)}", method_lines))
-        for func in top_functions:
-            blocks.append((f"function {func.name} {_span(func)}", []))
+        def_blocks: list[Node] = classes + top_functions
+        has_imports: bool = len(imports) > 0
+        for block_index, def_node in enumerate(def_blocks):
+            last_block: bool = block_index == len(def_blocks) - 1 and not has_imports
+            branch = branch_last if last_block else branch_mid
+            lines.append(
+                f"{branch}{kind_label(def_node.kind)} {def_node.name} "
+                f"{_span(def_node)}"
+            )
+            stem = stem_last if last_block else stem_mid
+            render_children(stem, def_node, lines)
         if imports:
-            blocks.append((
-                f"imports ({len(imports)})",
-                [
-                    f"{node.name} -> {import_targets.get(node.id) or '?'} "
-                    f"(L{node.start_line})"
-                    for node in imports
-                ],
-            ))
-        for block_index, (header, leaves) in enumerate(blocks):
-            last_block: bool = block_index == len(blocks) - 1
-            branch: str = branch_last if last_block else branch_mid
-            lines.append(f"{branch}{header}")
-            stem: str = stem_last if last_block else stem_mid
-            for leaf_index, leaf in enumerate(leaves):
-                leaf_branch: str = (
-                    branch_last if leaf_index == len(leaves) - 1 else branch_mid
+            lines.append(f"{branch_last}imports ({len(imports)})")
+            for leaf_index, node in enumerate(imports):
+                leaf_branch = (
+                    branch_last if leaf_index == len(imports) - 1 else branch_mid
                 )
-                lines.append(f"{stem}{leaf_branch}{leaf}")
+                lines.append(
+                    f"{stem_last}{leaf_branch}{node.name} -> "
+                    f"{import_targets.get(node.id) or '?'} (L{node.start_line})"
+                )
     return "\n".join(lines)
 
 
-__all__ = ["GraphSnapshot", "load_snapshot", "render_tree"]
+__all__ = ["GraphSnapshot", "kind_label", "load_snapshot", "render_tree"]

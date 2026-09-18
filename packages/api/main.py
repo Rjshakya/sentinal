@@ -25,6 +25,7 @@ from app.routers import (
     health,
     indexing,
     llm_configs,
+    pulls,
     reviews,
     search,
     users,
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
     app.include_router(ai.router, prefix=settings.api_prefix)
     app.include_router(users.router, prefix=settings.api_prefix)
     app.include_router(reviews.router, prefix=settings.api_prefix)
+    app.include_router(pulls.router, prefix=settings.api_prefix)
     app.include_router(llm_configs.router, prefix=settings.api_prefix)
     app.include_router(indexing.router, prefix=settings.api_prefix)
     app.include_router(search.router, prefix=settings.api_prefix)

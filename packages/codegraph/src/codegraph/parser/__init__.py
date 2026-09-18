@@ -47,9 +47,18 @@ def build_graph_rows(
 ) -> tuple[list[Node], list[Edge]]:
     """Convert a :class:`ParsedFile` into ``Node`` / ``Edge`` rows.
 
-    Parent links: a method's parent is the class node with the matching
-    name in the same file; anything else hangs off the file node. The
-    file node always exists, even for empty files.
+    Links (all derived from the tree-sitter structure hierarchy):
+
+    - ``contains``: file → each top-level def; class → each method;
+      function → each nested def.
+    - ``calls`` (caller → callee): function → each nested def. Methods
+      are excluded — they render under their class, not as callees.
+    - ``imports``: file → each imported name (carries ``target_module``).
+
+    The file node always exists, even for empty files. Definitions are
+    visited in preorder, so a parent's node id is always registered
+    before its children resolve it. Duplicate names in one file resolve
+    to the first registration.
     """
     file_id: str = new_id()
     file_node = Node(
@@ -66,48 +75,20 @@ def build_graph_rows(
     nodes: list[Node] = [file_node]
     edges: list[Edge] = []
 
-    class_ids: dict[str, str] = {}
+    def_ids: dict[str, str] = {}
+    def_kinds: dict[str, str] = {}
     for definition in parsed.definitions:
-        if definition.kind == "class":
-            node_id: str = new_id()
-            class_ids[definition.name] = node_id
-            nodes.append(
-                Node(
-                    id=node_id,
-                    root=root,
-                    file_path=rel_path,
-                    kind=NodeKind.CLASS,
-                    name=definition.name,
-                    language=language,
-                    start_line=definition.start_line,
-                    end_line=definition.end_line,
-                    parent_id=file_id,
-                )
-            )
-            edges.append(
-                Edge(
-                    id=new_id(),
-                    root=root,
-                    src_id=file_id,
-                    dst_id=node_id,
-                    kind=EdgeKind.CONTAINS,
-                    target_module=None,
-                )
-            )
-
-    for definition in parsed.definitions:
-        if definition.kind != "function":
-            continue
+        node_id: str = new_id()
         parent_id: str = file_id
-        if definition.parent is not None and definition.parent in class_ids:
-            parent_id = class_ids[definition.parent]
-        node_id = new_id()
+        if definition.parent is not None and definition.parent in def_ids:
+            parent_id = def_ids[definition.parent]
+        kind = NodeKind.CLASS if definition.kind == "class" else NodeKind.FUNCTION
         nodes.append(
             Node(
                 id=node_id,
                 root=root,
                 file_path=rel_path,
-                kind=NodeKind.FUNCTION,
+                kind=kind,
                 name=definition.name,
                 language=language,
                 start_line=definition.start_line,
@@ -125,6 +106,26 @@ def build_graph_rows(
                 target_module=None,
             )
         )
+        # Caller → callee: a def nested in a *function* is its callee.
+        # Methods (nested in a class) are excluded — they render under
+        # their class, not as callees.
+        if (
+            definition.parent is not None
+            and definition.parent in def_ids
+            and def_kinds.get(definition.parent) == "function"
+        ):
+            edges.append(
+                Edge(
+                    id=new_id(),
+                    root=root,
+                    src_id=parent_id,
+                    dst_id=node_id,
+                    kind=EdgeKind.CALLS,
+                    target_module=None,
+                )
+            )
+        def_ids.setdefault(definition.name, node_id)
+        def_kinds.setdefault(definition.name, definition.kind)
 
     for imported in parsed.imports:
         node_id = new_id()

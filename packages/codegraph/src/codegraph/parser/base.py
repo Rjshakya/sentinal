@@ -22,8 +22,8 @@ class ParsedDefinition:
     name: str
     start_line: int  # 1-based, inclusive
     end_line: int  # 1-based, inclusive
-    parent: str | None = None  # enclosing class name for methods
-    is_method: bool = False
+    parent: str | None = None  # nearest enclosing def name (any kind)
+    is_method: bool = False  # function directly enclosed by a class
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,24 +88,26 @@ FUNCTION_KINDS: frozenset[str] = frozenset({"function", "method"})
 
 def definitions_from_structure(
     items: Sequence[StructureItem],
-    enclosing_class: str | None = None,
+    enclosing: tuple[str | None, bool] = (None, False),
 ) -> list[ParsedDefinition]:
     """Convert pack ``StructureItem`` rows into :class:`ParsedDefinition`.
 
-    ``enclosing_class`` names the class whose body is being walked: any
-    function-kind item found inside it is a method. Closures (functions
-    nested in functions) reset the scope to ``None``. Items whose name
-    is empty or whose kind is outside the v1 sets are skipped
-    (descending into their children regardless).
+    ``enclosing`` is ``(name, is_class)`` of the nearest enclosing
+    definition: ``parent`` always records the enclosing name (the
+    caller side of the caller/callee relation), while ``is_method`` is
+    set only when a function is directly enclosed by a class. Closures
+    keep their enclosing function as parent. Items whose name is empty
+    or whose kind is outside the v1 sets are skipped (descending into
+    their children with the enclosing scope unchanged).
     """
     from codegraph.parser._ts import one_based
 
     found: list[ParsedDefinition] = []
-    stack: list[tuple[StructureItem, str | None]] = [
-        (item, enclosing_class) for item in reversed(items)
+    stack: list[tuple[StructureItem, tuple[str | None, bool]]] = [
+        (item, enclosing) for item in reversed(items)
     ]
     while stack:
-        item, enclosing = stack.pop()
+        item, (enclosing_name, enclosing_is_class) = stack.pop()
         kind: str = str(item.kind).lower()
         name: str = item.name or ""
         if item.span is not None:
@@ -122,27 +124,33 @@ def definitions_from_structure(
                     name=name,
                     start_line=start_line,
                     end_line=end_line,
-                    parent=None,
+                    parent=enclosing_name,
                     is_method=False,
                 )
             )
-            stack.extend((child, name) for child in reversed(item.children))
+            stack.extend(
+                (child, (name, True)) for child in reversed(item.children)
+            )
         elif kind in FUNCTION_KINDS and name:
-            is_method: bool = enclosing is not None
+            is_method: bool = enclosing_is_class
             found.append(
                 ParsedDefinition(
                     kind="function",
                     name=name,
                     start_line=start_line,
                     end_line=end_line,
-                    parent=enclosing if is_method else None,
+                    parent=enclosing_name,
                     is_method=is_method,
                 )
             )
-            # Closures are not methods: reset the enclosing scope.
-            stack.extend((child, None) for child in reversed(item.children))
+            stack.extend(
+                (child, (name, False)) for child in reversed(item.children)
+            )
         else:
-            stack.extend((child, enclosing) for child in reversed(item.children))
+            stack.extend(
+                (child, (enclosing_name, enclosing_is_class))
+                for child in reversed(item.children)
+            )
     return found
 
 

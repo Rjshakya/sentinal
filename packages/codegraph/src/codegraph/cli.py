@@ -1,7 +1,7 @@
 """Sentinel code graph CLI (fully async).
 
 Usage:
-    codegraph index <path> --db ./codegraph.db [--overwrite] [--quiet] [--output {summary,tree}]
+    codegraph index <path> --db ./codegraph.db [--overwrite] [--quiet] [--output {summary,tree,nodes}]
     codegraph stats --db ./codegraph.db
 """
 
@@ -19,14 +19,14 @@ from codegraph.models import Edge, Node
 from codegraph.parser import build_graph_rows, parse_source_text
 from codegraph.parser.base import ParsedFile
 from codegraph.store import create_store
-from codegraph.tree import GraphSnapshot, load_snapshot, render_tree
+from codegraph.tree import GraphSnapshot, kind_label, load_snapshot, render_tree
 from codegraph.walk import DiscoveredFile, adiscover_files, normalise_root
 
 BATCH_SIZE: int = 100
 """Rows are flushed to the database in batches of this size."""
 
-OutputMode = Literal["summary", "tree"]
-"""``index`` output modes: one-line summary or the hierarchy tree."""
+OutputMode = Literal["summary", "tree", "nodes"]
+"""``index`` output modes: one-line summary, hierarchy tree, node dump."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,8 +85,9 @@ async def run_index(
     """Walk ``target``, parse every supported file, and persist the graph.
 
     With ``output="tree"``, the hierarchy tree of the indexed root is
-    printed afterwards (an explicit request always prints, even when
-    ``quiet`` suppresses the summary line).
+    printed afterwards; with ``output="nodes"``, every collected node
+    is printed instead. An explicit request always prints, even when
+    ``quiet`` suppresses the summary line.
     """
     if target.is_dir():
         root_path: Path = normalise_root(target)
@@ -134,6 +135,8 @@ async def run_index(
         )
     if output == "tree":
         await print_tree(db, root)
+    elif output == "nodes":
+        await print_nodes(db, root)
     return IndexResult(
         root=root,
         db_label=db.label,
@@ -166,6 +169,59 @@ async def print_tree(db: ResolvedDb, root: str) -> int:
         # Windows cp1252 console (and similar): retry with ASCII glyphs.
         print(render_tree(snapshot, use_unicode=False))
     return 0
+
+
+async def print_nodes(db: ResolvedDb, root: str) -> int:
+    """Print every collected node of ``root`` for manual analysis.
+
+    One line per node: kind, name, file, language, line span, parent
+    name, structural children names, and callee names. Returns the
+    process exit code.
+    """
+    store = create_store(db.url)
+    try:
+        await store.create_all()
+        snapshot = await load_snapshot(store, root)
+    finally:
+        await store.dispose()
+    if not snapshot.nodes:
+        print(f"no nodes for root {root}")
+        return 0
+    by_id: dict[str, Node] = {n.id: n for n in snapshot.nodes}
+    children: dict[str, list[str]] = {}
+    callees: dict[str, list[str]] = {}
+    for edge in snapshot.edges:
+        label: str = kind_label(edge.kind)
+        if label in ("contains", "imports"):
+            children.setdefault(edge.src_id, []).append(edge.dst_id)
+        elif label == "calls":
+            callees.setdefault(edge.src_id, []).append(edge.dst_id)
+
+    def names(node_ids: list[str]) -> str:
+        resolved: list[str] = sorted(
+            {by_id[i].name for i in node_ids if i in by_id}
+        )
+        return f"[{', '.join(resolved)}]"
+
+    print(f"root: {root}  (nodes={len(snapshot.nodes)} edges={len(snapshot.edges)})")
+    ordered_nodes: list[Node] = sorted(
+        snapshot.nodes, key=lambda n: (n.file_path, n.start_line, n.name)
+    )
+    for node in ordered_nodes:
+        parent: str = by_id[node.parent_id].name if node.parent_id in by_id else "None"
+        print(
+            f"node {kind_label(node.kind):8} {node.name} "
+            f"[{node.language}] {_span_of(node)} "
+            f"file={node.file_path} parent={parent} "
+            f"children={names(children.get(node.id, []))} "
+            f"callees={names(callees.get(node.id, []))}"
+        )
+    return 0
+
+
+def _span_of(node: Node) -> str:
+    """Format a node's line range as ``(Lstart-Lend)``."""
+    return f"(L{node.start_line}-L{node.end_line})"
 
 
 async def run_stats(db: ResolvedDb) -> int:
@@ -218,9 +274,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     index_cmd.add_argument(
         "--output",
-        choices=("summary", "tree"),
+        choices=("summary", "tree", "nodes"),
         default="summary",
-        help="index output: one-line summary (default) or the hierarchy tree",
+        help="index output: one-line summary (default), hierarchy tree, or node dump",
     )
 
     stats_cmd = sub.add_parser("stats", help="print database statistics")
@@ -246,8 +302,9 @@ async def amain(argv: list[str] | None = None) -> int:
             print(f"error: path does not exist: {target}", file=sys.stderr)
             return 2
         target_resolved: Path = target.resolve()
+        raw_output: str = str(args.output)
         output: OutputMode = (
-            "tree" if str(args.output) == "tree" else "summary"
+            "tree" if raw_output == "tree" else "nodes" if raw_output == "nodes" else "summary"
         )
         await run_index(
             target_resolved,

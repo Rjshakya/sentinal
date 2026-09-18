@@ -24,6 +24,7 @@ def run_process(language: str, source_text: str) -> ProcessResult:
             chunk_max_size=CHUNK_MAX_SIZE,
             structure=True,
             imports=True,
+            symbols=True,
         ),
     )
 

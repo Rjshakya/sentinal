@@ -47,6 +47,7 @@ class EdgeKind(str, enum.Enum):
 
     CONTAINS = "contains"
     IMPORTS = "imports"
+    CALLS = "calls"
 
 
 class Node(SQLModel, table=True):

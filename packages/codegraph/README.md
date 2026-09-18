@@ -32,6 +32,9 @@ uv run --package codegraph python -m codegraph.cli stats --db ./codegraph.db
 # index and print the hierarchy tree of the indexed root
 uv run --package codegraph python -m codegraph.cli index ./src --db ./codegraph.db --output tree
 
+# dump every collected node (kind, lines, parent, children, callees)
+uv run --package codegraph python -m codegraph.cli index ./src --db ./codegraph.db --output nodes
+
 # Postgres instead of SQLite
 uv run --package codegraph python -m codegraph.cli index ./src --db postgresql+asyncpg://postgres:postgres@localhost:5432/aicode
 ```
@@ -40,8 +43,14 @@ uv run --package codegraph python -m codegraph.cli index ./src --db postgresql+a
 
 - `codegraph_node`: `id, root, file_path, kind (file|class|function|import), name,
   language, start_line, end_line, parent_id, created_at`
-- `codegraph_edge`: `id, root, src_id, dst_id, kind (contains|imports),
+- `codegraph_edge`: `id, root, src_id, dst_id, kind (contains|imports|calls),
   target_module, created_at`
+
+`calls` edges are caller → callee, derived purely from the tree-sitter
+structure hierarchy: a definition nested in a function is that
+function's callee. Methods (nested in a class) are excluded — they
+render under their class. Call *sites* in bodies are not extracted;
+only nested definitions.
 
 `root` is the normalised absolute scan root, so one database can hold
 many repos and re-indexing a root is idempotent.
