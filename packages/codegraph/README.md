@@ -46,11 +46,14 @@ uv run --package codegraph python -m codegraph.cli index ./src --db postgresql+a
 - `codegraph_edge`: `id, root, src_id, dst_id, kind (contains|imports|calls),
   target_module, created_at`
 
-`calls` edges are caller → callee, derived purely from the tree-sitter
-structure hierarchy: a definition nested in a function is that
-function's callee. Methods (nested in a class) are excluded — they
-render under their class. Call *sites* in bodies are not extracted;
-only nested definitions.
+`calls` edges are caller → callee, derived from bare-name call sites
+(`name(…)`) found by a compiled tree-sitter query in each function
+body — e.g. `reviewWorkflowV2 → getRepoTx`. The callee resolves to a
+same-file definition first, then to a definition in the file its
+import specifier points to (class instantiation counts as a call).
+Builtins, stdlib, third-party, attribute calls (`obj.method(…)`,
+`self.x(…)`), and module-level call sites yield no edges. One edge
+per caller → callee pair, no matter how many call sites.
 
 `root` is the normalised absolute scan root, so one database can hold
 many repos and re-indexing a root is idempotent.

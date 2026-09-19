@@ -9,8 +9,8 @@ import pytest
 from codegraph.cli import amain, print_nodes, print_tree, run_index
 from codegraph.config import resolve_db
 from codegraph.models import Edge, EdgeKind, Node, NodeKind
-from codegraph.parser import build_graph_rows
-from codegraph.parser.base import ParsedDefinition, ParsedFile
+from codegraph.parser import FileRows, build_file_rows, resolve_call_edges
+from codegraph.parser.base import ParsedCall, ParsedDefinition, ParsedFile
 from codegraph.store import create_store
 from codegraph.tree import GraphSnapshot, kind_label, load_snapshot, render_tree
 
@@ -173,7 +173,7 @@ async def test_amain_default_output_is_summary(
 
 
 def _nested_file() -> ParsedFile:
-    """One file with a closure: f → g (caller → callee)."""
+    """One file with a closure that calls its sibling: f → g (caller → callee)."""
     return ParsedFile(
         language="python",
         definitions=(
@@ -182,20 +182,22 @@ def _nested_file() -> ParsedFile:
                 kind="function", name="g", start_line=2, end_line=4, parent="f"
             ),
         ),
+        calls=(ParsedCall(caller="f", callee="g"),),
         total_lines=6,
     )
 
 
-def test_build_graph_rows_emits_calls_edge() -> None:
-    nodes, edges = build_graph_rows("R", "a.py", "python", _nested_file())
+def test_resolve_call_edges_emits_calls_edge() -> None:
+    rows: FileRows = build_file_rows("R", "a.py", "python", _nested_file())
+    assert [e for e in rows.edges if kind_label(e.kind) == "calls"] == []
+    edges: list[Edge] = resolve_call_edges([rows], "R")
     kinds: dict[tuple[str, str], EdgeKind] = {}
-    by_id: dict[str, Node] = {n.id: n for n in nodes}
-    for edge in edges:
+    by_id: dict[str, Node] = {n.id: n for n in rows.nodes}
+    for edge in rows.edges + edges:
         kinds[(by_id[edge.src_id].name, by_id[edge.dst_id].name)] = (
             edge.kind if isinstance(edge.kind, EdgeKind) else EdgeKind(str(edge.kind))
         )
     assert kinds[("a.py", "f")] == EdgeKind.CONTAINS
-    assert kinds[("f", "g")] == EdgeKind.CALLS
     # Caller side resolves through the stored node ids.
     calls = [e for e in edges if kind_label(e.kind) == "calls"]
     assert len(calls) == 1
@@ -203,7 +205,7 @@ def test_build_graph_rows_emits_calls_edge() -> None:
     assert by_id[calls[0].dst_id].name == "g"
 
 
-def test_build_graph_rows_skips_calls_for_methods() -> None:
+def test_resolve_call_edges_emits_no_calls_without_sites() -> None:
     parsed = ParsedFile(
         language="python",
         definitions=(
@@ -215,13 +217,14 @@ def test_build_graph_rows_skips_calls_for_methods() -> None:
         ),
         total_lines=6,
     )
-    _, edges = build_graph_rows("R", "a.py", "python", parsed)
-    assert [e for e in edges if kind_label(e.kind) == "calls"] == []
+    rows = build_file_rows("R", "a.py", "python", parsed)
+    assert resolve_call_edges([rows], "R") == []
 
 
 def test_render_tree_calls_group() -> None:
-    nodes, edges = build_graph_rows("R", "a.py", "python", _nested_file())
-    snapshot = GraphSnapshot(root="R", nodes=tuple(nodes), edges=tuple(edges))
+    rows = build_file_rows("R", "a.py", "python", _nested_file())
+    edges = rows.edges + resolve_call_edges([rows], "R")
+    snapshot = GraphSnapshot(root="R", nodes=tuple(rows.nodes), edges=tuple(edges))
     assert render_tree(snapshot) == (
         "root: R  (files=1 nodes=3 edges=3)\n"
         "file a.py [python] (L1-L6)\n"
@@ -235,16 +238,16 @@ async def test_print_nodes_e2e(tmp_path: Path, capsys: pytest.CaptureFixture[str
     src: Path = tmp_path / "src"
     src.mkdir()
     (src / "a.py").write_text(
-        "import os\n\ndef f():\n    def g():\n        pass\n",
+        "import os\n\ndef f():\n    g()\n\ndef g():\n    pass\n",
         encoding="utf-8",
     )
     db = resolve_db((tmp_path / "g.db").as_posix())
     result = await run_index(src, db, overwrite=True, quiet=True)
     assert await print_nodes(db, result.root) == 0
     out: str = capsys.readouterr().out
-    assert "parent=None children=[f, os]" in out  # file row
-    assert "parent=a.py children=[g] callees=[g]" in out  # caller row
-    assert "parent=f children=[] callees=[]" in out  # callee row
+    assert "parent=None children=[f, g, os]" in out  # file row
+    assert "parent=a.py children=[] callees=[g]" in out  # caller row
+    assert "parent=a.py children=[] callees=[]" in out  # callee row
     assert "node import" in out and " os " in out
 
 

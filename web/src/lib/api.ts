@@ -196,6 +196,178 @@ export type Review = {
   usage: ReviewUsage | null;
 };
 
+export type PullsState = "open" | "closed" | "all";
+
+export type PRListItem = {
+  number: number;
+  title: string;
+  body: string;
+  author: string;
+  authorAvatar: string | null;
+  state: string;
+  draft: boolean;
+  baseBranch: string;
+  headBranch: string;
+  headSha: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  closedAt: string | null;
+  mergedAt: string | null;
+  htmlUrl: string | null;
+};
+
+export type PRStateSnapshot = {
+  ghPrId: number;
+  state: string;
+  merged: boolean;
+  title: string;
+  body: string;
+  author: string;
+  baseBranch: string;
+  baseSha: string;
+  headBranch: string;
+  headSha: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+};
+
+export type SentinelRef = {
+  reviewId: string | null;
+  state: string | null;
+  verdict: string | null;
+  commentCount: number | null;
+  commitId: string | null;
+  createdAt: string | null;
+};
+
+export type PullDetail = {
+  owner: string;
+  repo: string;
+  number: number;
+  github: PRStateSnapshot;
+  localPrId: string | null;
+  sentinel: SentinelRef | null;
+};
+
+export type PRCommitItem = {
+  sha: string;
+  message: string;
+  authorLogin: string;
+  authorAvatar: string | null;
+  authorName: string;
+  date: string | null;
+  htmlUrl: string | null;
+};
+
+export type PRFileItem = {
+  sha: string;
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  changes: number;
+  patch: string | null;
+  blobUrl: string | null;
+  rawUrl: string | null;
+  previousFilename: string | null;
+};
+
+export type PullFiles = {
+  files: PRFileItem[];
+  total: number;
+};
+
+export type IssueCommentItem = {
+  id: number;
+  authorLogin: string;
+  authorAvatar: string | null;
+  body: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  htmlUrl: string | null;
+};
+
+export type ReviewCommentItem = {
+  id: number;
+  authorLogin: string;
+  authorAvatar: string | null;
+  body: string;
+  path: string;
+  line: number | null;
+  side: string | null;
+  commitId: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  htmlUrl: string | null;
+  reviewId: number | null;
+};
+
+export type PRReviewItem = {
+  id: number;
+  authorLogin: string;
+  authorAvatar: string | null;
+  state: string;
+  body: string;
+  commitId: string | null;
+  submittedAt: string | null;
+  htmlUrl: string | null;
+};
+
+export type Conversation = {
+  issueComments: IssueCommentItem[];
+  reviewComments: ReviewCommentItem[];
+  reviews: PRReviewItem[];
+};
+
+export type SentinelReview = {
+  id: string;
+  state: string;
+  trigger: string | null;
+  commitId: string;
+  commentCount: number | null;
+  llmClient: string | null;
+  llmModel: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+};
+
+export type SentinelSummary = {
+  summary: string;
+  verdict: string;
+  commitId: string;
+  githubReviewId: string | null;
+  createdAt: string;
+};
+
+export type SentinelComment = {
+  id: string;
+  fileName: string;
+  comment: string;
+  severity: string;
+  fromLine: number;
+  toLine: number;
+  side: string;
+  nodeType: string | null;
+  state: string;
+  createdAt: string;
+};
+
+export type SentinelUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reviewStatus: string;
+};
+
+export type SentinelDetail = {
+  review: SentinelReview | null;
+  summary: SentinelSummary | null;
+  comments: SentinelComment[];
+  usage: SentinelUsage | null;
+};
+
 export class ApiError extends Error {
   status: number;
   body: string;
@@ -230,6 +402,30 @@ export const apiClient = {
   userRepos: () => request<UserRepo[]>("/users/repos"),
   userStats: () => request<UserStats>("/users/stats"),
   reviews: () => request<Review[]>("/review"),
+  pulls: (owner: string, repo: string, state: PullsState = "open") =>
+    request<PRListItem[]>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}?state=${state}&per_page=100`,
+    ),
+  pullDetail: (owner: string, repo: string, number: number) =>
+    request<PullDetail>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}`,
+    ),
+  pullCommits: (owner: string, repo: string, number: number) =>
+    request<PRCommitItem[]>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/commits?per_page=100`,
+    ),
+  pullFilesPage: (owner: string, repo: string, number: number, page: number) =>
+    request<PullFiles>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/files?per_page=100&page=${page}`,
+    ),
+  pullConversation: (owner: string, repo: string, number: number) =>
+    request<Conversation>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/conversation?per_page=100`,
+    ),
+  pullSentinel: (owner: string, repo: string, number: number, reviewId?: string) =>
+    request<SentinelDetail>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/sentinel${reviewId ? `?review_id=${encodeURIComponent(reviewId)}` : ""}`,
+    ),
   setup: (repos: SetupRepo[]) =>
     request<SetupAck>("/ai/repo/setup", {
       method: "POST",

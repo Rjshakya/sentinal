@@ -293,10 +293,10 @@ async def get_pull_detail(
             summaries = ReviewSummaryRepository(session=session)
             summary = await summaries.find_by_review_id(latest.id)
             if summary is not None:
-                verdict = summary.verdict.value
+                verdict = summary.verdict
             sentinel = SentinelRefOut(
                 reviewId=latest.id,
-                state=latest.state.value,
+                state=latest.state,
                 verdict=verdict,
                 commentCount=latest.comment_count,
                 commitId=latest.commit_id,
@@ -494,7 +494,7 @@ async def get_pull_sentinel(
     return SentinelDetailOut(
         review=SentinelReviewOut(
             id=target.id,
-            state=target.state.value,
+            state=target.state,
             trigger=target.trigger,
             commitId=target.commit_id,
             commentCount=target.comment_count,
@@ -507,7 +507,7 @@ async def get_pull_sentinel(
         summary=(
             SentinelSummaryOut(
                 summary=summary_row.summary,
-                verdict=summary_row.verdict.value,
+                verdict=summary_row.verdict,
                 commitId=summary_row.commit_id,
                 githubReviewId=summary_row.github_review_id,
                 createdAt=summary_row.created_at,
@@ -520,12 +520,12 @@ async def get_pull_sentinel(
                 id=c.id,
                 fileName=c.file_name,
                 comment=c.comment,
-                severity=c.severity.value,
+                severity=c.severity,
                 fromLine=c.from_line,
                 toLine=c.to_line,
-                side=c.side.value,
+                side=c.side,
                 nodeType=c.node_type,
-                state=c.state.value,
+                state=c.state,
                 createdAt=c.created_at,
             )
             for c in comment_rows
@@ -535,7 +535,7 @@ async def get_pull_sentinel(
                 inputTokens=usage_row.input_tokens,
                 outputTokens=usage_row.output_tokens,
                 totalTokens=usage_row.total_tokens,
-                reviewStatus=usage_row.review_status.value,
+                reviewStatus=usage_row.review_status,
             )
             if usage_row is not None
             else None

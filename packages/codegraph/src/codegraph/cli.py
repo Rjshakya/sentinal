@@ -16,7 +16,8 @@ from typing import Literal
 
 from codegraph.config import ResolvedDb, resolve_db
 from codegraph.models import Edge, Node
-from codegraph.parser import build_graph_rows, parse_source_text
+from codegraph.parser import build_file_rows, parse_source_text, resolve_call_edges
+from codegraph.parser import FileRows
 from codegraph.parser.base import ParsedFile
 from codegraph.store import create_store
 from codegraph.tree import GraphSnapshot, kind_label, load_snapshot, render_tree
@@ -48,18 +49,20 @@ async def _read_source(path: Path) -> str:
 
 async def _index_one(
     discovered: DiscoveredFile, root: str
-) -> tuple[list[Node], list[Edge], bool]:
+) -> tuple[FileRows | None, bool]:
     """Parse one file and build its rows.
 
-    Returns ``(nodes, edges, skipped)`` — ``skipped`` is True when the
-    file could not be read or parsed and must be counted, not stored.
+    Returns ``(rows, skipped)`` — ``skipped`` is True when the file
+    could not be read or parsed and must be counted, not stored.
+    ``calls`` edges are not included; they resolve globally in
+    :func:`run_index` after every file has been built.
     """
     try:
         source_text: str = await _read_source(discovered.abs_path)
     except OSError:
-        return ([], [], True)
+        return (None, True)
     if not source_text.strip():
-        return ([], [], True)
+        return (None, True)
     # NOTE: parsing runs on the event-loop thread, never in a worker:
     # tree-sitter Parser/Tree/Node objects are not thread-safe, and the
     # module-level parser cache must only be touched from one thread.
@@ -68,14 +71,14 @@ async def _index_one(
     try:
         parsed: ParsedFile = parse_source_text(discovered.language, source_text)
     except ValueError:
-        return ([], [], True)
-    nodes, edges = build_graph_rows(
+        return (None, True)
+    rows: FileRows = build_file_rows(
         root=root,
         rel_path=discovered.rel_path,
         language=discovered.language,
         parsed=parsed,
     )
-    return (nodes, edges, False)
+    return (rows, False)
 
 
 async def run_index(
@@ -108,20 +111,28 @@ async def run_index(
 
         batch_nodes: list[Node] = []
         batch_edges: list[Edge] = []
+        file_rows: list[FileRows] = []
         for item in discovered:
-            nodes, edges, was_skipped = await _index_one(item, root)
-            if was_skipped:
+            rows, was_skipped = await _index_one(item, root)
+            if was_skipped or rows is None:
                 skipped += 1
                 continue
             files += 1
-            run_nodes += len(nodes)
-            run_edges += len(edges)
-            batch_nodes.extend(nodes)
-            batch_edges.extend(edges)
+            file_rows.append(rows)
+        # Second pass: call sites resolve against the global
+        # (rel_path, name) map, so cross-file calls become edges.
+        call_edges: list[Edge] = resolve_call_edges(file_rows, root)
+        for rows in file_rows:
+            run_nodes += len(rows.nodes)
+            run_edges += len(rows.edges)
+            batch_nodes.extend(rows.nodes)
+            batch_edges.extend(rows.edges)
             if len(batch_nodes) >= BATCH_SIZE:
                 await store.add_all(batch_nodes, batch_edges)
                 batch_nodes = []
                 batch_edges = []
+        run_edges += len(call_edges)
+        batch_edges.extend(call_edges)
         if batch_nodes or batch_edges:
             await store.add_all(batch_nodes, batch_edges)
     finally:

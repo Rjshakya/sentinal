@@ -2,8 +2,9 @@
 
 Definitions come from the pack's ``structure`` rows; imports are
 derived from the pack's ``ImportInfo.source`` statements with pure
-string parsing (no raw tree access). No call resolution, no
-cross-file linking.
+string parsing (no raw tree access). Bare-name call sites come from a
+compiled tree-sitter query (``parser/calls.py``); callee resolution
+to nodes happens in the graph builder.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from codegraph.parser.base import (
     ParsedImport,
     definitions_from_structure,
 )
+from codegraph.parser.calls import extract_calls
 
 LANGUAGE: str = "python"
 
@@ -112,6 +114,7 @@ def parse_python_source(source_text: str) -> ParsedFile:
     acc.definitions.extend(definitions_from_structure(result.structure))
     for info in result.imports:
         acc.imports.extend(_imports_from_info(info))
+    acc.calls.extend(extract_calls(LANGUAGE, source_text.encode("utf-8")))
     return acc.build()
 
 

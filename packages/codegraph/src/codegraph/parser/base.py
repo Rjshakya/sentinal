@@ -37,12 +37,28 @@ class ParsedImport:
 
 
 @dataclass(frozen=True, slots=True)
+class ParsedCall:
+    """A bare-name call site: ``caller`` calls ``callee``.
+
+    ``caller`` is the innermost enclosing named definition (anonymous
+    scopes are climbed past); module-level call sites are dropped, so
+    ``caller`` is never empty. ``callee`` is the called bare name —
+    resolution to a node happens in the graph builder, which skips
+    names that resolve to nothing indexed.
+    """
+
+    caller: str
+    callee: str
+
+
+@dataclass(frozen=True, slots=True)
 class ParsedFile:
     """Parser output for one source file."""
 
     language: str
     definitions: tuple[ParsedDefinition, ...] = ()
     imports: tuple[ParsedImport, ...] = ()
+    calls: tuple[ParsedCall, ...] = ()
     total_lines: int = 1
     has_error: bool = False
 
@@ -67,6 +83,7 @@ class FileAccumulator:
     has_error: bool = False
     definitions: list[ParsedDefinition] = field(default_factory=list)
     imports: list[ParsedImport] = field(default_factory=list)
+    calls: list[ParsedCall] = field(default_factory=list)
 
     def build(self) -> ParsedFile:
         """Freeze the accumulator into a :class:`ParsedFile`."""
@@ -74,6 +91,7 @@ class FileAccumulator:
             language=self.language,
             definitions=tuple(self.definitions),
             imports=tuple(self.imports),
+            calls=tuple(self.calls),
             total_lines=max(self.total_lines, 1),
             has_error=self.has_error,
         )
@@ -158,6 +176,7 @@ __all__ = [
     "CLASS_KINDS",
     "FUNCTION_KINDS",
     "FileAccumulator",
+    "ParsedCall",
     "ParsedDefinition",
     "ParsedFile",
     "ParsedImport",
