@@ -10,7 +10,7 @@ export function Markdown({ body }: { body: string }) {
     );
   }
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none break-words">
+    <div className="prose text-[12px]  dark:prose-invert max-w-none wrap-break-word">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
     </div>
   );

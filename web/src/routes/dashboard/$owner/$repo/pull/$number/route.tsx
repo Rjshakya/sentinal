@@ -83,48 +83,48 @@ function PullDetailPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 p-6">
-      <Breadcrumb>
-        <BreadcrumbList>
-          <BreadcrumbItem>
-            <BreadcrumbLink
-              render={
-                <Link to="/dashboard/$owner/$repo/pulls" params={{ owner, repo }} />
-              }
-            >
-              {owner}/{repo}
-            </BreadcrumbLink>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator />
-          <BreadcrumbItem>
-            <BreadcrumbLink
-              render={
-                <Link to="/dashboard/$owner/$repo/pulls" params={{ owner, repo }} />
-              }
-            >
-              pulls
-            </BreadcrumbLink>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator />
-          <BreadcrumbItem>
-            <BreadcrumbPage>#{detail.number}</BreadcrumbPage>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
+      {/* <Breadcrumb> */}
+      {/*   <BreadcrumbList> */}
+      {/*     <BreadcrumbItem> */}
+      {/*       <BreadcrumbLink */}
+      {/*         render={ */}
+      {/*           <Link to="/dashboard/$owner/$repo/pulls" params={{ owner, repo }} /> */}
+      {/*         } */}
+      {/*       > */}
+      {/*         {owner}/{repo} */}
+      {/*       </BreadcrumbLink> */}
+      {/*     </BreadcrumbItem> */}
+      {/*     <BreadcrumbSeparator /> */}
+      {/*     <BreadcrumbItem> */}
+      {/*       <BreadcrumbLink */}
+      {/*         render={ */}
+      {/*           <Link to="/dashboard/$owner/$repo/pulls" params={{ owner, repo }} /> */}
+      {/*         } */}
+      {/*       > */}
+      {/*         pulls */}
+      {/*       </BreadcrumbLink> */}
+      {/*     </BreadcrumbItem> */}
+      {/*     <BreadcrumbSeparator /> */}
+      {/*     <BreadcrumbItem> */}
+      {/*       <BreadcrumbPage>#{detail.number}</BreadcrumbPage> */}
+      {/*     </BreadcrumbItem> */}
+      {/*   </BreadcrumbList> */}
+      {/* </Breadcrumb> */}
 
-      <div>
+      <div className="mb-8">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-semibold tracking-tight">{gh.title}</h1>
           <span className="text-muted-foreground text-xl font-normal">#{detail.number}</span>
           {stateBadge}
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+        <div className="mt-2 flex flex-col  gap-x-3 gap-2 text-sm">
           <span className="flex items-center gap-1.5">
-            <Avatar className="size-5">
+            <Avatar className="size-6">
               <AvatarFallback>{gh.author.slice(0, 1).toUpperCase()}</AvatarFallback>
             </Avatar>
             <span className="font-medium">{gh.author || "—"}</span>
           </span>
-          <span className="text-muted-foreground">
+          <span className="mt-4 text-muted-foreground">
             wants to merge into{" "}
             <span className="font-mono text-xs">{gh.baseBranch}</span> from{" "}
             <span className="font-mono text-xs">{gh.headBranch}</span>
@@ -143,11 +143,11 @@ function PullDetailPage() {
           if (isPullTab(v)) navigate({ search: { tab: v } });
         }}
       >
-        <TabsList>
+        <TabsList className={"mb-8"}>
           <TabsTrigger value="conversation">Conversation</TabsTrigger>
           <TabsTrigger value="commits">Commits</TabsTrigger>
           <TabsTrigger value="files">Files changed</TabsTrigger>
-          <TabsTrigger value="sentinel">Sentinel</TabsTrigger>
+          {/* <TabsTrigger value="sentinel">Sentinel</TabsTrigger> */}
         </TabsList>
         <TabsContent value="conversation">
           <ConversationTab owner={owner} repo={repo} number={prNumber} />
@@ -158,9 +158,9 @@ function PullDetailPage() {
         <TabsContent value="files">
           <FilesChangedTab owner={owner} repo={repo} number={prNumber} />
         </TabsContent>
-        <TabsContent value="sentinel">
-          <SentinelTab owner={owner} repo={repo} number={prNumber} />
-        </TabsContent>
+        {/* <TabsContent value="sentinel"> */}
+        {/*   <SentinelTab owner={owner} repo={repo} number={prNumber} /> */}
+        {/* </TabsContent> */}
       </Tabs>
     </div>
   );

@@ -10,14 +10,8 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { CommonCard } from "@/components/common-card";
+import { CardDescription, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogClose,
@@ -39,55 +33,56 @@ export function GithubConnectionCard() {
   const installations = installation?.installations ?? [];
 
   return (
-    <Card className="flex flex-col">
-      <CardHeader>
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <IconBrandGithub className="size-5" />
-            <CardTitle>GitHub</CardTitle>
+    <CommonCard
+      header={
+        <>
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <IconBrandGithub className="size-5" />
+              <CardTitle>GitHub</CardTitle>
+            </div>
+            {isLoading ? (
+              <Skeleton className="h-5 w-24" />
+            ) : connected ? (
+              <Badge>
+                <IconCircleCheck />
+                Connected
+              </Badge>
+            ) : (
+              <Badge variant="secondary">
+                <IconCircleDashed />
+                Not connected
+              </Badge>
+            )}
           </div>
           {isLoading ? (
-            <Skeleton className="h-5 w-24" />
+            <div className="space-y-2">
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-2/3" />
+            </div>
           ) : connected ? (
-            <Badge>
-              <IconCircleCheck />
-              Connected
-            </Badge>
+            <CardDescription>
+              Sentinel will review pull requests on every repo you have granted it access to.
+              Manage the access on GitHub.
+            </CardDescription>
           ) : (
-            <Badge variant="secondary">
-              <IconCircleDashed />
-              Not connected
-            </Badge>
+            <CardDescription>
+              Install the Sentinel GitHub App on the accounts and organizations where you want
+              AI-powered code reviews.
+            </CardDescription>
           )}
-        </div>
-        {isLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-2/3" />
-          </div>
-        ) : connected ? (
-          <CardDescription>
-            Sentinel will review pull requests on every repo you have granted it access to. Manage
-            the access on GitHub.
-          </CardDescription>
-        ) : (
-          <CardDescription>
-            Install the Sentinel GitHub App on the accounts and organizations where you want
-            AI-powered code reviews.
-          </CardDescription>
-        )}
-      </CardHeader>
-      <CardContent className="flex-1" />
-      <CardFooter>
-        {isLoading ? (
+        </>
+      }
+      footer={
+        isLoading ? (
           <Skeleton className="h-8 w-32" />
         ) : connected ? (
           <ConnectedControls installations={installations} />
         ) : (
           <InstallButton />
-        )}
-      </CardFooter>
-    </Card>
+        )
+      }
+    />
   );
 }
 

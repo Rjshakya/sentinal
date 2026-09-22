@@ -48,7 +48,7 @@ function TreeView({ treeInput }: { treeInput: PullTreeInput }) {
     gitStatus: treeInput.gitStatus,
     search: true,
     fileTreeSearchMode: "hide-non-matches",
-    icons: "minimal",
+    icons: "standard",
     density: "compact",
     onSelectionChange: (selected) => {
       const first = selected[0];
@@ -62,12 +62,14 @@ function TreeView({ treeInput }: { treeInput: PullTreeInput }) {
       className="h-100 bg-sidebar data-file-tree-search-container:padding-0 "
       style={
         {
-          '--trees-theme-focus-ring': 'var(--ring)',
-          '--trees-font-family': 'var(--default-mono-font-family)',
-          '--trees-search-bg': 'var(--input)',
-          '--trees-bg': 'var(--bg-sidebar)',
+          '--trees-selected-bg': 'var(--muted)',
+          '--trees-theme-focus-ring': 'var(--muted)',
+          '--trees-font-family': 'var(--font-sans)',
+          '--trees-search-bg': 'var(--accent)',
+          '--trees-bg': 'var(--sidebar)',
           '--trees-border-color': 'var(--border)',
           '--trees-padding-inline': "2px",
+          '--trees-bg-muted': 'var(--muted)',
         } as React.CSSProperties
       }
     />

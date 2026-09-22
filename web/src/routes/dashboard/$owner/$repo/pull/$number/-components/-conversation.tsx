@@ -1,7 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { CommonCard } from "@/components/common-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Markdown } from "@/components/markdown";
 import { usePullConversation, usePullDetail } from "@/lib/pulls";
@@ -18,15 +17,6 @@ type TimelineEntry = {
   at: string | null;
   node: React.ReactNode;
 };
-
-function reviewStateStyle(state: string): string {
-  const s = state.toUpperCase();
-  if (s === "APPROVED")
-    return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
-  if (s === "CHANGES_REQUESTED")
-    return "bg-destructive/10 text-destructive dark:bg-destructive/20";
-  return "bg-secondary text-muted-foreground";
-}
 
 export function ConversationTab({ owner, repo, number }: ConversationProps) {
   const detail = usePullDetail(owner, repo, number);
@@ -58,51 +48,54 @@ export function ConversationTab({ owner, repo, number }: ConversationProps) {
   const entries: TimelineEntry[] = [
     ...(gh
       ? [
-          {
-            key: "pr-body",
-            at: null,
-            node: (
-              <Card>
-                <CardHeader className="flex flex-row items-center gap-2 pb-2">
-                  <Avatar className="size-6">
-                    <AvatarFallback>{gh.author.slice(0, 1).toUpperCase()}</AvatarFallback>
-                  </Avatar>
-                  <span className="text-sm font-medium">{gh.author}</span>
-                  <Badge variant="outline">Owner</Badge>
-                </CardHeader>
-                <CardContent>
-                  <Markdown body={gh.body} />
-                </CardContent>
-              </Card>
-            ),
-          } satisfies TimelineEntry,
-        ]
+        // {
+        //   key: "pr-body",
+        //   at: null,
+        //   node: (
+        //     <div className="p-1 ring-1 ring-foreground/10 grid gap-2">
+        //       <CardHeader className="flex items-center gap-2 py-1 ">
+        //         <Avatar className="size-6">
+        //           <AvatarFallback>{gh.author.slice(0, 1).toUpperCase()}</AvatarFallback>
+        //         </Avatar>
+        //         <span className="text-sm font-medium">{gh.author}</span>
+        //         <Badge variant="outline">Owner</Badge>
+        //       </CardHeader>
+        //
+        //       <Card className="  bg-accent dark:bg-card ">
+        //         <CardContent>
+        //           <Markdown body={gh.body} />
+        //         </CardContent>
+        //       </Card>
+        //     </div>
+        //   ),
+        // } satisfies TimelineEntry,
+      ]
       : []),
     ...data.reviews.map(
       (r): TimelineEntry => ({
         key: `review-${r.id}`,
         at: r.submittedAt,
         node: (
-          <Card>
-            <CardContent className="flex items-center gap-2 pt-4 text-sm">
-              <Avatar className="size-6">
-                {r.authorAvatar && <AvatarImage src={r.authorAvatar} alt={r.authorLogin} />}
-                <AvatarFallback>{r.authorLogin.slice(0, 1).toUpperCase()}</AvatarFallback>
-              </Avatar>
-              <span className="font-medium">{r.authorLogin}</span>
-              <Badge className={reviewStateStyle(r.state)}>{r.state}</Badge>
-              {r.submittedAt && (
-                <span className="text-muted-foreground text-xs">
-                  {formatRelative(r.submittedAt)}
-                </span>
-              )}
-            </CardContent>
-            {r.body.trim().length > 0 && (
-              <CardContent>
-                <Markdown body={r.body} />
-              </CardContent>
-            )}
-          </Card>
+          <CommonCard
+            header={
+              <div className="w-full flex items-center justify-between gap-2 ">
+                <div className="flex items-center gap-2">
+                  <Avatar className="size-6">
+                    {r.authorAvatar && <AvatarImage src={r.authorAvatar} alt={r.authorLogin} />}
+                    <AvatarFallback>{r.authorLogin.slice(0, 1).toUpperCase()}</AvatarFallback>
+                  </Avatar>
+                  <span className="font-medium">{r.authorLogin}</span>
+                </div>
+                {/* <Badge className={reviewStateStyle(r.state)}>{r.state}</Badge> */}
+                {r.submittedAt && (
+                  <span className="text-muted-foreground text-xs">
+                    {formatRelative(r.submittedAt)}
+                  </span>
+                )}
+              </div>
+            }
+            body={r.body.trim().length > 0 ? <Markdown body={r.body} /> : undefined}
+          />
         ),
       }),
     ),
@@ -111,23 +104,23 @@ export function ConversationTab({ owner, repo, number }: ConversationProps) {
         key: `issue-${c.id}`,
         at: c.createdAt,
         node: (
-          <Card>
-            <CardHeader className="flex flex-row items-center gap-2 pb-2">
-              <Avatar className="size-6">
-                {c.authorAvatar && <AvatarImage src={c.authorAvatar} alt={c.authorLogin} />}
-                <AvatarFallback>{c.authorLogin.slice(0, 1).toUpperCase()}</AvatarFallback>
-              </Avatar>
-              <span className="text-sm font-medium">{c.authorLogin}</span>
-              {c.createdAt && (
-                <span className="text-muted-foreground text-xs">
-                  commented {formatRelative(c.createdAt)}
-                </span>
-              )}
-            </CardHeader>
-            <CardContent>
-              <Markdown body={c.body} />
-            </CardContent>
-          </Card>
+          <CommonCard
+            header={
+              <>
+                <Avatar className="size-6">
+                  {c.authorAvatar && <AvatarImage src={c.authorAvatar} alt={c.authorLogin} />}
+                  <AvatarFallback>{c.authorLogin.slice(0, 1).toUpperCase()}</AvatarFallback>
+                </Avatar>
+                <span className="text-sm font-medium">{c.authorLogin}</span>
+                {c.createdAt && (
+                  <span className="text-muted-foreground text-xs">
+                    commented {formatRelative(c.createdAt)}
+                  </span>
+                )}
+              </>
+            }
+            body={<Markdown body={c.body} />}
+          />
         ),
       }),
     ),
@@ -136,27 +129,36 @@ export function ConversationTab({ owner, repo, number }: ConversationProps) {
         key: `rc-${c.id}`,
         at: c.createdAt,
         node: (
-          <Card>
-            <CardHeader className="flex flex-row flex-wrap items-center gap-2 pb-2">
-              <Avatar className="size-6">
-                {c.authorAvatar && <AvatarImage src={c.authorAvatar} alt={c.authorLogin} />}
-                <AvatarFallback>{c.authorLogin.slice(0, 1).toUpperCase()}</AvatarFallback>
-              </Avatar>
-              <span className="text-sm font-medium">{c.authorLogin}</span>
-              <span className="font-mono text-xs text-sky-600 dark:text-sky-400">
-                {c.path}
-                {c.line != null ? `:L${c.line}` : ""}
-              </span>
-              {c.createdAt && (
-                <span className="text-muted-foreground text-xs">
-                  {formatRelative(c.createdAt)}
-                </span>
-              )}
-            </CardHeader>
-            <CardContent>
-              <Markdown body={c.body} />
-            </CardContent>
-          </Card>
+          <CommonCard
+            headerClassName="flex flex-wrap items-center gap-2 py-1"
+            header={
+              <div className=" w-full grid gap-2 ">
+                <div className="flex items-center justify-between gap-2">
+                  <div className=" flex items-center gap-2">
+                    <Avatar className="size-6">
+                      {c.authorAvatar && <AvatarImage src={c.authorAvatar} alt={c.authorLogin} />}
+                      <AvatarFallback>{c.authorLogin.slice(0, 1).toUpperCase()}</AvatarFallback>
+                    </Avatar>
+                    <span className="text-sm font-medium">{c.authorLogin}</span>
+                  </div>
+
+                  {c.createdAt && (
+                    <span className="text-muted-foreground text-xs">
+                      {formatRelative(c.createdAt)}
+                    </span>
+                  )}
+
+                </div>
+
+              </div>
+            }
+            body={<Markdown body={c.body} />}
+            footer={<div className="truncate font-mono text-xs text-sky-600 dark:text-sky-400">
+              {c.path}
+              {c.line != null ? `:L${c.line}` : ""}
+            </div>
+            }
+          />
         ),
       }),
     ),

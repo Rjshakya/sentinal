@@ -1,9 +1,7 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { IconArrowLeft } from "@tabler/icons-react";
+import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { CommonCard } from "@/components/common-card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { protectPage } from "@/lib/auth";
@@ -36,11 +34,14 @@ function SearchPage() {
         </div>
       </div>
 
-      <Card className="py-0 pt-1 pb-1 px-1 bg-muted ">
-        <CardHeader className="p-0  ">
+      <CommonCard
+        cardClassName="bg-muted py-0 pt-1 pb-1"
+        headerClassName="p-0"
+        bodyClassName={search?.data?.results?.length ? "px-0" : "p-2"}
+        header={
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <Input
-              className=" bg-muted dark:bg-muted h-10  border-0 border-b  focus-visible:ring-0 focus-visible:border-b   px-1  "
+              className="bg-muted dark:bg-muted h-10 border-0 border-b px-1 focus-visible:border-b focus-visible:ring-0"
               value={query}
               onChange={(e) => setQuery(e.currentTarget.value)}
               placeholder="e.g. how does auth middleware attach the session?"
@@ -49,19 +50,21 @@ function SearchPage() {
               }}
             />
           </div>
-        </CardHeader>
-        <CardContent className={search?.data?.results?.length ? "px-0" : "p-2"}>
-          {search.isPending && <SearchSkeleton />}
-          {search.data && !search.isPending && (
-            <SearchResults results={search.data?.results || []} owner={owner} repo={name} />
-          )}
-          {!search.data && !search.isPending && !search.isError && (
-            <p className="text-muted-foreground text-xs">
-              Enter a query to search this repository&apos;s indexed code.
-            </p>
-          )}
-        </CardContent>
-      </Card>
+        }
+        body={
+          <>
+            {search.isPending && <SearchSkeleton />}
+            {search.data && !search.isPending && (
+              <SearchResults results={search.data?.results || []} owner={owner} repo={name} />
+            )}
+            {!search.data && !search.isPending && !search.isError && (
+              <p className="text-muted-foreground text-xs">
+                Enter a query to search this repository&apos;s indexed code.
+              </p>
+            )}
+          </>
+        }
+      />
     </div>
   );
 }

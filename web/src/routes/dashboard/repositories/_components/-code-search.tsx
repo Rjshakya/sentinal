@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { CommonCard } from "@/components/common-card";
+import { CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -61,15 +62,19 @@ export function CodeSearch({ repos }: Props) {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <IconSearch className="size-4" />
-          Search code
-        </CardTitle>
-        <CardDescription>Run a semantic query against the indexed repositories.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <CommonCard
+      header={
+        <>
+          <CardTitle className="flex items-center gap-2">
+            <IconSearch className="size-4" />
+            Search code
+          </CardTitle>
+          <CardDescription>Run a semantic query against the indexed repositories.</CardDescription>
+        </>
+      }
+      bodyClassName="space-y-3"
+      body={
+        <>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <Select value={repoId} onValueChange={(v) => setRepoId(v ?? "")}>
             <SelectTrigger className="sm:w-64">
@@ -122,8 +127,9 @@ export function CodeSearch({ repos }: Props) {
             Pick a repository and enter a query to search its indexed code.
           </p>
         )}
-      </CardContent>
-    </Card>
+        </>
+      }
+    />
   );
 }
 
