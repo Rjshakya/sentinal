@@ -19,6 +19,9 @@ def build_import_index(file_set: Iterable[str]) -> dict[str, str]:
     """
     index: dict[str, str] = {}
     for rel in sorted(file_set):
+        # rel->rel overlay: TS/Go emitters probe relative candidates
+        # directly via ``import_index.get`` on the same mapping.
+        index.setdefault(rel, rel)
         if not rel.endswith(".py"):
             continue
         stem: str = rel[: -len(".py")]

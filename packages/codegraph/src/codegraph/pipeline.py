@@ -8,13 +8,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from codegraph.config import ResolvedDb
 from codegraph.models import Edge, Node
+from codegraph.parser.lang_go import build_go_file_rows
+from codegraph.parser.lang_typescript import build_ts_file_rows
 from codegraph.parser.links import build_import_index
 from codegraph.parser.rows import FileRows, build_python_file_rows
 from codegraph.store import create_store
@@ -89,21 +91,33 @@ async def read(target: Path) -> ScannedSources:
     return ScannedSources(root=root, items=items)
 
 
+_LANGUAGE_TO_BUILDER: dict[
+    str, Callable[[str, str, str, Mapping[str, str]], FileRows]
+] = {
+    "python": build_python_file_rows,
+    "typescript": build_ts_file_rows,
+    "javascript": build_ts_file_rows,
+    "go": build_go_file_rows,
+}
+
+
 def parse_file_input(
     root: str, item: FileInput, import_index: Mapping[str, str] | None = None
 ) -> FileRows | None:
     """Parse one file into rows. Returns None when the file is skipped.
 
-    Pure given ``item``. Only Python is wired for now (blank source or
-    any other language -> skip, counted by the caller).
+    Pure given ``item``. Blank source or an unwired language -> skip,
+    counted by the caller. The per-language builder is resolved via
+    ``_LANGUAGE_TO_BUILDER`` (no branching).
     """
     if not item.source_text.strip():
         return None
-    if item.language != "python":
-        return None
-    return build_python_file_rows(
-        root, item.rel_path, item.source_text, import_index or {}
+    handler: Callable[[str, str, str, Mapping[str, str]], FileRows] | None = (
+        _LANGUAGE_TO_BUILDER.get(item.language)
     )
+    if handler is None:
+        return None
+    return handler(root, item.rel_path, item.source_text, import_index or {})
 
 
 def build_graph(root: str, items: list[FileInput]) -> BuiltGraph:
