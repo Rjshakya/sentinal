@@ -19,7 +19,7 @@ from codegraph.parser.lang_go import build_go_file_rows
 from codegraph.parser.lang_typescript import build_ts_file_rows
 from codegraph.parser.links import build_import_index
 from codegraph.parser.rows import FileRows, build_python_file_rows
-from codegraph.store import create_store
+from codegraph.graph_store import create_store
 from codegraph.tree import GraphSnapshot, kind_label, load_snapshot, render_tree
 from codegraph.walk import DiscoveredFile, adiscover_files, normalise_root
 
@@ -141,13 +141,17 @@ def build_graph(root: str, items: list[FileInput]) -> BuiltGraph:
     )
 
 
+PrintableGraph = BuiltGraph | GraphSnapshot
+"""Anything the printers can render: a fresh build or a stored snapshot."""
+
+
 async def _snapshot_for(
-    db: ResolvedDb, root: str, graph: BuiltGraph | None
+    db: ResolvedDb, root: str, graph: PrintableGraph | None
 ) -> GraphSnapshot:
     """Return the snapshot to render: in-memory build or stored rows."""
     if graph is not None:
         return GraphSnapshot(root=root, nodes=graph.nodes, edges=graph.edges)
-    store = create_store(db.url)
+    store = create_store(db.path)
     try:
         await store.create_all()
         return await load_snapshot(store, root)
@@ -160,7 +164,9 @@ def _span_of(node: Node) -> str:
     return f"(L{node.start_line}-L{node.end_line})"
 
 
-async def print_tree(db: ResolvedDb, root: str, graph: BuiltGraph | None = None) -> int:
+async def print_tree(
+    db: ResolvedDb, root: str, graph: PrintableGraph | None = None
+) -> int:
     """Print the hierarchy tree of one indexed ``root``."""
     snapshot: GraphSnapshot = await _snapshot_for(db, root, graph)
     if not snapshot.nodes:
@@ -174,7 +180,7 @@ async def print_tree(db: ResolvedDb, root: str, graph: BuiltGraph | None = None)
 
 
 async def print_nodes(
-    db: ResolvedDb, root: str, graph: BuiltGraph | None = None
+    db: ResolvedDb, root: str, graph: PrintableGraph | None = None
 ) -> int:
     """Print every collected node of ``root`` for manual analysis."""
     snapshot = await _snapshot_for(db, root, graph)
@@ -212,7 +218,12 @@ async def print_nodes(
             dst_id: str = call.dst_id
             node: Node | None = by_id.get(dst_id)
             if node is not None:
-                resolved.append((_callee_order_key(call), node.name))
+                resolved.append(
+                    (
+                        _callee_order_key(call),
+                        f"{node.name}?" if node.is_placeholder else node.name,
+                    )
+                )
                 continue
             parts: list[str] = dst_id.split(":")
             if len(parts) == 2:
@@ -251,7 +262,7 @@ async def print_nodes(
 
 
 async def print_calls(
-    db: ResolvedDb, root: str, graph: BuiltGraph | None = None
+    db: ResolvedDb, root: str, graph: PrintableGraph | None = None
 ) -> int:
     """Print every ``calls`` edge of ``root`` as ``caller -> callee``.
 
@@ -274,7 +285,8 @@ async def print_calls(
         site_line: int = edge.site_line if edge.site_line is not None else 1 << 30
         dst: Node | None = by_id.get(edge.dst_id)
         if dst is not None:
-            pairs.append((src.name, dst.name, src.file_path, site_line))
+            callee: str = f"{dst.name}?" if dst.is_placeholder else dst.name
+            pairs.append((src.name, callee, src.file_path, site_line))
             continue
         parts: list[str] = edge.dst_id.split(":")
         if len(parts) == 2 and by_file_name.get((parts[0], parts[1])) is not None:
@@ -302,22 +314,24 @@ async def out(
     quiet: bool = True,
     persist: bool = True,
 ) -> IndexResult:
-    """Persist ``graph`` (flushing first when ``overwrite``), then print."""
+    """Persist ``graph`` (flushing first when ``overwrite``), then print.
+
+    One store for the whole call, so ``:memory:`` databases stay alive
+    from persist through the snapshot reads below.
+    """
+    stored: GraphSnapshot | None = None
     if persist:
-        if overwrite:
-            store = create_store(db.url)
-            try:
-                await store.create_all()
+        store = create_store(db.path)
+        try:
+            await store.create_all()
+            if overwrite:
                 await store.clear_all()
-            finally:
-                await store.dispose()
-        if graph.nodes or graph.edges:
-            store = create_store(db.url)
-            try:
-                await store.create_all()
+            if graph.nodes or graph.edges:
                 await store.add_all(list(graph.nodes), list(graph.edges))
-            finally:
-                await store.dispose()
+            if output in ("tree", "nodes", "calls"):
+                stored = await load_snapshot(store, root)
+        finally:
+            await store.dispose()
 
     if not quiet:
         verb: str = "indexed" if persist else "scanned"
@@ -326,12 +340,13 @@ async def out(
             f"{len(graph.edges)} edges -> {db.label} [{root}]"
             + (f" ({graph.skipped} skipped)" if graph.skipped else "")
         )
+    rendered: PrintableGraph | None = stored if persist else graph
     if output == "tree":
-        await print_tree(db, root, graph if not persist else None)
+        await print_tree(db, root, rendered)
     elif output == "nodes":
-        await print_nodes(db, root, graph if not persist else None)
+        await print_nodes(db, root, rendered)
     elif output == "calls":
-        await print_calls(db, root, graph if not persist else None)
+        await print_calls(db, root, rendered)
     return IndexResult(
         root=root,
         db_label=db.label,
@@ -347,6 +362,7 @@ __all__ = [
     "FileInput",
     "IndexResult",
     "OutputMode",
+    "PrintableGraph",
     "ScannedSources",
     "build_graph",
     "out",

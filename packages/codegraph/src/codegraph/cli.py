@@ -6,9 +6,9 @@ Flow: ``amain`` parses args, then ``pipeline.read -> pipeline.build_graph
 goes through ``to_thread``.
 
 Usage:
-    codegraph index <path> --db ./codegraph.db [--overwrite] [--quiet]
+    codegraph index <path> --db ./codegraph.lbdb [--overwrite] [--quiet]
         [--output {summary,tree,nodes,calls}] [--persist | --no-persist]
-    codegraph stats --db ./codegraph.db
+    codegraph stats --db ./codegraph.lbdb
 """
 
 from __future__ import annotations
@@ -19,13 +19,13 @@ import sys
 from pathlib import Path
 
 from codegraph.config import ResolvedDb, resolve_db
+from codegraph.graph_store import create_store
 from codegraph.pipeline import OutputMode, build_graph, out, read
-from codegraph.store import create_store
 
 
 async def run_stats(db: ResolvedDb) -> int:
     """Print database statistics and return the process exit code."""
-    store = create_store(db.url)
+    store = create_store(db.path)
     try:
         await store.create_all()
         files, nodes, edges = await store.total_counts()
@@ -70,7 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     index_cmd = sub.add_parser("index", help="index a dir/file into the database")
     index_cmd.add_argument("path", help="directory or file to index")
     index_cmd.add_argument(
-        "--db", default="./codegraph.db", help="SQLite path or SQLAlchemy URL"
+        "--db",
+        default="./codegraph.lbdb",
+        help="Ladybug database path or :memory:",
     )
     index_cmd.add_argument(
         "--overwrite",
@@ -95,7 +97,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     stats_cmd = sub.add_parser("stats", help="print database statistics")
     stats_cmd.add_argument(
-        "--db", default="./codegraph.db", help="SQLite path or SQLAlchemy URL"
+        "--db",
+        default="./codegraph.lbdb",
+        help="Ladybug database path or :memory:",
     )
     return parser
 

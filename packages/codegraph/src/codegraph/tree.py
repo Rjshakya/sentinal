@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from codegraph.models import Edge, EdgeKind, Node, NodeKind
 
 if TYPE_CHECKING:
-    from codegraph.store import GraphStore
+    from codegraph.graph_store import LadybugStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +29,7 @@ class GraphSnapshot:
     edges: tuple[Edge, ...]
 
 
-async def load_snapshot(store: GraphStore, root: str) -> GraphSnapshot:
+async def load_snapshot(store: LadybugStore, root: str) -> GraphSnapshot:
     """Load every node/edge of ``root`` into a :class:`GraphSnapshot`."""
     nodes: list[Node] = await store.list_nodes(root=root)
     edges: list[Edge] = await store.list_edges(root=root)

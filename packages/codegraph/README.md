@@ -2,10 +2,11 @@
 
 Async CLI that scans a directory or file, extracts structural nodes
 (files, classes, functions, methods, imports) and edges (contains,
-imports, calls) with raw tree-sitter, and stores them in SQL.
+imports, calls) with raw tree-sitter, and stores them in Ladybug
+(embedded property graph, zero setup).
 
-- Default database is a local SQLite file (zero setup).
-- `--db postgresql+asyncpg://…` targets Postgres with the same schema.
+- Default database is a local Ladybug file (`./codegraph.lbdb`).
+- `--db :memory:` indexes ephemerally (lost when the process exits).
 - Scope: **Python only**. (`lang_go.py`, `lang_typescript.py`, and
   `queries.py` stay on disk, unwired, for re-integration.)
 - One database holds exactly one index: `--overwrite` flushes the
@@ -25,28 +26,28 @@ uv sync
 
 ```powershell
 # index a tree (re-runnable; --overwrite flushes the whole db first)
-uv run --package codegraph python -m codegraph.cli index ./packages/api/src --db ./codegraph.db --overwrite
+uv run --package codegraph python -m codegraph.cli index ./packages/api/src --db ./codegraph.lbdb --overwrite
 
 # index a single file (root = its parent dir; must be Python)
-uv run --package codegraph python -m codegraph.cli index ./packages/api/main.py --db ./codegraph.db
+uv run --package codegraph python -m codegraph.cli index ./packages/api/main.py --db ./codegraph.lbdb
 
 # inspect the database
-uv run --package codegraph python -m codegraph.cli stats --db ./codegraph.db
+uv run --package codegraph python -m codegraph.cli stats --db ./codegraph.lbdb
 
 # index and print the hierarchy tree of the indexed root
-uv run --package codegraph python -m codegraph.cli index ./src --db ./codegraph.db --output tree
+uv run --package codegraph python -m codegraph.cli index ./src --db ./codegraph.lbdb --output tree
 
 # dump every collected node (kind, lines, parent, children, callees)
-uv run --package codegraph python -m codegraph.cli index ./src --db ./codegraph.db --output nodes
+uv run --package codegraph python -m codegraph.cli index ./src --db ./codegraph.lbdb --output nodes
 
 # list every calls edge (caller -> callee, implementation order)
-uv run --package codegraph python -m codegraph.cli index ./src --db ./codegraph.db --output calls
+uv run --package codegraph python -m codegraph.cli index ./src --db ./codegraph.lbdb --output calls
 
 # dry-run: print without persisting
 uv run --package codegraph python -m codegraph.cli index ./src --no-persist --output tree
 
-# Postgres instead of SQLite
-uv run --package codegraph python -m codegraph.cli index ./src --db postgresql+asyncpg://postgres:postgres@localhost:5432/aicode
+# Ephemeral index (no file written)
+uv run --package codegraph python -m codegraph.cli index ./src --db :memory: --output tree
 ```
 
 ## Flow
@@ -85,15 +86,15 @@ edges. One edge per caller → callee pair (first site wins), each stamped
 with its call-site line. Calls render in implementation order, not
 alphabetical.
 
-## Schema
+## Schema (Ladybug)
 
-- `codegraph_node`: `id, root, file_path, kind (file|class|function|method|import),
-  name, language, start_line, end_line, parent_id, created_at`
-- `codegraph_edge`: `id, root, src_id, dst_id, kind (contains|imports|calls),
-  target_module, site_line, created_at`
+- `CodeNode`: `id (PK), root, file_path, kind (file|class|function|method|import),
+  name, language, start_line, end_line, parent_id, is_placeholder`
+- `Contains` / `Imports` / `Calls`: rels between `CodeNode` rows
+  (`target_module` on `Imports`, `site_line` on `Calls`).
 
-`site_line` is the 1-based call-site line inside the caller (`calls`
-edges only; `NULL` = unknown). Callees sort by it.
+`site_line` is the 1-based call-site line inside the caller (`Calls`
+rels only; `NULL` = unknown). Callees sort by it.
 
 ## Node ids (Python v2)
 
@@ -101,21 +102,22 @@ edges only; `NULL` = unknown). Callees sort by it.
 - def node: `base:name:start:end` (e.g. `workflows/review.py:helper:10:15`)
 - assumed callee ref: `base:name` (lines unknowable per file)
 
-`Edge.dst_id` carries no foreign key by design: an assumed ref whose
-target is missing dangles, and that miss *is* the broken-import signal.
+An assumed ref (`base:name`) whose name has no matching def is stored
+as a placeholder stub node (`is_placeholder=true`) so the `Calls` rel
+has both endpoints — the stub *is* the broken-import signal.
 Querier's check:
 
-```sql
--- 1. file's nodes (find the caller)
-SELECT * FROM codegraph_edge WHERE src_id = '<file>' AND kind = 'contains';
--- 2. caller's callees, in implementation order
-SELECT * FROM codegraph_edge WHERE src_id = '<caller id>' AND kind = 'calls' ORDER BY site_line;
--- 3. for each callee id: SELECT * FROM codegraph_node WHERE id = '<callee>';
---    miss on the (base, name) lookup => broken import/call.
+```cypher
+// 1. file's nodes (find the caller)
+MATCH (f:CodeNode {id: '<file>'})-[:Contains]->(n) RETURN n;
+// 2. caller's callees, in implementation order
+MATCH (c:CodeNode {id: '<caller id>'})-[e:Calls]->(d) RETURN d ORDER BY e.site_line;
+// 3. broken imports
+MATCH (s:CodeNode {is_placeholder: true}) RETURN s.file_path, s.name;
 ```
 
-Tables are created with `create_all`, which never migrates: after a
-schema change, delete the `.db` file and re-index.
+Tables are created with `create_all` (`IF NOT EXISTS`): after a
+schema change, delete the `.lbdb` file and re-index.
 
 ## Module map
 
@@ -128,11 +130,11 @@ schema change, delete the `.db` file and re-index.
 - `parser/lang_go.py`, `parser/lang_typescript.py`, `parser/queries.py` — kept, unwired (Python-only for now)
 - `parser/base.py` — `ParsedFile` / `ParsedDefinition` / `ParsedImport` / `ParsedCall` IR types
 - `parser/raw_core.py` — tree-sitter `parse`, `walk`, `span`, text helpers
-- `models.py` — `Node` / `Edge` SQLModel tables (+ `NodeKind`, `EdgeKind`)
-- `store.py` — async engine, `clear_all`, `add_all`, count/list queries
+- `models.py` — `Node` / `Edge` dataclasses (+ `NodeKind`, `EdgeKind`)
+- `graph_store.py` — `LadybugStore` (UNWIND ingest, `clear_all`, `add_all`, count/list queries)
 - `tree.py` — `GraphSnapshot`, `render_tree` (nesting by `contains`, calls in `site_line` order)
 - `walk.py` — suffix → language discovery, noise-dir pruning
-- `config.py` — `--db` URL resolution (`ResolvedDb`)
+- `config.py` — `--db` path resolution: file path or `:memory:` (`ResolvedDb`)
 
 ## Design notes
 
@@ -149,8 +151,9 @@ schema change, delete the `.db` file and re-index.
   Python.
 - Parsing runs on the event-loop thread (tree-sitter objects are not
   thread-safe); only file I/O goes through `asyncio.to_thread`.
-- SQLite uses `NullPool`: pooled aiosqlite connections race the GC on
-  Windows. The CLI is sequential, so pooling buys nothing.
+- Ladybug is embedded: one `AsyncConnection` per store, and `out()`
+  holds a single store from persist through the snapshot reads, so
+  `:memory:` databases stay alive for the whole call.
 - Calls are bare-name only (`name(…)`); attribute calls
   (`obj.method()`, `self.x()`, `pkg.Fn()`), builtins, stdlib,
   third-party, and module-level call sites yield no edges.

@@ -4,9 +4,8 @@ version = "0.2.4"
 description = "Sentinel code graph CLI: tree-sitter nodes/edges into SQL"
 requires-python = ">=3.13"
 dependencies = [
-    "aiosqlite>=0.22.1",
-    "asyncpg>=0.31.0",
-    "sqlmodel>=0.0.39",
+    # "ladybug>=0.20.4",
+    "ladybug==0.19.1",
     "tree-sitter-language-pack>=1.20.0",
 ]
 
