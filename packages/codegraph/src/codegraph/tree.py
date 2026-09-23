@@ -67,15 +67,19 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
         key=lambda n: n.file_path,
     )
     by_id: dict[str, Node] = {n.id: n for n in snapshot.nodes}
+    by_file_name: dict[tuple[str, str], Node] = {}
+    for n in sorted(snapshot.nodes, key=lambda x: (x.file_path, x.start_line)):
+        if kind_label(n.kind) in ("class", "function", "method"):
+            by_file_name.setdefault((n.file_path, n.name), n)
     contains: dict[str, list[str]] = {}
-    calls: dict[str, list[str]] = {}
+    calls: dict[str, list[Edge]] = {}
     import_targets: dict[str, str | None] = {}
     for edge in snapshot.edges:
         label: str = kind_label(edge.kind)
         if label == "contains":
             contains.setdefault(edge.src_id, []).append(edge.dst_id)
         elif label == "calls":
-            calls.setdefault(edge.src_id, []).append(edge.dst_id)
+            calls.setdefault(edge.src_id, []).append(edge)
         elif label == "imports":
             contains.setdefault(edge.src_id, []).append(edge.dst_id)
             import_targets[edge.dst_id] = edge.target_module
@@ -86,45 +90,80 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
         resolved.sort(key=lambda n: (n.start_line, n.name))
         return resolved
 
+    def _callee_sort_key(call: Edge) -> tuple[int, int, int, str]:
+        """Order callees by implementation order: call-site line first.
+
+        Edges without a site line (non-Python path, older rows) fall
+        back to the callee def's start line, then name — never worse
+        than the old alphabetical order.
+        """
+        node: Node | None = by_id.get(call.dst_id)
+        if node is None and len(call.dst_id.split(":")) == 2:
+            target_rel, name = call.dst_id.split(":")
+            node = by_file_name.get((target_rel, name))
+        def_start: int = node.start_line if node is not None else 1 << 30
+        if call.site_line is not None:
+            return (0, call.site_line, def_start, "")
+        return (1, def_start, 1 << 30, node.name if node is not None else call.dst_id)
+
+    def ordered_callees(call_edges: list[Edge]) -> list[str]:
+        """Render each calls dst in implementation order; assumed refs resolve via (file, name).
+
+        Returns display lines. A miss (no node with that name in the
+        target file) renders as ``name -> target (missing)`` — the
+        broken-import signal.
+        """
+        lines: list[str] = []
+        for call in sorted(call_edges, key=_callee_sort_key):
+            dst_id: str = call.dst_id
+            node: Node | None = by_id.get(dst_id)
+            if node is not None:
+                lines.append(f"{kind_label(node.kind)} {node.name} {_span(node)}")
+                continue
+            parts: list[str] = dst_id.split(":")
+            if len(parts) == 2:
+                target_rel, name = parts
+                hit: Node | None = by_file_name.get((target_rel, name))
+                if hit is not None:
+                    lines.append(f"{kind_label(hit.kind)} {hit.name} {_span(hit)}")
+                else:
+                    lines.append(f"{name} -> {target_rel} (missing)")
+            else:
+                lines.append(f"{dst_id} (missing)")
+        return lines
+
     def render_children(prefix: str, node: Node, lines: list[str]) -> None:
         """Render the subtree under one def node.
 
-        Classes show methods as leaves; functions show nested classes
-        as nested blocks plus a ``calls (N)`` subgroup of function-kind
-        callees. Every node appears exactly once.
+        Classes show methods as leaves; functions and methods show
+        nested classes as nested blocks plus a ``calls (N)`` subgroup.
+        Every node appears exactly once.
         """
         label: str = kind_label(node.kind)
         if label == "class":
             methods: list[Node] = [
                 m
                 for m in ordered(contains.get(node.id, []))
-                if kind_label(m.kind) == "function"
+                if kind_label(m.kind) == "method"
             ]
             for method_index, method in enumerate(methods):
                 last: bool = method_index == len(methods) - 1
                 branch: str = branch_last if last else branch_mid
-                lines.append(f"{prefix}{branch}function {method.name} {_span(method)}")
-        elif label == "function":
+                lines.append(f"{prefix}{branch}method {method.name} {_span(method)}")
+                render_children_calls_only(f"{prefix}{stem_last if last else stem_mid}", method, lines)
+        elif label in ("function", "method"):
             nested: list[Node] = [
                 n
                 for n in ordered(contains.get(node.id, []))
                 if kind_label(n.kind) == "class"
             ]
-            callees: list[Node] = [
-                n
-                for n in ordered(calls.get(node.id, []))
-                if kind_label(n.kind) == "function"
-            ]
+            callee_lines: list[str] = ordered_callees(calls.get(node.id, []))
             # Each block is (header, nested node XOR leaf lines).
             blocks: list[tuple[str, Node | None, list[str]]] = [
                 (f"class {n.name} {_span(n)}", n, []) for n in nested
             ]
-            if callees:
-                blocks.append((
-                    f"calls ({len(callees)})",
-                    None,
-                    [f"function {c.name} {_span(c)}" for c in callees],
-                ))
+            if callee_lines:
+                blocks.append((f"calls ({len(callee_lines)})", None, callee_lines))
             for block_index, (header, nested_node, leaves) in enumerate(blocks):
                 last_block: bool = block_index == len(blocks) - 1
                 branch = branch_last if last_block else branch_mid
@@ -140,6 +179,16 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
                             else branch_mid
                         )
                         lines.append(f"{prefix}{stem}{leaf_branch}{leaf}")
+
+    def render_children_calls_only(prefix: str, node: Node, lines: list[str]) -> None:
+        """Render only the ``calls`` subgroup under a method leaf."""
+        callee_lines: list[str] = ordered_callees(calls.get(node.id, []))
+        if not callee_lines:
+            return
+        lines.append(f"{prefix}{branch_last}calls ({len(callee_lines)})")
+        for leaf_index, leaf in enumerate(callee_lines):
+            leaf_branch = branch_last if leaf_index == len(callee_lines) - 1 else branch_mid
+            lines.append(f"{prefix}{stem_last}{leaf_branch}{leaf}")
 
     lines: list[str] = [
         f"root: {snapshot.root}  "
@@ -157,10 +206,13 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
         top_functions: list[Node] = [
             n for n in contained if kind_label(n.kind) == "function"
         ]
+        top_methods: list[Node] = [
+            n for n in contained if kind_label(n.kind) == "method"
+        ]
         imports: list[Node] = [
             n for n in contained if kind_label(n.kind) == "import"
         ]
-        def_blocks: list[Node] = classes + top_functions
+        def_blocks: list[Node] = classes + top_functions + top_methods
         has_imports: bool = len(imports) > 0
         for block_index, def_node in enumerate(def_blocks):
             last_block: bool = block_index == len(def_blocks) - 1 and not has_imports

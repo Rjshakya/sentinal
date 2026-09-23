@@ -1,9 +1,7 @@
 """File discovery for the CLI.
 
 Maps extensions to tree-sitter language names, prunes noise
-directories, and skips oversized / undecodable / empty files — the same
-spirit as the API's ``chunking.py`` walker, but scoped to the v1
-language set (Python + TypeScript/JavaScript).
+directories, and skips oversized / undecodable / empty files.
 """
 
 from __future__ import annotations
@@ -19,6 +17,7 @@ EXT_TO_LANGUAGE: dict[str, str] = {
     ".tsx": "typescript",
     ".js": "javascript",
     ".jsx": "javascript",
+    ".go": "go",
 }
 
 SKIP_DIRS: frozenset[str] = frozenset(

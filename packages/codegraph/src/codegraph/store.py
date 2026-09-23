@@ -54,6 +54,13 @@ class GraphStore:
             await session.exec(delete(Node).where(col(Node.root) == root))
             await session.commit()
 
+    async def clear_all(self) -> None:
+        """Delete every node/edge row in the database (full flush)."""
+        async with self._sessions() as session:
+            await session.exec(delete(Edge))
+            await session.exec(delete(Node))
+            await session.commit()
+
     async def add_all(self, nodes: Sequence[Node], edges: Sequence[Edge]) -> None:
         """Bulk-insert one batch of nodes plus their edges."""
         if not nodes and not edges:
@@ -161,7 +168,16 @@ def _enum_value(kind: NodeKind | EdgeKind | str) -> str:
     # reduce that to the trailing value.
     if "." in text and not text.startswith((".", "/")):
         candidate: str = text.rsplit(".", 1)[-1].lower()
-        if candidate in ("file", "class", "function", "import", "contains", "imports"):
+        if candidate in (
+            "file",
+            "class",
+            "function",
+            "method",
+            "import",
+            "contains",
+            "imports",
+            "calls",
+        ):
             return candidate
     return text
 

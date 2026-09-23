@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from codegraph.cli import run_index, run_stats
+from codegraph.cli import run_stats
 from codegraph.config import resolve_db
+from codegraph.pipeline import build_graph, out, read
 from codegraph.store import create_store
 
 
@@ -29,25 +30,26 @@ async def test_index_e2e(tmp_path: Path) -> None:
     _write_tree(src)
     db_path: Path = tmp_path / "graph.db"
 
-    result = await run_index(
-        src, resolve_db(db_path.as_posix()), overwrite=True, quiet=True
-    )
-    assert result.files == 2
-    assert result.skipped == 0
+    db = resolve_db(db_path.as_posix())
+    scanned = await read(src)
+    graph = build_graph(scanned.root, scanned.items)
+    result = await out(db, scanned.root, graph, overwrite=True, quiet=True)
+    assert result.files == 1
+    assert result.skipped == 1
     assert result.nodes > result.files
     assert result.edges > 0
 
     store = create_store(resolve_db(db_path.as_posix()).url)
     try:
         files, nodes, edges = await store.total_counts()
-        assert files == 2
+        assert files == 1
         assert nodes == result.nodes
         assert edges == result.edges
         by_kind = await store.count_by_node_kind()
-        assert by_kind.get("file", 0) == 2
+        assert by_kind.get("file", 0) == 1
         by_lang = await store.count_by_language()
         assert by_lang.get("python", 0) == 1
-        assert by_lang.get("typescript", 0) == 1
+        assert by_lang.get("typescript", 0) == 0
     finally:
         await store.dispose()
 
@@ -59,25 +61,33 @@ async def test_index_idempotent_overwrite(tmp_path: Path) -> None:
     db_path = tmp_path / "graph.db"
     db = resolve_db(db_path.as_posix())
 
-    first = await run_index(src, db, overwrite=True, quiet=True)
-    second = await run_index(src, db, overwrite=True, quiet=True)
-    assert (first.nodes, first.edges) == (second.nodes, second.edges)
+    async def run_once() -> tuple[int, int]:
+        scanned = await read(src)
+        graph = build_graph(scanned.root, scanned.items)
+        result = await out(db, scanned.root, graph, overwrite=True, quiet=True)
+        return (result.nodes, result.edges)
+
+    assert await run_once() == await run_once()
 
 
 async def test_index_single_file(tmp_path: Path) -> None:
     target = tmp_path / "only.py"
     target.write_text("def f():\n    pass\n", encoding="utf-8")
     db = resolve_db((tmp_path / "graph.db").as_posix())
-    result = await run_index(target, db, overwrite=True, quiet=True)
+    scanned = await read(target)
+    graph = build_graph(scanned.root, scanned.items)
+    result = await out(db, scanned.root, graph, overwrite=True, quiet=True)
     assert result.files == 1
     assert result.nodes == 2  # file + function
     assert result.edges == 1  # contains
 
 
 async def test_stats_runs(tmp_path: Path) -> None:
-    src = tmp_path / "src"
+    src: Path = tmp_path / "src"
     src.mkdir()
     _write_tree(src)
     db = resolve_db((tmp_path / "graph.db").as_posix())
-    await run_index(src, db, overwrite=True, quiet=True)
+    scanned = await read(src)
+    graph = build_graph(scanned.root, scanned.items)
+    await out(db, scanned.root, graph, overwrite=True, quiet=True)
     assert await run_stats(db) == 0

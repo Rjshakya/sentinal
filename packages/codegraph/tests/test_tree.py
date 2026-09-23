@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from codegraph.cli import amain, print_nodes, print_tree, run_index
+from codegraph.cli import amain
+from codegraph.pipeline import build_graph, out, print_nodes, print_tree, read
 from codegraph.config import resolve_db
 from codegraph.models import Edge, EdgeKind, Node, NodeKind
 from codegraph.parser import FileRows, build_file_rows, resolve_call_edges
@@ -128,14 +129,16 @@ async def test_print_tree_e2e(tmp_path: Path, capsys: pytest.CaptureFixture[str]
         encoding="utf-8",
     )
     db = resolve_db((tmp_path / "g.db").as_posix())
-    result = await run_index(src, db, overwrite=True, quiet=True)
+    scanned = await read(src)
+    graph = build_graph(scanned.root, scanned.items)
+    result = await out(db, scanned.root, graph, overwrite=True, quiet=True)
     assert await print_tree(db, result.root) == 0
-    out: str = capsys.readouterr().out
-    assert f"root: {result.root}" in out
-    assert "file a.py [python]" in out
-    assert "class C" in out
-    assert "function m" in out
-    assert "os -> os" in out
+    out_text: str = capsys.readouterr().out
+    assert f"root: {result.root}" in out_text
+    assert "file a.py [python]" in out_text
+    assert "class C" in out_text
+    assert "function m" in out_text
+    assert "os -> os" in out_text
 
 
 async def test_print_tree_empty_root(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -212,7 +215,7 @@ def test_resolve_call_edges_emits_no_calls_without_sites() -> None:
             ParsedDefinition(kind="class", name="C", start_line=1, end_line=6),
             ParsedDefinition(
                 kind="function", name="m", start_line=2, end_line=4,
-                parent="C", is_method=True,
+                parent="C",
             ),
         ),
         total_lines=6,
@@ -234,6 +237,48 @@ def test_render_tree_calls_group() -> None:
     )
 
 
+def test_render_tree_calls_in_implementation_order() -> None:
+    """Callees render by call-site line, not alphabetically (zebra first)."""
+    parsed = ParsedFile(
+        language="python",
+        definitions=(
+            ParsedDefinition(kind="function", name="f", start_line=1, end_line=10),
+            ParsedDefinition(
+                kind="function", name="zebra", start_line=11, end_line=13
+            ),
+            ParsedDefinition(
+                kind="function", name="apple", start_line=14, end_line=16
+            ),
+        ),
+        total_lines=16,
+    )
+    rows = build_file_rows("R", "a.py", "python", parsed)
+    src_id: str = rows.definitions["f"]
+    call_edges: list[Edge] = [
+        Edge(
+            id="e-zebra",
+            root="R",
+            src_id=src_id,
+            dst_id=rows.definitions["zebra"],
+            kind=EdgeKind.CALLS,
+            site_line=4,
+        ),
+        Edge(
+            id="e-apple",
+            root="R",
+            src_id=src_id,
+            dst_id=rows.definitions["apple"],
+            kind=EdgeKind.CALLS,
+            site_line=2,
+        ),
+    ]
+    snapshot = GraphSnapshot(
+        root="R", nodes=tuple(rows.nodes), edges=tuple(rows.edges + call_edges)
+    )
+    out: str = render_tree(snapshot)
+    assert out.index("function apple (L14-L16)") < out.index("function zebra (L11-L13)")
+
+
 async def test_print_nodes_e2e(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     src: Path = tmp_path / "src"
     src.mkdir()
@@ -242,13 +287,15 @@ async def test_print_nodes_e2e(tmp_path: Path, capsys: pytest.CaptureFixture[str
         encoding="utf-8",
     )
     db = resolve_db((tmp_path / "g.db").as_posix())
-    result = await run_index(src, db, overwrite=True, quiet=True)
+    scanned = await read(src)
+    graph = build_graph(scanned.root, scanned.items)
+    result = await out(db, scanned.root, graph, overwrite=True, quiet=True)
     assert await print_nodes(db, result.root) == 0
-    out: str = capsys.readouterr().out
-    assert "parent=None children=[f, g, os]" in out  # file row
-    assert "parent=a.py children=[] callees=[g]" in out  # caller row
-    assert "parent=a.py children=[] callees=[]" in out  # callee row
-    assert "node import" in out and " os " in out
+    out_text: str = capsys.readouterr().out
+    assert "parent=None children=[f, g, os]" in out_text  # file row
+    assert "parent=a.py children=[] callees=[g]" in out_text  # caller row
+    assert "parent=a.py children=[] callees=[]" in out_text  # callee row
+    assert "node import" in out_text and " os " in out_text
 
 
 async def test_amain_output_nodes_flag(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
