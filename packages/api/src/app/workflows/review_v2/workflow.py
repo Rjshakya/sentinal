@@ -5,8 +5,9 @@ infra steps):
 
 1. Infra: resolve repo → create ephemeral sandbox → v2 clone
    (default-branch clone + PR-ref fetch + detached head checkout,
-   atomically; any checkout refusal fails the run) → upsert PR →
-   mark ``RUNNING`` → fetch diff → split diff.
+   atomically; any checkout refusal fails the run) → install the
+   codegraph CLI + index the PR-head tree (fail-closed) → upsert
+   PR → mark ``RUNNING`` → fetch diff → split diff.
 2. :func:`app.workflows.review_v2.steps.list_chunks.listChunkFilesStep`
    inventories ``splitted_diffs/`` — the host-side diff truth that
    drives the fan-out.
@@ -108,6 +109,9 @@ from app.workflows.review_v2.steps.combine import (
     concatFileReports,
 )
 from app.workflows.review_v2.steps.clone_repo_v2 import cloneRepoV2Step
+from app.workflows.review_v2.steps.codegraph_index import (
+    installCodeGraphAndIndexRepoStep,
+)
 from app.workflows.review_v2.steps.invoke_file import invokeFileReviewStep
 from app.workflows.review_v2.steps.invoke_planner import (
     getPlanStep,
@@ -293,6 +297,25 @@ async def reviewWorkflowV2(
             "review_v2: repo ready: workflow_id=%s checked_out_head=%s",
             workflow_id,
             cloneResult.checkedOutHead,
+        )
+
+        # Code graph: install the CLI and index the PR-head tree for
+        # the agents' search tool. Fail-closed: a dead search tool
+        # fails the run instead of reviewing without it.
+        graphIndex = await installCodeGraphAndIndexRepoStep(
+            sandboxCtx=sandbox_ctx,
+            userId=input.userId,
+            repoId=repo.id,
+            repoName=repo.repoName,
+            prNumber=input.prNumber,
+            headSha=input.headSha,
+        )
+        log.info(
+            "review_v2: code graph ready: workflow_id=%s files=%d nodes=%d edges=%d",
+            workflow_id,
+            graphIndex.files,
+            graphIndex.nodes,
+            graphIndex.edges,
         )
 
         pr_row_id: PrRowId = await upsertPullRequestTx(repoId=repo.id, input=input)

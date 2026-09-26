@@ -1,7 +1,8 @@
 """Dummy tree-sitter parse demo (native API, sexp output).
 
 Holds three small dummy snippets inline (Python / TypeScript / Go — five
-functions + one linear orchestrator + one dummy class each), parses the
+functions + one linear orchestrator + one dummy class each, plus
+decorator definitions and usages in the Python snippet), parses the
 selected one with the native ``tree_sitter`` ``Parser`` (via
 ``tree_sitter_language_pack.get_parser``, the same provider
 ``codegraph.parser.calls`` uses), and prints the raw S-expression.
@@ -58,6 +59,43 @@ class ReportBuilder:
 
     def build(self) -> str:
         return "\\n".join(self.sections)
+
+
+def retry(fn):
+    return fn
+
+
+def with_logging(level):
+    def wrap(fn):
+        return fn
+
+    return wrap
+
+
+def register(cls):
+    return cls
+
+
+@retry
+def fetch_retryable():
+    return fetch_data()
+
+
+@with_logging("debug")
+@retry
+def fetch_logged():
+    return fetch_data()
+
+
+@register
+class Service:
+    @retry
+    def call(self):
+        return fetch_data()
+
+    @property
+    def status(self):
+        return "ok"
 '''
 
 DUMMY_CODE_TS: str = '''\

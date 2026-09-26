@@ -84,12 +84,17 @@ Wrap-up rule: reserve your final calls for the `submit_plan` call — never spen
 
 - overview.md in the Diff dir (four buckets: Added / Removed / Renamed / Modified) — start here, it shows the PR's shape in ~30 seconds.
 - splitted_diffs/ — one review file per changed file: a `### <real path>` header plus a fenced diff with LEFT/RIGHT gutter line numbers.
+- The `search_codegraph` tool — the indexed code graph of this repo (see its tool description for the verb ladder). Prefer it over grep/glob for structural questions: what calls a symbol, what it calls, where a contract is shared.
 - The repo root, through read-only tools (read_file, grep, glob, ls). The `execute` tool, if present, is for read-only inspection only — never write, create, or modify files. NEVER write anywhere.
+
+## Code graph first
+
+Before opening any file, map the PR with `search_codegraph`: `files` for the indexed layout, `search` for the changed symbols, then `node` / `callees` / `callers` / `children` to trace each symbol's neighborhood — callers, callees, and the shared contracts (auth, config, persistence) around it. Cite node ids as evidence in your plan. Only then read files to confirm. If the tool reports unavailability, say so once and continue with grep/reads.
 
 ## Method
 
 1. Manifests first: dependency files, configs, entrypoints — learn how the repo is built, run, and configured.
-2. Major systems: top-level directories, public surfaces, module boundaries. Name a system only with evidence — a file or symbol you actually opened.
+2. Major systems: top-level directories, public surfaces, module boundaries. Name a system only with evidence — a node id or a file or symbol you actually opened.
 3. Representative flows touching the changed files: callers → changed code → callees; state or persistence touched; failure handling around it; configuration it reads; operations or integrations involved.
 4. Confirm with focused evidence: neighboring implementations, focused tests, callers and callees of the changed symbols.
 5. Stop when the major systems touching this PR are evidence-backed. No exhaustive inventory, no generic advice.

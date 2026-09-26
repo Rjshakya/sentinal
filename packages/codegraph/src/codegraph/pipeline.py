@@ -1,8 +1,11 @@
 """Linear code-graph pipeline: read -> build -> out.
 
 - :func:`read`: discover + read source files (I/O).
-- :func:`build_graph`: parse units into nodes/edges (pure).
+- :func:`build_graph`: collect per-file rows then link calls (pure).
 - :func:`out`: persist + print (I/O).
+
+Languages: Python, TypeScript/JavaScript, Go. Anything else discovered
+is counted as skipped.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from codegraph.config import ResolvedDb
 from codegraph.models import Edge, Node
 from codegraph.parser.lang_go import build_go_file_rows
 from codegraph.parser.lang_typescript import build_ts_file_rows
-from codegraph.parser.links import build_import_index
+from codegraph.parser.links import resolve_call_edges
 from codegraph.parser.rows import FileRows, build_python_file_rows
 from codegraph.graph_store import create_store
 from codegraph.tree import GraphSnapshot, kind_label, load_snapshot, render_tree
@@ -99,6 +102,7 @@ _LANGUAGE_TO_BUILDER: dict[
     "javascript": build_ts_file_rows,
     "go": build_go_file_rows,
 }
+"""Per-language collect builders; unknown languages skip at :func:`parse_file_input`."""
 
 
 def parse_file_input(
@@ -106,38 +110,48 @@ def parse_file_input(
 ) -> FileRows | None:
     """Parse one file into rows. Returns None when the file is skipped.
 
-    Pure given ``item``. Blank source or an unwired language -> skip,
-    counted by the caller. The per-language builder is resolved via
-    ``_LANGUAGE_TO_BUILDER`` (no branching).
+    Pure given ``item``. Blank source or a non-Python language -> skip,
+    counted by the caller. ``import_index`` is accepted for
+    signature stability and ignored: the link phase resolves modules
+    from the full collected file set.
     """
+
     if not item.source_text.strip():
         return None
     handler: Callable[[str, str, str, Mapping[str, str]], FileRows] | None = (
         _LANGUAGE_TO_BUILDER.get(item.language)
     )
+
     if handler is None:
         return None
     return handler(root, item.rel_path, item.source_text, import_index or {})
 
 
 def build_graph(root: str, items: list[FileInput]) -> BuiltGraph:
-    """Run the full pure build: index imports, parse every file, merge."""
-    import_index: dict[str, str] = build_import_index(i.rel_path for i in items)
+    """Run the full pure build in two passes: collect, then link.
+
+    Pass 1 parses every Python file into nodes + ``contains`` /
+    ``imports`` edges plus buffered call sites (no ``calls`` edges).
+    Pass 2 joins the buffered sites against the global definition
+    registry + per-file import maps into ``calls`` edges with real
+    node ids; unresolvable sites yield no edge.
+    """
     rows: list[FileRows] = []
     skipped: int = 0
     for item in items:
-        file_rows: FileRows | None = parse_file_input(root, item, import_index)
+        file_rows: FileRows | None = parse_file_input(root, item)
         if file_rows is None:
             skipped += 1
             continue
         rows.append(file_rows)
+    call_edges: list[Edge] = resolve_call_edges(rows, root)
 
     return BuiltGraph(
         root=root,
         files=len(rows),
         skipped=skipped,
         nodes=tuple(n for unit in rows for n in unit.nodes),
-        edges=tuple(e for unit in rows for e in unit.edges),
+        edges=tuple(e for unit in rows for e in unit.edges) + tuple(call_edges),
     )
 
 
@@ -188,10 +202,6 @@ async def print_nodes(
         print(f"no nodes for root {root}")
         return 0
     by_id: dict[str, Node] = {n.id: n for n in snapshot.nodes}
-    by_file_name: dict[tuple[str, str], Node] = {}
-    for n in sorted(snapshot.nodes, key=lambda x: (x.file_path, x.start_line)):
-        if kind_label(n.kind) in ("class", "function", "method"):
-            by_file_name.setdefault((n.file_path, n.name), n)
     children: dict[str, list[str]] = {}
     calls: dict[str, list[Edge]] = {}
     for edge in snapshot.edges:
@@ -212,7 +222,7 @@ async def print_nodes(
         return (1, 1 << 30, call.dst_id)
 
     def callee_names(call_edges: list[Edge]) -> str:
-        """Names for calls dsts in implementation order; assumed refs resolve via (file, name)."""
+        """Names for calls dsts in implementation order (dsts are real ids)."""
         resolved: list[tuple[tuple[int, int, str], str]] = []
         for call in call_edges:
             dst_id: str = call.dst_id
@@ -222,16 +232,6 @@ async def print_nodes(
                     (
                         _callee_order_key(call),
                         f"{node.name}?" if node.is_placeholder else node.name,
-                    )
-                )
-                continue
-            parts: list[str] = dst_id.split(":")
-            if len(parts) == 2:
-                hit: Node | None = by_file_name.get((parts[0], parts[1]))
-                resolved.append(
-                    (
-                        _callee_order_key(call),
-                        parts[1] if hit is not None else f"{parts[1]}?",
                     )
                 )
             else:
@@ -266,15 +266,12 @@ async def print_calls(
 ) -> int:
     """Print every ``calls`` edge of ``root`` as ``caller -> callee``.
 
-    Assumed refs (``base:name``) resolve via ``(file, name)``; a miss
-    renders ``name?`` — the broken-import signal.
+    Dsts are real node ids; a dst missing from the snapshot renders
+    with a ``?`` suffix (defensive — the build never emits dangling
+    edges since unresolved sites are dropped).
     """
     snapshot = await _snapshot_for(db, root, graph)
     by_id: dict[str, Node] = {n.id: n for n in snapshot.nodes}
-    by_file_name: dict[tuple[str, str], Node] = {}
-    for n in sorted(snapshot.nodes, key=lambda x: (x.file_path, x.start_line)):
-        if kind_label(n.kind) in ("class", "function", "method"):
-            by_file_name.setdefault((n.file_path, n.name), n)
     pairs: list[tuple[str, str, str, int]] = []
     for edge in snapshot.edges:
         if kind_label(edge.kind) != "calls":
@@ -286,14 +283,9 @@ async def print_calls(
         dst: Node | None = by_id.get(edge.dst_id)
         if dst is not None:
             callee: str = f"{dst.name}?" if dst.is_placeholder else dst.name
-            pairs.append((src.name, callee, src.file_path, site_line))
-            continue
-        parts: list[str] = edge.dst_id.split(":")
-        if len(parts) == 2 and by_file_name.get((parts[0], parts[1])) is not None:
-            pairs.append((src.name, parts[1], src.file_path, site_line))
         else:
-            name: str = parts[1] if len(parts) == 2 else edge.dst_id
-            pairs.append((src.name, f"{name}?", src.file_path, site_line))
+            callee = f"{edge.dst_id}?"
+        pairs.append((src.name, callee, src.file_path, site_line))
     if not pairs:
         print(f"no calls for root {root}")
         return 0
@@ -321,6 +313,10 @@ async def out(
     """
     stored: GraphSnapshot | None = None
     if persist:
+        if not db.is_memory:
+            # The default DB lives under ~/.codegraph/, which may not
+            # exist on first run. Read paths never create directories.
+            Path(db.path).parent.mkdir(parents=True, exist_ok=True)
         store = create_store(db.path)
         try:
             await store.create_all()

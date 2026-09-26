@@ -1,18 +1,21 @@
 """Python structural extraction from a raw tree-sitter tree.
 
-Single-pass v2 emitter (:func:`extract_nodes_and_edges`): walks once with a single
-``active_definition_stack`` (byte-offset expiry), emits nodes + edges
-inline with ``base:name:start:end`` ids, and resolves calls in a
-same-function flush: same-file hits by name, imported callees as
-assumed ``base:name`` edges via the frozen import index, natives
-dropped. Decorated definitions are transparent — the inner
-``function_definition`` / ``class_definition`` owns the name and span.
+Collect phase (:func:`collect_python_file`): walks once with a single
+``active_definition_stack`` (byte-offset expiry), emits nodes +
+``contains`` / ``imports`` edges inline with ``base:name:start:end``
+ids, and buffers bare-name call sites unresolved. Call resolution
+happens later in the link phase (:mod:`codegraph.parser.links`)
+against the global definition registry + per-file import map, so this
+module never resolves modules and never emits ``calls`` edges.
+Decorator call sites are buffered per decorated definition and drained
+into the next ``function_definition`` / ``class_definition`` node as
+``ParsedCall`` rows carrying the @-line; the link phase resolves them
+like any other call (attribute decorators are skipped, builtins drop).
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -20,7 +23,7 @@ from typing import Literal
 from tree_sitter import Node
 
 from codegraph.models import Edge, EdgeKind, Node as GraphNode, NodeKind
-from codegraph.parser.base import ParsedImport
+from codegraph.parser.base import ParsedCall, ParsedImport
 from codegraph.parser.raw_core import field_text, node_text, span, walk
 
 LANGUAGE: str = "python"
@@ -42,6 +45,27 @@ def _bare_callee_name(syntax_node: Node) -> str | None:
     return node_text(function_node) or None
 
 
+def _decorator_callee_name(syntax_node: Node) -> str | None:
+    """Return the decorator callee for a ``decorator`` node, else None.
+
+    Bare ``@retry`` unwraps the single ``identifier`` child; arg-form
+    ``@with_logging("debug")`` unwraps one ``call`` layer via its
+    ``function`` field. Attribute decorators (``@app.get``) return None
+    (skipped, per the no-attribute rule).
+    """
+    if syntax_node.type != "decorator":
+        return None
+    callee_nodes: list[Node] = syntax_node.named_children
+    if len(callee_nodes) != 1:
+        return None
+    callee_node: Node = callee_nodes[0]
+    if callee_node.type == "identifier":
+        return node_text(callee_node) or None
+    if callee_node.type == "call":
+        return _bare_callee_name(callee_node)
+    return None
+
+
 @dataclass(slots=True)
 class _ActiveDefinition:
     """One live entry on the definition nesting stack: enclosing class or function."""
@@ -54,7 +78,12 @@ class _ActiveDefinition:
 
 @dataclass(slots=True)
 class ExtractedFileGraph:
-    """Per-file emitter output: storage rows, ready to merge."""
+    """Per-file collect output: rows plus unresolved call sites.
+
+    ``definitions`` maps def name -> node id (first registration wins);
+    ``imports`` / ``calls`` are the raw IR the link phase resolves.
+    No ``calls`` edges are emitted here.
+    """
 
     rel_path: str
     language: str
@@ -63,6 +92,13 @@ class ExtractedFileGraph:
         default_factory=lambda: dict[str, GraphNode]()
     )
     edges: list[Edge] = field(default_factory=lambda: list[Edge]())
+    definitions: dict[str, str] = field(
+        default_factory=lambda: dict[str, str]()
+    )
+    imports: list[ParsedImport] = field(
+        default_factory=lambda: list[ParsedImport]()
+    )
+    calls: list[ParsedCall] = field(default_factory=lambda: list[ParsedCall]())
 
 
 def build_defined_node_id(
@@ -70,11 +106,6 @@ def build_defined_node_id(
 ) -> str:
     """Return the symbolic def id ``base:name:start:end``."""
     return f"{rel_path}:{def_name}:{start_line}:{end_line}"
-
-
-def build_assumed_callee_id(resolved_callee_rel_path: str, callee_name: str) -> str:
-    """Return the assumed callee id ``base:name`` (lines unknowable per file)."""
-    return f"{resolved_callee_rel_path}:{callee_name}"
 
 
 def _pop_finished_definitions(
@@ -95,15 +126,15 @@ def _find_innermost_definition_of_kind(
     return None
 
 
-def _split_alias(symbol: str) -> str:
-    _, sep, alias = symbol.partition(" as ")
-    return alias.strip() if sep else symbol.strip()
-
-
 def _imports_from_statement(
     source: str, start_line: int, end_line: int
 ) -> list[ParsedImport]:
-    """Parse one Python import statement into per-name import rows."""
+    """Parse one Python import statement into per-name import rows.
+
+    ``from`` imports keep both the bound name and the defining-module
+    name (``from utils import helper as h`` -> bound ``h``,
+    original ``helper``); the link phase joins on the original.
+    """
     parsed_imports: list[ParsedImport] = []
     text: str = " ".join(source.replace("(", " ").replace(")", " ").split())
     if text.startswith("from "):
@@ -119,20 +150,31 @@ def _imports_from_statement(
             if symbol == "*":
                 parsed_imports.append(
                     ParsedImport(
-                        module=module, name="*", start_line=start_line, end_line=end_line
+                        module=module,
+                        name="*",
+                        start_line=start_line,
+                        end_line=end_line,
+                        original="*",
                     )
                 )
-            else:
-                bound_name: str = _split_alias(symbol)
-                if bound_name:
-                    parsed_imports.append(
-                        ParsedImport(
-                            module=module,
-                            name=bound_name,
-                            start_line=start_line,
-                            end_line=end_line,
-                        )
-                    )
+                continue
+            original, alias_sep, alias = symbol.partition(" as ")
+            original = original.strip()
+            alias = alias.strip()
+            if not original:
+                continue
+            bound_name: str = alias if alias_sep else original
+            if not bound_name:
+                continue
+            parsed_imports.append(
+                ParsedImport(
+                    module=module,
+                    name=bound_name,
+                    start_line=start_line,
+                    end_line=end_line,
+                    original="" if bound_name == original else original,
+                )
+            )
     elif text.startswith("import "):
         rest = text[7:]
         for raw in rest.split(","):
@@ -157,40 +199,6 @@ def _imports_from_statement(
 
 
 _IMPORT_RE: re.Pattern[str] = re.compile(r"^\s*(import\s+|from\s+)")
-
-
-def _module_index_lookup_keys(
-    module_specifier: str, importer_rel_path: str
-) -> list[str]:
-    """Return absolute dotted module keys to try, longest-first.
-
-    Pure string ops over the importer's path — no filesystem, no index.
-    """
-    if module_specifier.startswith("."):
-        level: int = len(module_specifier) - len(module_specifier.lstrip("."))
-        rest: str = module_specifier.lstrip(".")
-        importer_package_parts: list[str] = importer_rel_path.split("/")[
-            :-1
-        ]  # importer package parts
-        if level - 1 > len(importer_package_parts):
-            return []
-        base: list[str] = (
-            importer_package_parts[: len(importer_package_parts) - (level - 1)]
-            if level > 1
-            else importer_package_parts
-        )
-        if not rest:
-            # ``from . import d``: the package itself.
-            return [".".join(base)] if base else []
-        full: list[str] = base + rest.split(".")
-        keys: list[str] = [".".join(full)]
-        # Above-root fallback: strip leading components.
-        for i in range(1, len(full)):
-            keys.append(".".join(full[i:]))
-        return keys
-    parts = [p for p in module_specifier.split(".") if p]
-    keys = [".".join(parts[i:]) for i in range(len(parts))]
-    return keys
 
 
 def _register_node_once(
@@ -251,20 +259,21 @@ def _register_edge_once(
     )
 
 
-def extract_nodes_and_edges(
+def collect_python_file(
     rel_path: str,
     syntax_root: Node,
     graph_root: str,
     total_lines: int,
-    dotted_module_to_rel_path: Mapping[str, str],
 ) -> ExtractedFileGraph:
-    """Walk one Python file once, emitting nodes + edges inline.
+    """Walk one Python file once, collecting defs + imports + call sites.
 
     - defs → ``Node`` + ``Edge(CONTAINS)`` with ``base:name:start:end`` ids.
     - imports → ``Node(IMPORT)`` + ``Edge(IMPORTS)`` (existing statement rules).
-    - bare calls with a live enclosing def → same-file hit by name, else
-      assumed ``base:name`` edge via ``dotted_module_to_rel_path``; natives (no def, no
-      import) are dropped and stored nowhere.
+    - bare calls with a live enclosing def → buffered as
+      ``ParsedCall(caller=name, callee, site_line)`` for the link phase.
+      Module-level call sites are dropped here.
+
+    Pure given the parsed tree: no module resolution, no ``calls`` edges.
     """
     language: str = LANGUAGE
     extracted_file = ExtractedFileGraph(
@@ -287,12 +296,21 @@ def extract_nodes_and_edges(
     # parent chain for closures (def-in-method-in-class) and double the
     # byte-offset prune logic, so one stack is kept and named as such.
     active_definition_stack: list[_ActiveDefinition] = []
+    # Decorator call sites buffered here and drained into the next
+    # def/class node: (callee_name, at_line). A skipped attribute
+    # decorator buffers nothing, so the drain always pairs exactly
+    # with the wrapped definition.
+    pending_decorator_sites: list[tuple[str, int]] = []
     emitted_edge_keys: set[tuple[str, str, str]] = set()
     first_def_node_id_by_name: dict[str, str] = {}
-    module_specifier_by_bound_name: dict[str, str] = {}
-    deferred_call_sites: list[tuple[str, str, int]] = []
 
     for syntax_node in walk(syntax_root):
+        if syntax_node.type == "decorator":
+            decorator_callee: str | None = _decorator_callee_name(syntax_node)
+            if decorator_callee is not None:
+                decorator_line: int = span(syntax_node)[0]  # the @-line
+                pending_decorator_sites.append((decorator_callee, decorator_line))
+            continue
         if syntax_node.type in ("class_definition", "function_definition"):
             _pop_finished_definitions(
                 active_definition_stack, syntax_node.start_byte
@@ -300,6 +318,15 @@ def extract_nodes_and_edges(
             def_name: str = _definition_name(syntax_node)
             if not def_name:
                 continue
+            for decorator_callee, decorator_line in pending_decorator_sites:
+                extracted_file.calls.append(
+                    ParsedCall(
+                        caller=def_name,
+                        callee=decorator_callee,
+                        site_line=decorator_line,
+                    )
+                )
+            pending_decorator_sites.clear()
             if syntax_node.type == "class_definition":
                 definition_kind_label: str = "class"
                 graph_node_kind: NodeKind = NodeKind.CLASS
@@ -394,10 +421,14 @@ def extract_nodes_and_edges(
                     kind=EdgeKind.IMPORTS,
                     target_module=parsed_import.module,
                 )
-                module_specifier_by_bound_name.setdefault(
-                    parsed_import.name, parsed_import.module
-                )
+                extracted_file.imports.append(parsed_import)
         else:
+            if syntax_node.type == "call" and (
+                syntax_node.parent is not None
+                and syntax_node.parent.type == "decorator"
+            ):
+                continue  # arg-form wrapper (e.g. with_logging("debug")):
+                # already buffered by the decorator branch above
             callee_name: str | None = _bare_callee_name(syntax_node)
             if callee_name is None:
                 continue
@@ -407,56 +438,21 @@ def extract_nodes_and_edges(
             if not active_definition_stack:
                 continue  # module-level call: drop
             call_site_line: int = span(syntax_node)[0]
-            deferred_call_sites.append(
-                (active_definition_stack[-1].node_id, callee_name, call_site_line)
+            extracted_file.calls.append(
+                ParsedCall(
+                    caller=active_definition_stack[-1].def_name,
+                    callee=callee_name,
+                    site_line=call_site_line,
+                )
             )
 
-    for caller_node_id, callee_name, call_site_line in deferred_call_sites:
-        same_file_callee_id: str | None = first_def_node_id_by_name.get(callee_name)
-        if same_file_callee_id is not None:
-            _register_edge_once(
-                extracted_file.edges,
-                emitted_edge_keys,
-                graph_root=graph_root,
-                src_id=caller_node_id,
-                dst_id=same_file_callee_id,
-                kind=EdgeKind.CALLS,
-                site_line=call_site_line,
-            )
-            continue
-        imported_module_specifier: str | None = module_specifier_by_bound_name.get(
-            callee_name
-        )
-        if imported_module_specifier is None:
-            continue  # native / builtin / unknown: store nothing
-        resolved_callee_rel_path: str | None = None
-        for module_lookup_key in _module_index_lookup_keys(
-            imported_module_specifier, rel_path
-        ):
-            indexed_rel_path: str | None = dotted_module_to_rel_path.get(
-                module_lookup_key
-            )
-            if indexed_rel_path is not None:
-                resolved_callee_rel_path = indexed_rel_path
-                break
-        if resolved_callee_rel_path is None:
-            continue  # stdlib / third-party / unindexed: drop
-        _register_edge_once(
-            extracted_file.edges,
-            emitted_edge_keys,
-            graph_root=graph_root,
-            src_id=caller_node_id,
-            dst_id=build_assumed_callee_id(resolved_callee_rel_path, callee_name),
-            kind=EdgeKind.CALLS,
-            site_line=call_site_line,
-        )
+    extracted_file.definitions.update(first_def_node_id_by_name)
     return extracted_file
 
 
 __all__ = [
     "ExtractedFileGraph",
     "LANGUAGE",
-    "build_assumed_callee_id",
     "build_defined_node_id",
-    "extract_nodes_and_edges",
+    "collect_python_file",
 ]

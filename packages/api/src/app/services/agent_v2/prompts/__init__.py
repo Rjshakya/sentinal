@@ -31,6 +31,7 @@ from app.services.agent_v2.prompts.planning import (
 from app.services.agent_v2.prompts.shared import (
     COMMENT_BODY_FORMAT,
     NO_FINDINGS_MARKER,
+    SEARCH_CODEGRAPH_TOOL_DESCRIPTION,
     getReviewDiffDirPath,
     identityHeader,
     prMetaBlock,
@@ -43,6 +44,7 @@ from app.services.agent_v2.prompts.summary import (
 __all__ = [
     "COMMENT_BODY_FORMAT",
     "NO_FINDINGS_MARKER",
+    "SEARCH_CODEGRAPH_TOOL_DESCRIPTION",
     "SUBMIT_PLAN_TOOL_DESCRIPTION",
     "createFileReviewSystemPrompt",
     "createFileReviewUserPrompt",

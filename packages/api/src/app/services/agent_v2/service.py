@@ -46,20 +46,22 @@ identifiers — the same convention as :mod:`app.services.github`,
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Sequence
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from deepagents import create_deep_agent
-from deepagents.backends.protocol import FileUploadResponse
+from deepagents.backends.protocol import ExecuteResponse, FileUploadResponse
 from deepagents.backends.sandbox import BaseSandbox
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langchain_core.tools import tool as langchain_tool
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from app.services.agent_v2._middleware import buildNoSubMiddleware
 from app.services.agent_v2.errors import AgentV2BuildError
 from app.services.agent_v2.prompts import (
+    SEARCH_CODEGRAPH_TOOL_DESCRIPTION,
     SUBMIT_PLAN_TOOL_DESCRIPTION,
     createFileReviewSystemPrompt,
     createPlanningSystemPrompt,
@@ -73,6 +75,7 @@ from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.service import getProvider
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import CommitId, PRNumber, RepoId, RepoName, UserId
+from app.utils.util import graph_db_path
 
 _DEFAULT_MODEL_CALL_RUN_LIMIT = 120
 _DEFAULT_TOOL_CALL_RUN_LIMIT = 120
@@ -194,6 +197,147 @@ def buildSubmitPlanTool(*, ctx: AgentV2Ctx, planPath: str) -> BaseTool:
     )(_submitPlan)
 
 
+CodeGraphVerb = Literal[
+    "overview",
+    "files",
+    "search",
+    "node",
+    "callees",
+    "callers",
+    "children",
+    "imports",
+]
+"""Verbs the ``search_codegraph`` tool exposes (the full query ladder)."""
+
+_DRILL_VERBS: tuple[str, ...] = ("node", "callees", "callers", "children")
+"""Verbs resolving one node by ``--id`` or exact ``--name``."""
+
+_SEARCH_TIMEOUT_S: int = 120
+"""Upper bound on one in-sandbox ``codegraph query`` (local reads)."""
+
+
+class CodeGraphSearchArgs(BaseModel):
+    """Argument schema for the ``search_codegraph`` tool."""
+
+    verb: CodeGraphVerb = Field(
+        description="which graph query to run (exactly one per call)"
+    )
+    name: str | None = Field(
+        default=None,
+        description="def-name fragment (search) or exact name (drills)",
+    )
+    file: str | None = Field(
+        default=None,
+        description="narrow to one repo-relative file path",
+    )
+    node_id: str | None = Field(
+        default=None,
+        description="exact node id for drills (preferred over name)",
+    )
+    limit: int = Field(default=20, description="max search hits")
+
+
+class _CommandRunner(Protocol):
+    """The backend surface the search tool needs (one command run)."""
+
+    async def aexecute(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,
+    ) -> ExecuteResponse: ...
+
+
+def buildCodeGraphQueryCommand(
+    *,
+    verb: str,
+    name: str | None,
+    file: str | None,
+    node_id: str | None,
+    limit: int,
+) -> str | None:
+    """Build the in-sandbox ``codegraph query`` argv, or None.
+
+    Pure / testable. Returns None when the args cannot satisfy the
+    verb (``search`` without a fragment, a drill without id or name,
+    ``imports`` without file or id) so the tool answers without
+    spending a sandbox round-trip on a guaranteed CLI error. The
+    database path is the fixed run constant both the index step and
+    this tool recompute.
+    """
+    parts: list[str] = ["codegraph", "query", "--db", graph_db_path(), "--json", verb]
+    if verb == "search":
+        if not name:
+            return None
+        parts += ["--name", name]
+        if file:
+            parts += ["--file", file]
+        parts += ["--limit", str(limit)]
+    elif verb in _DRILL_VERBS:
+        if node_id:
+            parts += ["--id", node_id]
+        elif name:
+            parts += ["--name", name]
+            if file:
+                parts += ["--file", file]
+        else:
+            return None
+    elif verb == "imports":
+        if node_id:
+            parts += ["--id", node_id]
+        elif file:
+            parts += ["--file", file]
+        else:
+            return None
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def buildCodeGraphSearchTool(*, ctx: AgentV2Ctx) -> BaseTool:
+    """Build the ``search_codegraph`` tool bound to this run's sandbox.
+
+    The tool closes over the ctx (not agent state): on each call it
+    reconnects, runs the query argv, and returns the JSON envelope
+    stdout for the model to chain on. Failures are returned as error
+    strings (the agent reports and continues with grep/reads), never
+    raised — matching the service's error contract.
+    """
+
+    async def _searchCodeGraph(
+        verb: CodeGraphVerb,
+        name: str | None = None,
+        file: str | None = None,
+        node_id: str | None = None,
+        limit: int = 20,
+    ) -> str:
+        command: str | None = buildCodeGraphQueryCommand(
+            verb=verb, name=name, file=file, node_id=node_id, limit=limit
+        )
+        if command is None:
+            return (
+                "search rejected (args): this verb needs a name fragment "
+                "(search), an id or name (drills), or a file/id (imports)"
+            )
+        backend = await buildNoSubBackend(ctx.sandboxCtx)
+        if isinstance(backend, SandboxProviderError):
+            return f"search unavailable (transient): {backend.message}"
+        try:
+            result: ExecuteResponse = await cast(
+                _CommandRunner, backend
+            ).aexecute(command, timeout=_SEARCH_TIMEOUT_S)
+        except Exception as exc:
+            return f"search unavailable (transient): {type(exc).__name__}: {exc}"
+        if result.exit_code != 0:
+            tail: str = (result.output or "").strip()[:500]
+            return f"search unavailable (exit {result.exit_code}): {tail}"
+        return result.output.strip() or "search returned no output"
+
+    return langchain_tool(
+        "search_codegraph",
+        description=SEARCH_CODEGRAPH_TOOL_DESCRIPTION,
+        args_schema=CodeGraphSearchArgs,
+    )(_searchCodeGraph)
+
+
 async def buildNoSubAgent(
     ctx: AgentV2Ctx,
     systemPrompt: str,
@@ -259,7 +403,8 @@ async def createPlanningAgent(ctx: AgentV2Ctx):
             buildSubmitPlanTool(
                 ctx=ctx,
                 planPath=planFilePath(ctx.sandboxCtx.rootPath),
-            )
+            ),
+            buildCodeGraphSearchTool(ctx=ctx),
         ],
     )
 
@@ -290,10 +435,17 @@ async def createFileReviewAgent(ctx: AgentV2Ctx, *, filePath: str):
             modelCallRunLimit=ctx.modelCallRunLimit,
             toolCallRunLimit=ctx.toolCallRunLimit,
         ),
+        tools=[
+            buildCodeGraphSearchTool(ctx=ctx),
+        ],
     )
 
 
 __all__ = [
+    "CodeGraphSearchArgs",
+    "CodeGraphVerb",
+    "buildCodeGraphQueryCommand",
+    "buildCodeGraphSearchTool",
     "buildNoSubAgent",
     "buildNoSubBackend",
     "buildSubmitPlanTool",

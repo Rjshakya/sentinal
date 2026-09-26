@@ -1,12 +1,16 @@
 """TypeScript / JavaScript structural extraction from a raw tree.
 
-Pure: takes the parsed ``root``, returns defs + imports. Covers both the
-``typescript`` and ``javascript`` grammars, which share structure shapes.
+Collect phase (:func:`collect_ts_file`): walks once, emits defs
+(classes, functions, methods, interfaces, type aliases, arrow-bound
+consts) + imports with alias originals, and buffers bare-name call
+sites unresolved. Call resolution happens later in the link phase
+(:mod:`codegraph.parser.links`). Covers both the ``typescript`` and
+``javascript`` grammars, which share structure shapes (interfaces and
+type aliases only occur in TypeScript).
 """
 
 from __future__ import annotations
 
-import posixpath
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -22,7 +26,7 @@ if TYPE_CHECKING:
 from codegraph.models import Edge, EdgeKind
 from codegraph.models import Node as GraphNode
 from codegraph.models import NodeKind
-from codegraph.parser.base import ParsedDefinition, ParsedImport
+from codegraph.parser.base import ParsedCall, ParsedDefinition, ParsedImport
 from codegraph.parser.raw_core import field_text, node_text, parse, span, walk
 
 TYPESCRIPT: str = "typescript"
@@ -32,14 +36,20 @@ LANGUAGE: str = TYPESCRIPT
 _MODULE_RE: re.Pattern[str] = re.compile(r"""["']([^"']+)["']""")
 
 
-def _clause_names(clause: str) -> list[str]:
-    """Extract bound names from the ``import …`` clause (pre-``from``)."""
-    names: list[str] = []
+def _clause_symbols(clause: str) -> list[tuple[str, str]]:
+    """Extract ``(bound, original)`` pairs from the import clause.
+
+    ``{a as b}`` binds ``b`` for the defining-module name ``a``;
+    default imports bind with no original (the link phase joins them
+    on the bound name); ``* as ns`` binds a namespace (attribute
+    calls only, so it never resolves a bare site).
+    """
+    symbols: list[tuple[str, str]] = []
     text: str = clause.strip()
     if text.startswith("type "):
         text = text[5:].strip()
     if not text:
-        return names
+        return symbols
     if text.startswith("{"):
         inner: str = text[1:]
         if "}" in inner:
@@ -48,19 +58,28 @@ def _clause_names(clause: str) -> list[str]:
             symbol: str = raw.strip()
             if not symbol or symbol.startswith("//"):
                 continue
-            _, sep, alias = symbol.partition(" as ")
-            names.append(alias.strip() if sep else symbol)
+            if symbol.startswith("type "):
+                symbol = symbol[5:].strip()
+            original, sep, alias = symbol.partition(" as ")
+            original = original.strip()
+            alias = alias.strip()
+            if not original:
+                continue
+            bound: str = alias if sep and alias else original
+            if bound:
+                symbols.append((bound, original))
     elif text.startswith("*"):
         _, sep, alias = text.partition(" as ")
-        names.append(alias.strip() if sep else "*")
+        alias = alias.strip()
+        symbols.append((alias if sep and alias else "*", ""))
     else:
         head, sep, tail = text.partition(",")
         default: str = head.strip()
         if default and default not in ("*", "{"):
-            names.append(default)
+            symbols.append((default, ""))
         if sep and tail.strip():
-            names.extend(_clause_names(tail.strip()))
-    return [name for name in names if name]
+            symbols.extend(_clause_symbols(tail.strip()))
+    return symbols
 
 
 def _imports_from_statement(
@@ -79,12 +98,18 @@ def _imports_from_statement(
     else:
         return []
     head = re.sub(r"\bfrom\s*$", "", head).strip()
-    names: list[str] = _clause_names(head) if head else ["*"]
-    if not names:
-        names = ["*"]
+    symbols: list[tuple[str, str]] = _clause_symbols(head) if head else [("*", "")]
+    if not symbols:
+        symbols = [("*", "")]
     return [
-        ParsedImport(module=module, name=name, start_line=start_line, end_line=end_line)
-        for name in names
+        ParsedImport(
+            module=module,
+            name=bound,
+            start_line=start_line,
+            end_line=end_line,
+            original="" if bound == original else original,
+        )
+        for bound, original in symbols
     ]
 
 
@@ -157,9 +182,6 @@ def extract_definitions(root: Node) -> list[ParsedDefinition]:
     return found
 
 
-_TS_EXTENSIONS: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx")
-
-
 @dataclass(slots=True)
 class _ActiveDefinition:
     """One live entry on the definition nesting stack."""
@@ -172,7 +194,12 @@ class _ActiveDefinition:
 
 @dataclass(slots=True)
 class ExtractedFileGraph:
-    """Per-file emitter output: storage rows, ready to merge."""
+    """Per-file collect output: rows plus unresolved call sites.
+
+    ``definitions`` maps def name -> node id (first registration wins);
+    ``imports`` / ``calls`` are the raw IR the link phase resolves.
+    No ``calls`` edges are emitted here.
+    """
 
     rel_path: str
     language: str
@@ -181,6 +208,13 @@ class ExtractedFileGraph:
         default_factory=lambda: dict[str, GraphNode]()
     )
     edges: list[Edge] = dc_field(default_factory=lambda: list[Edge]())
+    definitions: dict[str, str] = dc_field(
+        default_factory=lambda: dict[str, str]()
+    )
+    imports: list[ParsedImport] = dc_field(
+        default_factory=lambda: list[ParsedImport]()
+    )
+    calls: list[ParsedCall] = dc_field(default_factory=lambda: list[ParsedCall]())
 
 
 def build_defined_node_id(
@@ -188,11 +222,6 @@ def build_defined_node_id(
 ) -> str:
     """Return the symbolic def id ``base:name:start:end``."""
     return f"{rel_path}:{def_name}:{start_line}:{end_line}"
-
-
-def build_assumed_callee_id(resolved_callee_rel_path: str, callee_name: str) -> str:
-    """Return the assumed callee id ``base:name`` (lines unknowable per file)."""
-    return f"{resolved_callee_rel_path}:{callee_name}"
 
 
 def _pop_finished_definitions(
@@ -261,43 +290,43 @@ def _register_edge_once(
     )
 
 
-def _ts_lookup_keys(module_specifier: str, importer_rel_path: str) -> list[str]:
-    """Return candidate rel paths for a relative TS/JS module specifier."""
-    if not module_specifier.startswith("."):
-        return []
-    base: str = posixpath.normpath(
-        posixpath.join(posixpath.dirname(importer_rel_path), module_specifier)
-    )
-    keys: list[str] = [base]
-    keys.extend(base + ext for ext in _TS_EXTENSIONS)
-    keys.extend(base + "/index" + ext for ext in _TS_EXTENSIONS)
-    return keys
-
-
 def _bare_callee_name(syntax_node: Node) -> str | None:
-    """Return the callee name for a bare-name call, else None."""
-    if syntax_node.type != "call_expression":
+    """Return the callee name for a bare-name call or construction.
+
+    Covers ``f()`` (``call_expression``) and ``new C()``
+    (``new_expression`` — construction is a call). Member calls
+    (``obj.m()``) never match by construction.
+    """
+    if syntax_node.type not in ("call_expression", "new_expression"):
         return None
     function_node: Node | None = syntax_node.child_by_field_name("function")
+    if function_node is None:
+        function_node = syntax_node.child_by_field_name("constructor")
     if function_node is None or function_node.type != "identifier":
         return None
     return node_text(function_node) or None
 
 
-def extract_nodes_and_edges(
+def collect_ts_file(
     rel_path: str,
     syntax_root: Node,
     graph_root: str,
     total_lines: int,
-    import_index: Mapping[str, str],
 ) -> ExtractedFileGraph:
-    """Walk one TS/JS file once, emitting nodes + edges inline.
+    """Walk one TS/JS file once, collecting defs + imports + call sites.
 
-    - defs → ``Node`` + ``Edge(CONTAINS)`` with ``base:name:start:end`` ids.
-    - imports → ``Node(IMPORT)`` + ``Edge(IMPORTS)`` (existing statement rules).
-    - bare calls with a live enclosing def → same-file hit by name, else
-      assumed ``base:name`` edge via ``import_index`` (relative specifiers
-      only); natives (no def, no import) are dropped and stored nowhere.
+    - defs (classes, functions, methods, interfaces, type aliases,
+      arrow-bound consts; ``export`` wrappers are transparent since the
+      walk visits nested nodes) → ``Node`` + ``Edge(CONTAINS)`` with
+      ``base:name:start:end`` ids.
+    - imports → ``Node(IMPORT)`` + ``Edge(IMPORTS)`` (existing
+      statement rules, now keeping alias originals).
+    - bare calls / constructions with a live enclosing def → buffered
+      as ``ParsedCall(caller=name, callee, site_line)`` for the link
+      phase. Module-level sites are dropped here.
+
+    Pure given the parsed tree: no module resolution, no ``calls``
+    edges.
     """
     suffix: str = Path(rel_path).suffix.lower()
     language: str = JAVASCRIPT if suffix in (".js", ".jsx") else TYPESCRIPT
@@ -319,14 +348,15 @@ def extract_nodes_and_edges(
     active_definition_stack: list[_ActiveDefinition] = []
     emitted_edge_keys: set[tuple[str, str, str]] = set()
     first_def_node_id_by_name: dict[str, str] = {}
-    module_specifier_by_bound_name: dict[str, str] = {}
-    deferred_call_sites: list[tuple[str, str, int]] = []
 
     for syntax_node in walk(syntax_root):
         if syntax_node.type in (
             "class_declaration",
             "function_declaration",
             "method_definition",
+            "method_signature",
+            "interface_declaration",
+            "type_alias_declaration",
             "arrow_function",
             "function_expression",
         ):
@@ -337,6 +367,18 @@ def extract_nodes_and_edges(
                 def_name: str = field_text(syntax_node, "name")
                 graph_node_kind: NodeKind = NodeKind.CLASS
                 stack_kind: str = "class"
+            elif syntax_node.type == "interface_declaration":
+                def_name = field_text(syntax_node, "name")
+                graph_node_kind = NodeKind.INTERFACE
+                stack_kind = "class"
+            elif syntax_node.type == "type_alias_declaration":
+                def_name = field_text(syntax_node, "name")
+                graph_node_kind = NodeKind.TYPE
+                stack_kind = "function"
+            elif syntax_node.type == "method_signature":
+                def_name = field_text(syntax_node, "name")
+                graph_node_kind = NodeKind.METHOD
+                stack_kind = "function"
             elif syntax_node.type == "function_declaration":
                 def_name = field_text(syntax_node, "name")
                 is_method: bool = bool(
@@ -425,9 +467,7 @@ def extract_nodes_and_edges(
                     kind=EdgeKind.IMPORTS,
                     target_module=parsed_import.module,
                 )
-                module_specifier_by_bound_name.setdefault(
-                    parsed_import.name, parsed_import.module
-                )
+                extracted_file.imports.append(parsed_import)
         else:
             callee_name: str | None = _bare_callee_name(syntax_node)
             if callee_name is None:
@@ -438,47 +478,15 @@ def extract_nodes_and_edges(
             if not active_definition_stack:
                 continue  # module-level call: drop
             call_site_line: int = span(syntax_node)[0]
-            deferred_call_sites.append(
-                (active_definition_stack[-1].node_id, callee_name, call_site_line)
+            extracted_file.calls.append(
+                ParsedCall(
+                    caller=active_definition_stack[-1].def_name,
+                    callee=callee_name,
+                    site_line=call_site_line,
+                )
             )
 
-    for caller_node_id, callee_name, call_site_line in deferred_call_sites:
-        same_file_callee_id: str | None = first_def_node_id_by_name.get(callee_name)
-        if same_file_callee_id is not None:
-            _register_edge_once(
-                extracted_file.edges,
-                emitted_edge_keys,
-                graph_root=graph_root,
-                src_id=caller_node_id,
-                dst_id=same_file_callee_id,
-                kind=EdgeKind.CALLS,
-                site_line=call_site_line,
-            )
-            continue
-        imported_module_specifier: str | None = module_specifier_by_bound_name.get(
-            callee_name
-        )
-        if imported_module_specifier is None:
-            continue  # native / builtin / unknown: store nothing
-        resolved_callee_rel_path: str | None = None
-        for module_lookup_key in _ts_lookup_keys(
-            imported_module_specifier, rel_path
-        ):
-            indexed_rel_path: str | None = import_index.get(module_lookup_key)
-            if indexed_rel_path is not None:
-                resolved_callee_rel_path = indexed_rel_path
-                break
-        if resolved_callee_rel_path is None:
-            continue  # npm / stdlib / unindexed: drop
-        _register_edge_once(
-            extracted_file.edges,
-            emitted_edge_keys,
-            graph_root=graph_root,
-            src_id=caller_node_id,
-            dst_id=build_assumed_callee_id(resolved_callee_rel_path, callee_name),
-            kind=EdgeKind.CALLS,
-            site_line=call_site_line,
-        )
+    extracted_file.definitions.update(first_def_node_id_by_name)
     return extracted_file
 
 
@@ -486,9 +494,17 @@ def build_ts_file_rows(
     root: str,
     rel_path: str,
     source_text: str,
-    import_index: Mapping[str, str],
+    _import_index: Mapping[str, str],
 ) -> FileRows:
-    """Build one TS/JS file's rows (same contract as ``build_python_file_rows``)."""
+    """Build one TS/JS file's rows via the collect phase.
+
+    Nodes + ``contains`` / ``imports`` edges come out of
+    :func:`collect_ts_file` directly; ``calls`` edges are never
+    emitted here — ``rows.calls`` carries the buffered call sites for
+    :func:`codegraph.parser.links.resolve_call_edges`.
+    ``_import_index`` is accepted for builder-signature uniformity and
+    ignored: the link phase resolves modules from the full file set.
+    """
     from codegraph.parser.rows import FileRows
 
     suffix: str = Path(rel_path).suffix.lower()
@@ -512,11 +528,16 @@ def build_ts_file_rows(
         return rows
     grammar: str = language
     tree = parse(grammar, source_text.encode("utf-8"))
-    out: ExtractedFileGraph = extract_nodes_and_edges(
-        rel_path, tree.root_node, root, total_lines, import_index
+    out: ExtractedFileGraph = collect_ts_file(
+        rel_path, tree.root_node, root, total_lines
     )
     rows.nodes.extend(out.nodes.values())
     rows.edges.extend(out.edges)
+    rows.definitions.update(out.definitions)
+    for parsed_import in out.imports:
+        rows.imports.setdefault(parsed_import.name, parsed_import.module)
+    rows.import_details.extend(out.imports)
+    rows.calls.extend(out.calls)
     return rows
 
 
@@ -525,10 +546,9 @@ __all__ = [
     "JAVASCRIPT",
     "LANGUAGE",
     "TYPESCRIPT",
-    "build_assumed_callee_id",
     "build_defined_node_id",
     "build_ts_file_rows",
+    "collect_ts_file",
     "extract_definitions",
     "extract_imports",
-    "extract_nodes_and_edges",
 ]

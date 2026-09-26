@@ -19,6 +19,7 @@ Layout::
     |   |   +-- utils.py
     |   |   +-- .env                         (renamed from sandbox.env)
     |   +-- <repo_name>/                     <- repo_path(repo_name)
+    |   +-- graph.lbdb                         <- graph_db_path()
     +-- lance_data/                          <- lance_path()
 """
 
@@ -30,6 +31,7 @@ SANDBOX_HOME: str = "/home/user"
 WORKSPACE_NAME: str = "sentinel-workspace"
 SCRIPTS_NAME: str = "context"
 LANCEDB_NAME: str = "lance_data"
+GRAPH_DB_NAME: str = "graph.lbdb"
 
 SCRIPT_FILES: tuple[str, ...] = (
     "chunking.py",
@@ -59,6 +61,16 @@ def repo_path(repo_name: str) -> str:
 
 def lance_path() -> str:
     return f"{SANDBOX_HOME}/{LANCEDB_NAME}"
+
+
+def graph_db_path() -> str:
+    """In-sandbox codegraph database (fixed run constant).
+
+    The ``installCodeGraphAndIndexRepo`` step indexes the PR-head tree
+    into this path; the ``search_codegraph`` agent tool reads it back.
+    Both recompute this path, so it can never drift.
+    """
+    return f"{workspace_path()}/{GRAPH_DB_NAME}"
 
 
 def table_name(repo_name: str) -> str:

@@ -4,13 +4,18 @@ Single source of truth for the row shapes. Persistence lives in
 :mod:`codegraph.graph_store` (Ladybug); these types never touch the
 database layer.
 
-Graph contract (v2, raw parser):
+Graph contract (two-pass build: Python, TypeScript/JavaScript, Go):
 
-- ``Node`` kinds: file | class | function | method | import.
-- ``Edge`` kinds: contains (file -> def, class -> method,
+- ``Node`` kinds: file | class | function | method | interface |
+  type | import. Interfaces own their method signatures; type aliases
+  are leaves.
+- ``Edge`` kinds: contains (file -> def, class/interface -> method,
   function -> nested def) | imports (file -> import, carrying the raw
   ``target_module`` string) | calls (function|method ->
-  function|method|class, bare-name call sites only).
+  function|method|class, bare-name call sites only, real node ids).
+- Unresolvable call sites are dropped at build time: every stored
+  ``calls`` edge has both endpoints, and no placeholder rows are
+  written (``is_placeholder`` stays on the schema for old databases).
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ class NodeKind(str, enum.Enum):
     CLASS = "class"
     FUNCTION = "function"
     METHOD = "method"
+    INTERFACE = "interface"
+    TYPE = "type"
     IMPORT = "import"
 
 
@@ -63,10 +70,9 @@ class Node:
 class Edge:
     """One structural relation between two nodes.
 
-    ``src_id`` always points at a stored node. ``dst_id`` usually does
-    too — except assumed cross-file callee refs (``base:name``), which
-    resolve to a placeholder stub node (``is_placeholder``): the stub's
-    presence *is* the broken-import signal.
+    Both ``src_id`` and ``dst_id`` always point at stored nodes; the
+    link phase drops call sites that resolve to nothing instead of
+    emitting dangling refs.
     """
 
     id: str = field(default_factory=new_id)

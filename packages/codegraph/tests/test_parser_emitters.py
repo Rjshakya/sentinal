@@ -1,11 +1,11 @@
-"""Emitter unit tests: TS/JS + Go single-pass extraction.
+"""Emitter unit tests: per-language collect phases.
 
-Each language implements
-``extract_nodes_and_edges(rel_path, root, graph_root, total_lines,
-import_index)``; these tests pin the shared contract (node id shapes,
-same-file-first call resolution, assumed ``base:name`` refs, native /
-module-level / attribute drops) plus each grammar's own defs, imports,
-and module lookup.
+Each language implements ``collect_<lang>_file`` (defs + imports with
+alias originals + buffered call sites, no ``calls`` edges —
+resolution lives in the link phase). These tests pin the node id
+shapes, the collect contract (buffered sites, alias originals,
+native / module-level / attribute drops), and each grammar's own
+defs, imports, and call shapes.
 """
 
 from __future__ import annotations
@@ -14,26 +14,32 @@ from typing import Any
 
 from codegraph.models import EdgeKind, Node, NodeKind
 from codegraph.parser import lang_go, lang_python, lang_typescript
-from codegraph.parser.links import build_import_index
 from codegraph.parser.raw_core import parse
+
+
+_DEF_KINDS: tuple[NodeKind, ...] = (
+    NodeKind.CLASS,
+    NodeKind.METHOD,
+    NodeKind.FUNCTION,
+    NodeKind.INTERFACE,
+    NodeKind.TYPE,
+)
 
 
 def _defs_by_name(out: Any) -> dict[str, Node]:
     found: dict[str, Node] = {}
     for node in out.nodes.values():
-        if node.kind in (NodeKind.CLASS, NodeKind.METHOD, NodeKind.FUNCTION):
+        if node.kind in _DEF_KINDS:
             found.setdefault(node.name, node)
     return found
 
 
-def _calls_by_name(out: Any) -> list[tuple[str, str, int | None]]:
-    by_id: dict[str, Node] = out.nodes
-    calls: list[tuple[str, str, int | None]] = []
-    for edge in out.edges:
-        if edge.kind != EdgeKind.CALLS:
-            continue
-        calls.append((by_id[edge.src_id].name, edge.dst_id, edge.site_line))
-    return calls
+def _buffered_calls(out: Any) -> list[tuple[str, str, int | None]]:
+    return [(c.caller, c.callee, c.site_line) for c in out.calls]
+
+
+def _no_calls_edges(out: Any) -> None:
+    assert [e for e in out.edges if e.kind == EdgeKind.CALLS] == []
 
 
 def _import_edges(out: Any) -> list[tuple[str, str | None]]:
@@ -47,7 +53,24 @@ def _import_edges(out: Any) -> list[tuple[str, str | None]]:
 
 def test_python_id_shapes() -> None:
     assert lang_python.build_defined_node_id("a.py", "f", 1, 2) == "a.py:f:1:2"
-    assert lang_python.build_assumed_callee_id("u.py", "h") == "u.py:h"
+
+
+def test_python_collect_buffers_calls_and_alias_originals() -> None:
+    src = "from utils import helper as h\n\ndef run():\n    h()\n    unknown()\n"
+    tree = parse("python", src.encode("utf-8"))
+    out = lang_python.collect_python_file("main.py", tree.root_node, "R", 5)
+    assert out.definitions["run"] == lang_python.build_defined_node_id(
+        "main.py", "run", 3, 5
+    )
+    assert [(i.name, i.effective_original, i.module) for i in out.imports] == [
+        ("h", "helper", "utils")
+    ]
+    assert [(c.caller, c.callee, c.site_line) for c in out.calls] == [
+        ("run", "h", 4),
+        ("run", "unknown", 5),
+    ]
+    assert [e for e in out.edges if e.kind == EdgeKind.CALLS] == []
+    assert _import_edges(out) == [("h", "utils")]
 
 
 def test_typescript_defs_imports_calls() -> None:
@@ -59,9 +82,7 @@ def test_typescript_defs_imports_calls() -> None:
         "const g = () => { f(); };\n"
     )
     tree = parse("typescript", src.encode("utf-8"))
-    out = lang_typescript.extract_nodes_and_edges(
-        "a.ts", tree.root_node, "R", 6, build_import_index(["a.ts"])
-    )
+    out = lang_typescript.collect_ts_file("a.ts", tree.root_node, "R", 6)
     defs = _defs_by_name(out)
     assert (defs["C"].kind, defs["m"].kind) == (NodeKind.CLASS, NodeKind.METHOD)
     assert (defs["f"].kind, defs["g"].kind) == (
@@ -70,49 +91,80 @@ def test_typescript_defs_imports_calls() -> None:
     )
     assert defs["m"].parent_id == defs["C"].id
     assert sorted(_import_edges(out)) == [("a", "m2"), ("c", "m2"), ("x", "mod")]
-    calls = {(caller, dst) for caller, dst, _ in _calls_by_name(out)}
-    assert calls == {("f", "a.ts:g:5:5"), ("g", "a.ts:f:4:4")}
-    sites = {(caller, site) for caller, _, site in _calls_by_name(out)}
-    assert sites == {("f", 4), ("g", 5)}
+    assert [(i.name, i.effective_original) for i in out.imports] == [
+        ("x", "x"),
+        ("a", "a"),
+        ("c", "b"),
+    ]
+    assert {(caller, callee) for caller, callee, _ in _buffered_calls(out)} == {
+        ("m", "helper"),
+        ("f", "g"),
+        ("g", "f"),
+    }
+    assert {(caller, site) for caller, _, site in _buffered_calls(out)} == {
+        ("m", 3),
+        ("f", 4),
+        ("g", 5),
+    }
+    _no_calls_edges(out)
 
 
-def test_typescript_assumed_cross_file_call() -> None:
+def test_typescript_interface_type_and_new() -> None:
+    src = (
+        'import { helper } from "./helper";\n'
+        "export interface I { m(): void; }\n"
+        "export type A = string;\n"
+        "export class C { m() { helper(); const x = new Foo(); } }\n"
+    )
+    tree = parse("typescript", src.encode("utf-8"))
+    out = lang_typescript.collect_ts_file("a.ts", tree.root_node, "R", 4)
+    defs = _defs_by_name(out)
+    assert defs["I"].kind == NodeKind.INTERFACE
+    assert defs["A"].kind == NodeKind.TYPE
+    assert defs["C"].kind == NodeKind.CLASS
+    methods = [
+        n
+        for n in out.nodes.values()
+        if n.kind == NodeKind.METHOD and n.name == "m"
+    ]
+    assert len(methods) == 2
+    assert {m.parent_id for m in methods} == {defs["I"].id, defs["C"].id}
+    assert {(caller, callee) for caller, callee, _ in _buffered_calls(out)} == {
+        ("m", "helper"),
+        ("m", "Foo"),
+    }
+    _no_calls_edges(out)
+
+
+def test_typescript_imported_call_buffered_for_link() -> None:
     src = 'import { helper } from "./helper";\nexport function run() { helper(); }\n'
     tree = parse("typescript", src.encode("utf-8"))
-    index = build_import_index(["a.ts", "helper.ts"])
-    out = lang_typescript.extract_nodes_and_edges(
-        "a.ts", tree.root_node, "R", 2, index
-    )
-    calls = _calls_by_name(out)
-    assert [(caller, dst) for caller, dst, _ in calls] == [
-        ("run", "helper.ts:helper")
-    ]
+    out = lang_typescript.collect_ts_file("a.ts", tree.root_node, "R", 2)
+    assert _buffered_calls(out) == [("run", "helper", 2)]
+    _no_calls_edges(out)
 
 
-def test_typescript_bare_specifier_call_dropped() -> None:
+def test_typescript_bare_specifier_call_buffered() -> None:
     src = 'import x from "mod";\nexport function f() { x(); }\n'
     tree = parse("typescript", src.encode("utf-8"))
-    out = lang_typescript.extract_nodes_and_edges(
-        "a.ts", tree.root_node, "R", 2, build_import_index(["a.ts"])
-    )
-    assert [e for e in out.edges if e.kind == EdgeKind.CALLS] == []
+    out = lang_typescript.collect_ts_file("a.ts", tree.root_node, "R", 2)
+    # Buffered here; the link phase drops it (npm specifier, no file).
+    assert _buffered_calls(out) == [("f", "x", 2)]
+    _no_calls_edges(out)
     assert _import_edges(out) == [("x", "mod")]
 
 
 def test_typescript_module_level_and_attribute_calls_dropped() -> None:
     src = 'import o from "./o";\no.method();\nbare();\n'
     tree = parse("typescript", src.encode("utf-8"))
-    out = lang_typescript.extract_nodes_and_edges(
-        "a.ts", tree.root_node, "R", 3, build_import_index(["a.ts", "o.ts"])
-    )
-    assert [e for e in out.edges if e.kind == EdgeKind.CALLS] == []
+    out = lang_typescript.collect_ts_file("a.ts", tree.root_node, "R", 3)
+    assert _buffered_calls(out) == []
+    _no_calls_edges(out)
 
 
 def test_typescript_side_effect_import() -> None:
     tree = parse("typescript", b'import "./polyfill";\n')
-    out = lang_typescript.extract_nodes_and_edges(
-        "a.ts", tree.root_node, "R", 1, build_import_index(["a.ts"])
-    )
+    out = lang_typescript.collect_ts_file("a.ts", tree.root_node, "R", 1)
     assert _import_edges(out) == [("*", "./polyfill")]
 
 
@@ -149,9 +201,7 @@ def test_go_struct_method_func_and_imports() -> None:
         "}\n"
     )
     tree = parse("go", src.encode("utf-8"))
-    out = lang_go.extract_nodes_and_edges(
-        "a.go", tree.root_node, "R", 17, build_import_index(["a.go"])
-    )
+    out = lang_go.collect_go_file("a.go", tree.root_node, "R", 17)
     defs = _defs_by_name(out)
     assert (defs["Helper"].kind, defs["S"].kind, defs["M"].kind) == (
         NodeKind.FUNCTION,
@@ -164,51 +214,74 @@ def test_go_struct_method_func_and_imports() -> None:
         ("alias", "example.com/x/utils"),
         ("fmt", "fmt"),
     ]
-    calls = _calls_by_name(out)
-    assert len(calls) == 1
-    caller, dst, site = calls[0]
-    assert (caller, dst, site) == ("M", "a.go:Helper:9:9", 16)
+    assert _buffered_calls(out) == [("M", "Helper", 16)]
+    _no_calls_edges(out)
 
 
-def test_go_interface_ignored() -> None:
-    src = "package p\n\ntype I interface {\n\tM()\n}\n\ntype S struct{}\n"
-    tree = parse("go", src.encode("utf-8"))
-    out = lang_go.extract_nodes_and_edges(
-        "a.go", tree.root_node, "R", 7, build_import_index(["a.go"])
+def test_go_interface_and_type_collected() -> None:
+    src = (
+        "package p\n"
+        "\n"
+        "type I interface {\n"
+        "\tM()\n"
+        "\tN(x int) string\n"
+        "}\n"
+        "\n"
+        "type A int\n"
+        "\n"
+        "type S struct{}\n"
     )
-    assert sorted(_defs_by_name(out)) == ["S"]
+    tree = parse("go", src.encode("utf-8"))
+    out = lang_go.collect_go_file("a.go", tree.root_node, "R", 11)
+    defs = _defs_by_name(out)
+    assert defs["I"].kind == NodeKind.INTERFACE
+    assert defs["A"].kind == NodeKind.TYPE
+    assert defs["S"].kind == NodeKind.CLASS
+    methods = [
+        n
+        for n in out.nodes.values()
+        if n.kind == NodeKind.METHOD and n.name in ("M", "N")
+    ]
+    assert {(m.name, m.parent_id) for m in methods} == {
+        ("M", defs["I"].id),
+        ("N", defs["I"].id),
+    }
+    _no_calls_edges(out)
+
+
+def test_go_dot_import_bound() -> None:
+    src = 'package main\n\nimport . "example.com/x/utils"\n\nfunc main() {\n\tHelper()\n}\n'
+    tree = parse("go", src.encode("utf-8"))
+    out = lang_go.collect_go_file("main.go", tree.root_node, "R", 7)
+    assert [(i.name, i.module) for i in out.imports] == [
+        (".", "example.com/x/utils")
+    ]
+    assert _buffered_calls(out) == [("main", "Helper", 6)]
+    _no_calls_edges(out)
 
 
 def test_go_method_before_struct_reparents() -> None:
     src = "package p\n\nfunc (s *S) M() {}\n\ntype S struct{}\n"
     tree = parse("go", src.encode("utf-8"))
-    out = lang_go.extract_nodes_and_edges(
-        "a.go", tree.root_node, "R", 5, build_import_index(["a.go"])
-    )
+    out = lang_go.collect_go_file("a.go", tree.root_node, "R", 5)
     defs = _defs_by_name(out)
     assert defs["M"].parent_id == defs["S"].id
 
 
-def test_go_assumed_cross_file_call_via_tail() -> None:
+def test_go_imported_call_buffered_for_link() -> None:
     src = 'package main\n\nimport h "example.com/x/helper"\n\nfunc main() {\n\th()\n}\n'
     tree = parse("go", src.encode("utf-8"))
-    index = build_import_index(["main.go", "lib/helper.go"])
-    out = lang_go.extract_nodes_and_edges(
-        "main.go", tree.root_node, "R", 7, index
-    )
-    calls = _calls_by_name(out)
-    assert [(caller, dst) for caller, dst, _ in calls] == [
-        ("main", "lib/helper.go:h")
-    ]
+    out = lang_go.collect_go_file("main.go", tree.root_node, "R", 7)
+    assert _buffered_calls(out) == [("main", "h", 6)]
+    _no_calls_edges(out)
 
 
 def test_go_selector_call_dropped() -> None:
     src = 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("hi")\n}\n'
     tree = parse("go", src.encode("utf-8"))
-    out = lang_go.extract_nodes_and_edges(
-        "main.go", tree.root_node, "R", 7, build_import_index(["main.go"])
-    )
-    assert [e for e in out.edges if e.kind == EdgeKind.CALLS] == []
+    out = lang_go.collect_go_file("main.go", tree.root_node, "R", 7)
+    assert _buffered_calls(out) == []
+    _no_calls_edges(out)
     assert _import_edges(out) == [("fmt", "fmt")]
 
 
@@ -216,3 +289,113 @@ def test_go_builder_rows() -> None:
     rows = lang_go.build_go_file_rows("R", "a.go", "package p\n\nfunc f() {}\n", {})
     assert rows.language == "go"
     assert [n.name for n in rows.nodes if n.kind == NodeKind.FUNCTION] == ["f"]
+
+
+def test_python_decorator_bare_buffers_at_line() -> None:
+    src = "def retry(fn):\n    return fn\n\n\n@retry\ndef run():\n    pass\n"
+    tree = parse("python", src.encode("utf-8"))
+    out = lang_python.collect_python_file("a.py", tree.root_node, "R", 7)
+    assert _buffered_calls(out) == [("run", "retry", 5)]
+    assert "run" in out.definitions
+    _no_calls_edges(out)
+
+
+def test_python_decorator_arg_form_buffers_once() -> None:
+    src = (
+        "def with_logging(level):\n"
+        "    def wrap(fn):\n"
+        "        return fn\n"
+        "    return wrap\n"
+        "\n"
+        "\n"
+        '@with_logging("debug")\n'
+        "def run():\n"
+        "    pass\n"
+    )
+    tree = parse("python", src.encode("utf-8"))
+    out = lang_python.collect_python_file("a.py", tree.root_node, "R", 9)
+    # Exactly one site: the arg-form call wrapper must not double-count.
+    assert _buffered_calls(out) == [("run", "with_logging", 7)]
+    _no_calls_edges(out)
+
+
+def test_python_decorator_stacked_buffers_pair() -> None:
+    src = (
+        "def a(f):\n"
+        "    return f\n"
+        "\n"
+        "\n"
+        "def b(f):\n"
+        "    return f\n"
+        "\n"
+        "\n"
+        "@a\n"
+        "@b\n"
+        "def run():\n"
+        "    pass\n"
+    )
+    tree = parse("python", src.encode("utf-8"))
+    out = lang_python.collect_python_file("a.py", tree.root_node, "R", 12)
+    assert _buffered_calls(out) == [("run", "a", 9), ("run", "b", 10)]
+    _no_calls_edges(out)
+
+
+def test_python_decorator_class_and_method_targets() -> None:
+    src = (
+        "def retry(fn):\n"
+        "    return fn\n"
+        "\n"
+        "\n"
+        "def register(cls):\n"
+        "    return cls\n"
+        "\n"
+        "\n"
+        "@register\n"
+        "class Service:\n"
+        "    @retry\n"
+        "    def call(self):\n"
+        "        pass\n"
+        "\n"
+        "    @property\n"
+        "    def status(self):\n"
+        "        return 1\n"
+    )
+    tree = parse("python", src.encode("utf-8"))
+    out = lang_python.collect_python_file("a.py", tree.root_node, "R", 17)
+    defs = _defs_by_name(out)
+    assert defs["Service"].kind == NodeKind.CLASS
+    assert defs["call"].kind == NodeKind.METHOD
+    # Builtin @property buffers here; the link phase drops it.
+    assert _buffered_calls(out) == [
+        ("Service", "register", 9),
+        ("call", "retry", 11),
+        ("status", "property", 15),
+    ]
+    _no_calls_edges(out)
+
+
+def test_python_decorator_attribute_skipped() -> None:
+    src = '@app.get("/x")\ndef handler():\n    pass\n'
+    tree = parse("python", src.encode("utf-8"))
+    out = lang_python.collect_python_file("a.py", tree.root_node, "R", 3)
+    assert _buffered_calls(out) == []
+    assert "handler" in out.definitions
+    _no_calls_edges(out)
+
+
+def test_python_decorator_on_nested_def() -> None:
+    src = (
+        "def deco(f):\n"
+        "    return f\n"
+        "\n"
+        "\n"
+        "def outer():\n"
+        "    @deco\n"
+        "    def inner():\n"
+        "        pass\n"
+        "    return inner\n"
+    )
+    tree = parse("python", src.encode("utf-8"))
+    out = lang_python.collect_python_file("a.py", tree.root_node, "R", 9)
+    assert _buffered_calls(out) == [("inner", "deco", 6)]
+    _no_calls_edges(out)

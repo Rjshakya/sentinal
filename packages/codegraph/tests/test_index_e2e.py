@@ -49,7 +49,7 @@ async def test_index_e2e(tmp_path: Path) -> None:
     try:
         files, nodes, edges = await store.total_counts()
         assert files == 3
-        # No dangling refs in this fixture: nothing to stub.
+        # Unresolvable sites drop: nothing dangling, nothing stubbed.
         assert nodes == result.nodes
         assert edges == result.edges
         by_kind = await store.count_by_node_kind()

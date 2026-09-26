@@ -286,9 +286,11 @@ them on `SQLModel.metadata`.
     + `submit_plan` contract), `file_review.py` (single-chunk review
     rubric), `summary.py` (walkthrough synthesis), `shared.py`
     (comment-body contract, `NO_FINDINGS` marker, identity/PR-intent
-    blocks, `getReviewDiffDirPath`).
+    blocks, `getReviewDiffDirPath`, `SEARCH_CODEGRAPH_TOOL_DESCRIPTION`).
   - `service.py` — ctx factory + agent builders + the `submit_plan`
-    tool mechanics.
+    tool mechanics + the `search_codegraph` tool (full query ladder
+    over the run's codegraph DB, closed over the ctx; planner gets
+    both tools, file agents get the search tool).
   - `_middleware.py` — private `NoDelegationMiddleware` (strips the
     `task` tool per model request) + the retry/limits stack.
   - `errors.py` — `AgentV2BuildError` (returned as a value, never raised).
@@ -697,17 +699,23 @@ the same head SHA do not re-run the agent. `reviewWorkflowV2` then runs:
    any checkout refusal fails the run instead of reviewing a
    half-built tree. Past this step there is exactly one world: PR
    tree + PR diff.
-4. `upsertPullRequestTx` — insert/update the `PullRequest` row.
-5. `markReviewRunningStep` — create (or reset on restart) the
+4. `installCodeGraphAndIndexRepoStep` — `pip install
+   sentinel-codegraph==0.3.0` (public PyPI, no tokens) + `codegraph
+   index` of the PR-head tree into the fixed run database
+   (`<workspace>/graph.lbdb`, `--overwrite` for retry idempotency).
+   Fail-closed: a dead search tool fails the run instead of
+   reviewing without it.
+5. `upsertPullRequestTx` — insert/update the `PullRequest` row.
+6. `markReviewRunningStep` — create (or reset on restart) the
    `review` lifecycle row in `RUNNING`, keyed by the deterministic
    `workflow_id` (unique index), with the PR link, sandbox, and LLM
    snapshot; returns the row id. The step is **durable**: retried 3x on
    transient DB failures.
-6. `fetchDiffStep` — `git diff {diff_base_sha or base_sha}...head_sha`
+7. `fetchDiffStep` — `git diff {diff_base_sha or base_sha}...head_sha`
    written to the sandbox (`file.diff`). `diff_base_sha` narrows the
    range on an incremental re-review; `base_sha` (the PR's true base)
    still lands on the `pull_requests` / `review` rows.
-7. `splitDiffStep` — upload `split_diff.py` into the sandbox and run it
+8. `splitDiffStep` — upload `split_diff.py` into the sandbox and run it
    against `file.diff`; the script writes `overview.md` (the four-bucket
    paths-only gate document) and the per-file annotated chunks into
    `splitted_diffs/`, and prints the tiny `SplitDiffResult` summary JSON
@@ -716,38 +724,41 @@ the same head SHA do not re-run the agent. `reviewWorkflowV2` then runs:
    runner dropout, `>0` final `DiffSplitError`). The summary is parsed by
    `parseSplitSummary` in `steps/split_diff.py`; the diff text itself
    never crosses the sandbox boundary.
-8. `listChunkFilesStep` — inventories `splitted_diffs/` into the
+9. `listChunkFilesStep` — inventories `splitted_diffs/` into the
    `ChunkInventory` diff truth (real paths + observed chunk files).
-9. `invokePlannerStep` + `getPlanStep` — the planning agent researches
-   the repo + chunks and submits via the `submit_plan` tool; the plan
-   is read back from `plan.json` into a `PlannerContext`.
-   **Enrichment-only**: any planner failure degrades to an empty
-   context, never fails the run.
-10. `buildFileReviewJobs` (pure) — joins inventory (truth) with planner
+10. `invokePlannerStep` + `getPlanStep` — the planning agent researches
+    the repo + chunks (graph-first via the `search_codegraph` tool)
+    and submits via the `submit_plan` tool; the plan
+    is read back from `plan.json` into a `PlannerContext`.
+    **Enrichment-only**: any planner failure degrades to an empty
+    context, never fails the run.
+11. `buildFileReviewJobs` (pure) — joins inventory (truth) with planner
     context (enrichment); trivial files dropped host-side.
-11. `invokeFileReviewStep` — one scoped per-file lane per job, fanned
+12. `invokeFileReviewStep` — one scoped per-file lane per job, fanned
     out in sequential batches (`V2_FANOUT_BATCH_SIZE`, one wave sharing
-    one rate limiter). Each file retries alone; failed files degrade
-    to nothing. All lanes failed → raises `V2AgentsError` (logged with
-    run context).
-12. `extractCommentsStep` — transcribes the concatenated file reports
+    one rate limiter). Each file agent carries the `search_codegraph`
+    tool for blast-radius checks. Each file retries alone; failed files
+    degrade to nothing. All lanes failed → raises `V2AgentsError`
+    (logged with run context).
+13. `extractCommentsStep` — transcribes the concatenated file reports
     into `CodeComment` drafts (structured extractor).
-13. `synthesizeSummaryStep` — synthesizes the walkthrough summary from
+14. `synthesizeSummaryStep` — synthesizes the walkthrough summary from
     planner context + findings; degrades to empty, never fails the run.
-14. `persistReviewSummaryTx` + `persistCodeCommentsTx` — one
+15. `persistReviewSummaryTx` + `persistCodeCommentsTx` — one
     `ReviewSummary` row and one `CodeComment` row per draft,
     each carrying the run's `review_id` (the lifecycle row).
-15. `persistReviewUsageTx` — one `ReviewUsage` row with aggregated token
+16. `persistReviewUsageTx` — one `ReviewUsage` row with aggregated token
     counts (success path; `review_status=SUCCESS`), carrying `review_id`.
-16. `markReviewStoppedStep` — flip the `review` row to `SUCCESS`
+17. `markReviewStoppedStep` — flip the `review` row to `SUCCESS`
     with the surviving comment count and the GitHub review id (from the
     inline post step, when it posted). Durable like the running step.
-17. `killSandboxStep` — always, in a `finally`: destroys the ephemeral
+18. `killSandboxStep` — always, in a `finally`: destroys the ephemeral
     per-run sandbox (best-effort; a kill failure never masks the run's
     outcome).
 
-Steps 2–5 run **inside** the `try`, so the `finally` sandbox kill also
-covers a raising clone / `upsertPullRequestTx` / running step. The `except`
+Steps 2–6 run **inside** the `try`, so the `finally` sandbox kill also
+covers a raising clone / codegraph index / `upsertPullRequestTx` /
+running step. The `except`
 block flips the `review` row to `FAILED` via
 `markReviewErroredStep` (guarded by its own try/except so a
 failure while recording the error never masks the original exception —

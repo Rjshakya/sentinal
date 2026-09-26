@@ -4,9 +4,9 @@ Embedded property-graph backend. Schema (created once via
 :meth:`LadybugStore.create_all`):
 
 - ``CodeNode`` — one row per structural node (``id`` primary key).
-  Assumed cross-file callee refs (``base:name``) with no matching def
-  are stored as stub rows (``is_placeholder=true``); the stub's
-  presence is the broken-import signal.
+  ``is_placeholder`` is retained on the column for old databases but
+  new builds never write placeholder rows: unresolvable call sites
+  are dropped at build time, so every stored edge has both endpoints.
 - ``Contains`` / ``Imports`` / ``Calls`` — rel tables between
   ``CodeNode`` rows (``site_line`` on ``Calls``, ``target_module`` on
   ``Imports``).
@@ -25,8 +25,6 @@ import ladybug as lb
 
 from codegraph.models import Edge, EdgeKind, Node, NodeKind
 
-_DEF_KINDS: frozenset[str] = frozenset({"class", "function", "method"})
-
 
 async def _fetch(
     conn: lb.AsyncConnection, query: str, params: dict[str, Any] | None = None
@@ -40,6 +38,42 @@ async def _fetch(
     """
     result: Any = await conn.execute(query, params or {})
     return [tuple(row) for row in result]
+
+
+_NODE_FIELDS: tuple[str, ...] = (
+    "id",
+    "root",
+    "file_path",
+    "kind",
+    "name",
+    "language",
+    "start_line",
+    "end_line",
+    "parent_id",
+    "is_placeholder",
+)
+"""CodeNode columns in canonical order (select + mapping share it)."""
+
+
+def _node_cols(alias: str) -> str:
+    """Return the comma-separated ``alias.col`` select list for a node."""
+    return ", ".join(f"{alias}.{field}" for field in _NODE_FIELDS)
+
+
+def _node_from_row(row: tuple[Any, ...]) -> Node:
+    """Map the first ten columns of a result row onto a :class:`Node`."""
+    return Node(
+        id=str(row[0]),
+        root=str(row[1]),
+        file_path=str(row[2]),
+        kind=NodeKind(str(row[3])),
+        name=str(row[4]),
+        language=str(row[5]),
+        start_line=int(row[6]),
+        end_line=int(row[7]),
+        parent_id=str(row[8]) if row[8] is not None else None,
+        is_placeholder=bool(row[9]),
+    )
 
 
 class LadybugStore:
@@ -85,9 +119,9 @@ class LadybugStore:
     async def add_all(self, nodes: Sequence[Node], edges: Sequence[Edge]) -> None:
         """Bulk-insert one batch of nodes plus their edges.
 
-        Dangling ``CALLS`` targets (``base:name`` with no matching def
-        in the batch) become placeholder stubs so every rel has both
-        endpoints.
+        Straight persist: every edge endpoint is a stored node id (the
+        build drops unresolvable call sites instead of emitting
+        dangling refs), so no rewriting or stub synthesis happens here.
         """
         node_rows: list[dict[str, Any]] = [
             {
@@ -104,11 +138,6 @@ class LadybugStore:
             }
             for n in nodes
         ]
-        def_id_by_file_name: dict[tuple[str, str], str] = {}
-        for n in nodes:
-            if n.kind.value in _DEF_KINDS and not n.is_placeholder:
-                def_id_by_file_name.setdefault((n.file_path, n.name), n.id)
-        stubs: dict[str, dict[str, Any]] = {}
         contains_rows: list[dict[str, Any]] = []
         imports_rows: list[dict[str, Any]] = []
         calls_rows: list[dict[str, Any]] = []
@@ -120,32 +149,9 @@ class LadybugStore:
                     {"src": e.src_id, "dst": e.dst_id, "mod": e.target_module}
                 )
             else:
-                # Assumed refs are ``base:name`` — never a stored id.
-                # Rewrite resolvable ones to the real def id; stub the rest.
-                dst_id: str = e.dst_id
-                parts: list[str] = dst_id.split(":")
-                if len(parts) == 2:
-                    real_id: str | None = def_id_by_file_name.get((parts[0], parts[1]))
-                    if real_id is not None:
-                        dst_id = real_id
-                    else:
-                        stubs.setdefault(
-                            dst_id,
-                            {
-                                "id": dst_id,
-                                "root": e.root,
-                                "file_path": parts[0],
-                                "kind": NodeKind.FUNCTION.value,
-                                "name": parts[1],
-                                "language": "",
-                                "start_line": 1,
-                                "end_line": 1,
-                                "parent_id": None,
-                                "is_placeholder": True,
-                            },
-                        )
-                calls_rows.append({"src": e.src_id, "dst": dst_id, "site": e.site_line})
-        node_rows.extend(stubs.values())
+                calls_rows.append(
+                    {"src": e.src_id, "dst": e.dst_id, "site": e.site_line}
+                )
         if node_rows:
             await self._conn.execute(
                 "UNWIND $batch AS row CREATE (n:CodeNode {"
@@ -257,28 +263,126 @@ class LadybugStore:
         query: str = (
             "MATCH (n:CodeNode)"
             + (" WHERE n.root = $root" if root is not None else "")
-            + " RETURN n.id, n.root, n.file_path, n.kind, n.name, "
-            "n.language, n.start_line, n.end_line, n.parent_id, n.is_placeholder "
+            + f" RETURN {_node_cols('n')} "
             "ORDER BY n.file_path, n.kind, n.start_line"
         )
         params: dict[str, Any] = {"root": root} if root is not None else {}
-        found: list[Node] = []
-        for row in await _fetch(self._conn, query, params):
-            found.append(
-                Node(
-                    id=str(row[0]),
-                    root=str(row[1]),
-                    file_path=str(row[2]),
-                    kind=NodeKind(str(row[3])),
-                    name=str(row[4]),
-                    language=str(row[5]),
-                    start_line=int(row[6]),
-                    end_line=int(row[7]),
-                    parent_id=str(row[8]) if row[8] is not None else None,
-                    is_placeholder=bool(row[9]),
-                )
+        return [_node_from_row(row) for row in await _fetch(self._conn, query, params)]
+
+    async def get_node(self, node_id: str, root: str | None = None) -> Node | None:
+        """Return one node by id (``None`` when absent). Pure read."""
+        query: str = "MATCH (n:CodeNode) WHERE n.id = $id"
+        params: dict[str, Any] = {"id": node_id}
+        if root is not None:
+            query += " AND n.root = $root"
+            params["root"] = root
+        query += f" RETURN {_node_cols('n')}"
+        rows: list[tuple[Any, ...]] = await _fetch(self._conn, query, params)
+        return _node_from_row(rows[0]) if rows else None
+
+    async def callees(
+        self, node_id: str, root: str | None = None
+    ) -> list[tuple[Node, int | None]]:
+        """Return ``(node, site_line)`` for outgoing ``Calls``, in call order.
+
+        Sorted by call-site line (unknown lines last), then callee
+        span — never worse than alphabetical. Pure read.
+        """
+        query: str = "MATCH (c:CodeNode {id: $id})-[e:Calls]->(d:CodeNode)"
+        params: dict[str, Any] = {"id": node_id}
+        if root is not None:
+            query += " WHERE c.root = $root"
+            params["root"] = root
+        query += f" RETURN {_node_cols('d')}, e.site_line"
+        found: list[tuple[Node, int | None]] = [
+            (
+                _node_from_row(row[: len(_NODE_FIELDS)]),
+                int(row[len(_NODE_FIELDS)]) if row[len(_NODE_FIELDS)] is not None else None,
             )
+            for row in await _fetch(self._conn, query, params)
+        ]
+        found.sort(
+            key=lambda item: (
+                item[1] is None,
+                item[1] if item[1] is not None else 0,
+                item[0].start_line,
+                item[0].name,
+            )
+        )
         return found
+
+    async def callers(
+        self, node_id: str, root: str | None = None
+    ) -> list[tuple[Node, int | None]]:
+        """Return ``(node, site_line)`` for incoming ``Calls``, in call order.
+
+        Pure read; same ordering as :meth:`callees`.
+        """
+        query: str = "MATCH (s:CodeNode)-[e:Calls]->(c:CodeNode {id: $id})"
+        params: dict[str, Any] = {"id": node_id}
+        if root is not None:
+            query += " WHERE c.root = $root"
+            params["root"] = root
+        query += f" RETURN {_node_cols('s')}, e.site_line"
+        found: list[tuple[Node, int | None]] = [
+            (
+                _node_from_row(row[: len(_NODE_FIELDS)]),
+                int(row[len(_NODE_FIELDS)]) if row[len(_NODE_FIELDS)] is not None else None,
+            )
+            for row in await _fetch(self._conn, query, params)
+        ]
+        found.sort(
+            key=lambda item: (
+                item[1] is None,
+                item[1] if item[1] is not None else 0,
+                item[0].start_line,
+                item[0].name,
+            )
+        )
+        return found
+
+    async def children(
+        self, node_id: str, root: str | None = None
+    ) -> list[Node]:
+        """Return outgoing ``Contains`` targets in span order. Pure read."""
+        query: str = "MATCH (p:CodeNode {id: $id})-[:Contains]->(d:CodeNode)"
+        params: dict[str, Any] = {"id": node_id}
+        if root is not None:
+            query += " WHERE p.root = $root"
+            params["root"] = root
+        query += f" RETURN {_node_cols('d')} ORDER BY d.start_line, d.name"
+        return [_node_from_row(row) for row in await _fetch(self._conn, query, params)]
+
+    async def file_imports(
+        self, file_rel: str, root: str | None = None
+    ) -> list[tuple[Node, str | None]]:
+        """Return ``(import node, target_module)`` for a file, in line order.
+
+        The file node id is its ``rel_path``. Pure read.
+        """
+        query: str = "MATCH (f:CodeNode {id: $id})-[e:Imports]->(i:CodeNode)"
+        params: dict[str, Any] = {"id": file_rel}
+        if root is not None:
+            query += " WHERE f.root = $root"
+            params["root"] = root
+        query += f" RETURN {_node_cols('i')}, e.target_module ORDER BY i.start_line"
+        return [
+            (
+                _node_from_row(row[: len(_NODE_FIELDS)]),
+                str(row[len(_NODE_FIELDS)]) if row[len(_NODE_FIELDS)] is not None else None,
+            )
+            for row in await _fetch(self._conn, query, params)
+        ]
+
+    async def list_files(self, root: str | None = None) -> list[Node]:
+        """Return file nodes, optionally scoped to ``root``, by path. Pure read."""
+        query: str = "MATCH (n:CodeNode) WHERE n.kind = 'file'"
+        params: dict[str, Any] = {}
+        if root is not None:
+            query += " AND n.root = $root"
+            params["root"] = root
+        query += f" RETURN {_node_cols('n')} ORDER BY n.file_path"
+        return [_node_from_row(row) for row in await _fetch(self._conn, query, params)]
 
     async def list_edges(self, root: str | None = None) -> list[Edge]:
         """Return edges, optionally scoped to ``root``, in stable order."""

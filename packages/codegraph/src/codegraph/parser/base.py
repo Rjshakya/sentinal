@@ -27,10 +27,19 @@ class ParsedDefinition:
 class ParsedImport:
     """A single imported name (one row per name, not per statement)."""
 
-    module: str  # raw module specifier, e.g. "os" | "./utils" | "fmt"
-    name: str  # imported symbol, or "*" / module for bare imports
+    module: str  # raw module specifier, e.g. "os" | "pkg.utils" | ".sibling"
+    name: str  # bound symbol in the importing file, or "*" for star imports
     start_line: int  # 1-based
     end_line: int  # 1-based
+    original: str = ""  # name in the defining module; "" means same as ``name``
+    # ``from utils import helper as h`` -> name="h", original="helper".
+    # ``from utils import helper`` -> name="helper", original="".
+    # ``import os`` -> name="os", original="".
+
+    @property
+    def effective_original(self) -> str:
+        """Return the defining-module name (falls back to the bound name)."""
+        return self.original or self.name
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,12 +48,13 @@ class ParsedCall:
 
     ``caller`` is the innermost enclosing named definition; module-level
     call sites are dropped, so ``caller`` is never empty. ``callee`` is
-    the called bare name — resolution to a node happens in the graph
-    builder, which skips names that resolve to nothing indexed.
+    the called bare name — resolution to a node happens in the link
+    phase, which drops names that resolve to nothing indexed.
     """
 
     caller: str
     callee: str
+    site_line: int | None = None  # 1-based call-site line (None = unknown)
 
 
 @dataclass(frozen=True, slots=True)

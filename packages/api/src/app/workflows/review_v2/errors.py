@@ -268,6 +268,34 @@ class CheckoutTransientError(CheckoutError):
     retryable: bool = True
 
 
+class CodeGraphInstallError(ReviewStepError):
+    """``pip install sentinel-codegraph`` failed in the review sandbox.
+
+    Final: without the CLI there is no graph to index, and the run
+    fails instead of reviewing without its search tool.
+    """
+
+    exitCode: int | None = None
+    outputTail: str | None = None
+
+
+class CodeGraphInstallTransientError(CodeGraphInstallError):
+    """Sandbox reconnect / runner dropout / pip transport flake. Transient."""
+
+    retryable: bool = True
+
+
+class CodeGraphIndexError(ReviewStepError):
+    """``codegraph index`` of the PR-head tree failed.
+
+    Final: the search tool would read a missing database, so the run
+    fails instead of reviewing without its search tool.
+    """
+
+    exitCode: int | None = None
+    outputTail: str | None = None
+
+
 class SummaryStepError(ReviewStepError):
     """The v2 summary synthesis call failed.
 

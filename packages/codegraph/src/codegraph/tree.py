@@ -67,10 +67,6 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
         key=lambda n: n.file_path,
     )
     by_id: dict[str, Node] = {n.id: n for n in snapshot.nodes}
-    by_file_name: dict[tuple[str, str], Node] = {}
-    for n in sorted(snapshot.nodes, key=lambda x: (x.file_path, x.start_line)):
-        if kind_label(n.kind) in ("class", "function", "method"):
-            by_file_name.setdefault((n.file_path, n.name), n)
     contains: dict[str, list[str]] = {}
     calls: dict[str, list[Edge]] = {}
     import_targets: dict[str, str | None] = {}
@@ -98,20 +94,17 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
         than the old alphabetical order.
         """
         node: Node | None = by_id.get(call.dst_id)
-        if node is None and len(call.dst_id.split(":")) == 2:
-            target_rel, name = call.dst_id.split(":")
-            node = by_file_name.get((target_rel, name))
         def_start: int = node.start_line if node is not None else 1 << 30
         if call.site_line is not None:
             return (0, call.site_line, def_start, "")
         return (1, def_start, 1 << 30, node.name if node is not None else call.dst_id)
 
     def ordered_callees(call_edges: list[Edge]) -> list[str]:
-        """Render each calls dst in implementation order; assumed refs resolve via (file, name).
+        """Render each calls dst in implementation order (dsts are real ids).
 
-        Returns display lines. A miss (no node with that name in the
-        target file) renders as ``name -> target (missing)`` — the
-        broken-import signal.
+        Returns display lines. A dst missing from the snapshot renders
+        as ``<id> (missing)`` (defensive — the build never emits
+        dangling edges).
         """
         lines: list[str] = []
         for call in sorted(call_edges, key=_callee_sort_key):
@@ -119,15 +112,6 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
             node: Node | None = by_id.get(dst_id)
             if node is not None:
                 lines.append(f"{kind_label(node.kind)} {node.name} {_span(node)}")
-                continue
-            parts: list[str] = dst_id.split(":")
-            if len(parts) == 2:
-                target_rel, name = parts
-                hit: Node | None = by_file_name.get((target_rel, name))
-                if hit is not None:
-                    lines.append(f"{kind_label(hit.kind)} {hit.name} {_span(hit)}")
-                else:
-                    lines.append(f"{name} -> {target_rel} (missing)")
             else:
                 lines.append(f"{dst_id} (missing)")
         return lines
@@ -135,12 +119,13 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
     def render_children(prefix: str, node: Node, lines: list[str]) -> None:
         """Render the subtree under one def node.
 
-        Classes show methods as leaves; functions and methods show
-        nested classes as nested blocks plus a ``calls (N)`` subgroup.
+        Classes and interfaces show methods as leaves; functions and
+        methods show nested classes as nested blocks plus a
+        ``calls (N)`` subgroup. Type aliases are leaves.
         Every node appears exactly once.
         """
         label: str = kind_label(node.kind)
-        if label == "class":
+        if label in ("class", "interface"):
             methods: list[Node] = [
                 m
                 for m in ordered(contains.get(node.id, []))
@@ -203,16 +188,22 @@ def render_tree(snapshot: GraphSnapshot, *, use_unicode: bool = True) -> str:
         )
         contained: list[Node] = ordered(contains.get(file_node.id, []))
         classes: list[Node] = [n for n in contained if kind_label(n.kind) == "class"]
+        interfaces: list[Node] = [
+            n for n in contained if kind_label(n.kind) == "interface"
+        ]
         top_functions: list[Node] = [
             n for n in contained if kind_label(n.kind) == "function"
         ]
         top_methods: list[Node] = [
             n for n in contained if kind_label(n.kind) == "method"
         ]
+        type_nodes: list[Node] = [n for n in contained if kind_label(n.kind) == "type"]
         imports: list[Node] = [
             n for n in contained if kind_label(n.kind) == "import"
         ]
-        def_blocks: list[Node] = classes + top_functions + top_methods
+        def_blocks: list[Node] = (
+            classes + interfaces + top_functions + top_methods + type_nodes
+        )
         has_imports: bool = len(imports) > 0
         for block_index, def_node in enumerate(def_blocks):
             last_block: bool = block_index == len(def_blocks) - 1 and not has_imports

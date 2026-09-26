@@ -1,12 +1,16 @@
 """Go structural extraction from a raw tree-sitter tree.
 
-Pure: takes the parsed ``root``, returns defs + imports. Struct types
-map to ``class`` nodes; functions and methods keep their Go names.
+Collect phase (:func:`collect_go_file`): walks once, emits struct
+types (``class``), interfaces (``interface``), other named types
+(``type``), functions, and methods (reparented to their receiver
+struct), plus imports — dot imports keep ``.`` as the bound name so
+the link phase can resolve their unqualified call sites. Bare-name
+call sites buffer unresolved for the link phase
+(:mod:`codegraph.parser.links`).
 """
 
 from __future__ import annotations
 
-import posixpath
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dc_field
@@ -18,7 +22,7 @@ from tree_sitter import Node
 from codegraph.models import Edge, EdgeKind
 from codegraph.models import Node as GraphNode
 from codegraph.models import NodeKind
-from codegraph.parser.base import ParsedDefinition, ParsedImport
+from codegraph.parser.base import ParsedCall, ParsedDefinition, ParsedImport
 from codegraph.parser.raw_core import field_text, node_text, parse, span, walk
 
 if TYPE_CHECKING:
@@ -91,10 +95,15 @@ def _receiver_base(node: Node) -> str | None:
 
 
 def _import_name(module: str, explicit: str) -> str:
-    if explicit and explicit not in ("_", "."):
-        return explicit
-    if explicit in ("_", "."):
+    if explicit == "_":
         return "*"
+    if explicit == ".":
+        # Dot import: the package's exported names enter this file's
+        # scope unqualified. ``.`` marks the row so the link phase can
+        # resolve bare sites against the target file's definitions.
+        return "."
+    if explicit:
+        return explicit
     # Default: base of the module path (quoted path without quotes).
     base: str = module.rsplit("/", 1)[-1]
     return base or "*"
@@ -130,7 +139,12 @@ class _ActiveDefinition:
 
 @dataclass(slots=True)
 class ExtractedFileGraph:
-    """Per-file emitter output: storage rows, ready to merge."""
+    """Per-file collect output: rows plus unresolved call sites.
+
+    ``definitions`` maps def name -> node id (first registration wins);
+    ``imports`` / ``calls`` are the raw IR the link phase resolves.
+    No ``calls`` edges are emitted here.
+    """
 
     rel_path: str
     language: str
@@ -139,6 +153,13 @@ class ExtractedFileGraph:
         default_factory=lambda: dict[str, GraphNode]()
     )
     edges: list[Edge] = dc_field(default_factory=lambda: list[Edge]())
+    definitions: dict[str, str] = dc_field(
+        default_factory=lambda: dict[str, str]()
+    )
+    imports: list[ParsedImport] = dc_field(
+        default_factory=lambda: list[ParsedImport]()
+    )
+    calls: list[ParsedCall] = dc_field(default_factory=lambda: list[ParsedCall]())
 
 
 def build_defined_node_id(
@@ -146,11 +167,6 @@ def build_defined_node_id(
 ) -> str:
     """Return the symbolic def id ``base:name:start:end``."""
     return f"{rel_path}:{def_name}:{start_line}:{end_line}"
-
-
-def build_assumed_callee_id(resolved_callee_rel_path: str, callee_name: str) -> str:
-    """Return the assumed callee id ``base:name`` (lines unknowable per file)."""
-    return f"{resolved_callee_rel_path}:{callee_name}"
 
 
 def _pop_finished_definitions(
@@ -227,33 +243,19 @@ def _is_struct_spec(syntax_node: Node) -> bool:
     return False
 
 
-def _go_lookup_keys(module_specifier: str, importer_rel_path: str) -> list[str]:
-    """Return candidate rel paths for a relative Go import."""
-    if not module_specifier.startswith("."):
-        return []
-    base: str = posixpath.normpath(
-        posixpath.join(posixpath.dirname(importer_rel_path), module_specifier)
-    )
-    return [base, base + ".go"]
-
-
-def _go_tail_candidates(
-    module_specifier: str, import_index: Mapping[str, str]
-) -> list[str]:
-    """Return indexed ``.go`` rel paths whose stem matches the import tail."""
-    tail: str = module_specifier.rsplit("/", 1)[-1]
-    if not tail:
-        return []
-    matches: set[str] = {
-        rel_path
-        for rel_path in set(import_index.values())
-        if rel_path.endswith(".go") and Path(rel_path).stem == tail
-    }
-    return sorted(matches, key=lambda p: (len(p), p))
+def _is_interface_spec(syntax_node: Node) -> bool:
+    """Return True when a ``type_spec`` declares an interface type."""
+    for child in syntax_node.named_children:
+        if child.type == "interface_type":
+            return True
+    return False
 
 
 def _bare_callee_name(syntax_node: Node) -> str | None:
-    """Return the callee name for a bare-name call, else None."""
+    """Return the callee name for a bare-name call, else None.
+
+    Selector calls (``pkg.Fn()``) never match by construction.
+    """
     if syntax_node.type != "call_expression":
         return None
     function_node: Node | None = syntax_node.child_by_field_name("function")
@@ -262,21 +264,28 @@ def _bare_callee_name(syntax_node: Node) -> str | None:
     return node_text(function_node) or None
 
 
-def extract_nodes_and_edges(
+def collect_go_file(
     rel_path: str,
     syntax_root: Node,
     graph_root: str,
     total_lines: int,
-    import_index: Mapping[str, str],
 ) -> ExtractedFileGraph:
-    """Walk one Go file once, emitting nodes + edges inline.
+    """Walk one Go file once, collecting defs + imports + call sites.
 
-    - struct ``type_spec`` → ``Node(CLASS)``, funcs/methods → ``Node`` +
-      ``Edge(CONTAINS)`` with ``base:name:start:end`` ids.
-    - ``import_spec`` → ``Node(IMPORT)`` + ``Edge(IMPORTS)``.
-    - bare calls with a live enclosing def → same-file hit by name, else
-      assumed ``base:name`` edge via ``import_index``; natives (no def,
-      no import) are dropped and stored nowhere.
+    - struct ``type_spec`` → ``Node(CLASS)``, interface ``type_spec`` →
+      ``Node(INTERFACE)`` (with ``method_signature`` children as
+      ``METHOD``), other named ``type_spec`` → ``Node(TYPE)``;
+      funcs/methods → ``Node`` + ``Edge(CONTAINS)`` with
+      ``base:name:start:end`` ids. Methods reparent to their receiver
+      struct when it is defined in the same file.
+    - ``import_spec`` → ``Node(IMPORT)`` + ``Edge(IMPORTS)`` (blank
+      imports bind ``*``, dot imports bind ``.``).
+    - bare calls with a live enclosing def → buffered as
+      ``ParsedCall(caller=name, callee, site_line)`` for the link
+      phase. Package-level call sites are dropped here.
+
+    Pure given the parsed tree: no module resolution, no ``calls``
+    edges.
     """
     language: str = LANGUAGE
     extracted_file = ExtractedFileGraph(
@@ -299,31 +308,36 @@ def extract_nodes_and_edges(
     first_def_node_id_by_name: dict[str, str] = {}
     struct_node_id_by_name: dict[str, str] = {}
     method_receiver_by_node_id: dict[str, str] = {}
-    module_specifier_by_bound_name: dict[str, str] = {}
-    deferred_call_sites: list[tuple[str, str, int]] = []
 
     for syntax_node in walk(syntax_root):
         if syntax_node.type in (
             "function_declaration",
             "method_declaration",
-        ) or (
-            syntax_node.type == "type_spec" and _is_struct_spec(syntax_node)
+            "method_elem",
+            "type_spec",
         ):
             _pop_finished_definitions(
                 active_definition_stack, syntax_node.start_byte
             )
-            def_name: str = field_text(syntax_node, "name")
-            if not def_name:
-                continue
             if syntax_node.type == "type_spec":
-                graph_node_kind: NodeKind = NodeKind.CLASS
-                stack_kind: str = "class"
-            elif syntax_node.type == "method_declaration":
+                if _is_struct_spec(syntax_node):
+                    graph_node_kind: NodeKind = NodeKind.CLASS
+                    stack_kind: str = "class"
+                elif _is_interface_spec(syntax_node):
+                    graph_node_kind = NodeKind.INTERFACE
+                    stack_kind = "class"
+                else:
+                    graph_node_kind = NodeKind.TYPE
+                    stack_kind = "function"
+            elif syntax_node.type in ("method_declaration", "method_elem"):
                 graph_node_kind = NodeKind.METHOD
                 stack_kind = "function"
             else:
                 graph_node_kind = NodeKind.FUNCTION
                 stack_kind = "function"
+            def_name: str = field_text(syntax_node, "name")
+            if not def_name:
+                continue
             start_line, end_line = span(syntax_node)
             definition_node_id: str = build_defined_node_id(
                 rel_path, def_name, start_line, end_line
@@ -403,7 +417,14 @@ def extract_nodes_and_edges(
                 kind=EdgeKind.IMPORTS,
                 target_module=module,
             )
-            module_specifier_by_bound_name.setdefault(bound_name, module)
+            extracted_file.imports.append(
+                ParsedImport(
+                    module=module,
+                    name=bound_name,
+                    start_line=start_line,
+                    end_line=end_line,
+                )
+            )
         else:
             callee_name: str | None = _bare_callee_name(syntax_node)
             if callee_name is None:
@@ -414,8 +435,12 @@ def extract_nodes_and_edges(
             if not active_definition_stack:
                 continue  # package-level call: drop
             call_site_line: int = span(syntax_node)[0]
-            deferred_call_sites.append(
-                (active_definition_stack[-1].node_id, callee_name, call_site_line)
+            extracted_file.calls.append(
+                ParsedCall(
+                    caller=active_definition_stack[-1].def_name,
+                    callee=callee_name,
+                    site_line=call_site_line,
+                )
             )
 
     for method_node_id, receiver_name in method_receiver_by_node_id.items():
@@ -436,51 +461,7 @@ def extract_nodes_and_edges(
                 edge.id = f"{struct_node_id}::{edge.kind.value}::{method_node_id}"
                 break
 
-    for caller_node_id, callee_name, call_site_line in deferred_call_sites:
-        same_file_callee_id: str | None = first_def_node_id_by_name.get(callee_name)
-        if same_file_callee_id is not None:
-            _register_edge_once(
-                extracted_file.edges,
-                emitted_edge_keys,
-                graph_root=graph_root,
-                src_id=caller_node_id,
-                dst_id=same_file_callee_id,
-                kind=EdgeKind.CALLS,
-                site_line=call_site_line,
-            )
-            continue
-        imported_module_specifier: str | None = module_specifier_by_bound_name.get(
-            callee_name
-        )
-        if imported_module_specifier is None:
-            continue  # builtin / unknown: store nothing
-        resolved_callee_rel_path: str | None = None
-        for module_lookup_key in _go_lookup_keys(
-            imported_module_specifier, rel_path
-        ):
-            indexed_rel_path: str | None = import_index.get(module_lookup_key)
-            if indexed_rel_path is not None:
-                resolved_callee_rel_path = indexed_rel_path
-                break
-        if resolved_callee_rel_path is None and not imported_module_specifier.startswith(
-            "."
-        ):
-            tail_candidates: list[str] = _go_tail_candidates(
-                imported_module_specifier, import_index
-            )
-            if tail_candidates:
-                resolved_callee_rel_path = tail_candidates[0]
-        if resolved_callee_rel_path is None:
-            continue  # stdlib / third-party / unindexed: drop
-        _register_edge_once(
-            extracted_file.edges,
-            emitted_edge_keys,
-            graph_root=graph_root,
-            src_id=caller_node_id,
-            dst_id=build_assumed_callee_id(resolved_callee_rel_path, callee_name),
-            kind=EdgeKind.CALLS,
-            site_line=call_site_line,
-        )
+    extracted_file.definitions.update(first_def_node_id_by_name)
     return extracted_file
 
 
@@ -488,9 +469,17 @@ def build_go_file_rows(
     root: str,
     rel_path: str,
     source_text: str,
-    import_index: Mapping[str, str],
+    _import_index: Mapping[str, str],
 ) -> FileRows:
-    """Build one Go file's rows (same contract as ``build_python_file_rows``)."""
+    """Build one Go file's rows via the collect phase.
+
+    Nodes + ``contains`` / ``imports`` edges come out of
+    :func:`collect_go_file` directly; ``calls`` edges are never
+    emitted here — ``rows.calls`` carries the buffered call sites for
+    :func:`codegraph.parser.links.resolve_call_edges`.
+    ``_import_index`` is accepted for builder-signature uniformity and
+    ignored: the link phase resolves modules from the full file set.
+    """
     from codegraph.parser.rows import FileRows
 
     total_lines: int = max(source_text.count("\n") + 1, 1)
@@ -511,21 +500,25 @@ def build_go_file_rows(
         )
         return rows
     tree = parse(LANGUAGE, source_text.encode("utf-8"))
-    out: ExtractedFileGraph = extract_nodes_and_edges(
-        rel_path, tree.root_node, root, total_lines, import_index
+    out: ExtractedFileGraph = collect_go_file(
+        rel_path, tree.root_node, root, total_lines
     )
     rows.nodes.extend(out.nodes.values())
     rows.edges.extend(out.edges)
+    rows.definitions.update(out.definitions)
+    for parsed_import in out.imports:
+        rows.imports.setdefault(parsed_import.name, parsed_import.module)
+    rows.import_details.extend(out.imports)
+    rows.calls.extend(out.calls)
     return rows
 
 
 __all__ = [
     "ExtractedFileGraph",
     "LANGUAGE",
-    "build_assumed_callee_id",
     "build_defined_node_id",
     "build_go_file_rows",
+    "collect_go_file",
     "extract_definitions",
     "extract_imports",
-    "extract_nodes_and_edges",
 ]

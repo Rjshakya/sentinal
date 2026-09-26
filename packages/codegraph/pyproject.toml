@@ -1,7 +1,9 @@
 [project]
-name = "codegraph"
-version = "0.2.4"
+name = "sentinel-codegraph"
+version = "0.3.0"
 description = "Sentinel code graph CLI: tree-sitter nodes/edges into SQL"
+readme = "README.md"
+authors = [{ name = "Sentinel" }]
 requires-python = ">=3.13"
 dependencies = [
     # "ladybug>=0.20.4",

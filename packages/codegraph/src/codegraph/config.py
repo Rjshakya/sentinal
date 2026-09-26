@@ -2,9 +2,10 @@
 
 The graph lives in an embedded Ladybug database — there is no server,
 so ``--db`` accepts only a filesystem path (on-disk ``.lbdb``) or
-``:memory:`` (ephemeral):
+``:memory:`` (ephemeral). The default is a known home-directory
+location so query time never has to guess where the index lives:
 
-- ``./codegraph.lbdb`` → on-disk database at that path.
+- ``~/.codegraph/graph.lbdb`` → default on-disk database.
 - ``:memory:`` → temporary database, lost when the process exits.
 """
 
@@ -12,6 +13,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+
+DEFAULT_DB: str = "~/.codegraph/graph.lbdb"
+"""Default ``--db`` value: the known-location on-disk database."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,4 +52,4 @@ def resolve_db(raw: str) -> ResolvedDb:
     return ResolvedDb(path=path.as_posix(), label=path.as_posix(), is_memory=False)
 
 
-__all__ = ["ResolvedDb", "resolve_db"]
+__all__ = ["DEFAULT_DB", "ResolvedDb", "resolve_db"]

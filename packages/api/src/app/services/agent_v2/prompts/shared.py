@@ -48,6 +48,34 @@ The combine step treats it as a successful empty outcome (no
 extractor call for that file's text beyond the shared merge).
 """
 
+SEARCH_CODEGRAPH_TOOL_DESCRIPTION: str = """\
+Explore the indexed code graph of this PR's repo (mirrors the
+checked-out head tree: files, classes, functions, methods,
+interfaces, types, imports, plus contains/imports/calls edges).
+
+Call this FIRST before opening files: map the major systems, trace
+callers/callees of changed symbols (blast radius), and find shared
+contracts (auth, config, persistence) touching the PR.
+
+One verb per call:
+- files: every indexed file (file ids are plain repo-relative paths).
+- search: substring-match a def-name fragment -> rows with node ids.
+  Start here when you know a symbol but not its id.
+- node: one node's full row, by id (or exact name + optional file).
+- callees: what the node calls, in implementation order with
+  call-site lines.
+- callers: what calls the node (incoming) - the blast-radius verb.
+- children: members contained in the node (class methods, file defs).
+- imports: one file's imports with target modules.
+- overview: index counts by kind/language.
+
+Every call returns JSON {root, verb, count, truncated, items[]} with
+stable node ids - feed ids back into node/callees/callers/children.
+If truncated is true, narrow with name/file/limit. On graph
+unavailability an error string is returned (never a failure) - say so
+and continue with grep/reads.
+"""
+
 
 def getReviewDiffDirPath(workDir: str, prNumber: int, headSha: str) -> str:
     """Return the in-sandbox directory holding the PR diff artefacts.

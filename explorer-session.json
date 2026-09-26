@@ -205,9 +205,9 @@
   },
   "history": [
     {
-      "uuid": "6462e87b-f8b1-43a0-8f60-018afb850a3c",
+      "uuid": "1cf4f7dc-e2d0-4da9-b720-ce95bd7c1e9a",
       "isQueryGenerationMode": false,
-      "cypherQuery": "MATCH (w:CodeNode {name: 'reviewWorkflowV2'}) RETURN w.id, w.file_path, w.start_line, w.end_line;\r\nMATCH (w:CodeNode {id: 'src/app/workflows/review_v2/workflow.py:reviewWorkflowV2:210:642'})-[:Calls*1..6]->(d) RETURN DISTINCT d.name, d.file_path;  \r\nMATCH (w:CodeNode {id: 'src/app/workflows/review_v2/workflow.py:reviewWorkflowV2:210:642'})-[:Calls]->(s:CodeNode {is_placeholder: true}) RETURN s.name, s.file_path;"
+      "cypherQuery": "// 1. find the caller id (rel path depends on your scan root)\r\n// MATCH (n:CodeNode)\r\n// WHERE n.name = 'reviewWorkflowV2' AND n.file_path CONTAINS 'review_v2/workflow.py'\r\n// RETURN n;\r\n\r\n// 2. all callees, in implementation order\r\nMATCH (c:CodeNode {id: 'src/app/workflows/review_v2/workflow.py:reviewWorkflowV2:210:642'})-[e:Calls]->(d)\r\nRETURN d\r\nORDER BY e.site_line;"
     }
   ]
 }

@@ -1,4 +1,10 @@
-"""Per-file row builders: source text -> storage rows (pure)."""
+"""Per-file row builders: source text -> storage rows (pure).
+
+Collect phase output: nodes + ``contains`` / ``imports`` edges plus the
+resolution maps (definitions, imports with alias originals, buffered
+call sites). ``calls`` edges are never emitted here — they resolve
+across files in :mod:`codegraph.parser.links`.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from codegraph.models import Edge, EdgeKind, Node, NodeKind, new_id
-from codegraph.parser.base import ParsedCall, ParsedFile
+from codegraph.parser.base import ParsedCall, ParsedFile, ParsedImport
 from codegraph.parser.raw_core import parse
 
 
@@ -21,6 +27,9 @@ class FileRows:
     edges: list[Edge] = field(default_factory=lambda: list[Edge]())
     definitions: dict[str, str] = field(default_factory=lambda: dict[str, str]())
     imports: dict[str, str] = field(default_factory=lambda: dict[str, str]())
+    import_details: list[ParsedImport] = field(
+        default_factory=lambda: list[ParsedImport]()
+    )
     calls: list[ParsedCall] = field(default_factory=lambda: list[ParsedCall]())
 
 
@@ -121,6 +130,7 @@ def build_file_rows(
             )
         )
         rows.imports.setdefault(imported.name, imported.module)
+        rows.import_details.append(imported)
 
     rows.calls.extend(parsed.calls)
     return rows
@@ -130,14 +140,16 @@ def build_python_file_rows(
     root: str,
     rel_path: str,
     source_text: str,
-    import_index: Mapping[str, str],
+    _import_index: Mapping[str, str],
 ) -> FileRows:
-    """Build one Python file's rows via the v2 single-pass emitter.
+    """Build one Python file's rows via the collect phase.
 
-    Nodes + ``contains`` / ``imports`` / ``calls`` edges (same-file hits
-    and assumed cross-file refs) come out of
-    :func:`lang_python.extract_nodes_and_edges` directly; ``calls`` needs
-    no global pass, so the returned ``calls`` list stays empty.
+    Nodes + ``contains`` / ``imports`` edges come out of
+    :func:`lang_python.collect_python_file` directly; ``calls`` edges
+    are never emitted here — ``rows.calls`` carries the buffered call
+    sites for :func:`codegraph.parser.links.resolve_call_edges`.
+    ``_import_index`` is accepted for builder-signature uniformity and
+    ignored: the link phase resolves modules from the full file set.
     """
     from codegraph.parser import lang_python
 
@@ -159,11 +171,16 @@ def build_python_file_rows(
         return rows
     tree = parse("python", source_text.encode("utf-8"))
 
-    out = lang_python.extract_nodes_and_edges(
-        rel_path, tree.root_node, root, total_lines, import_index
+    out = lang_python.collect_python_file(
+        rel_path, tree.root_node, root, total_lines
     )
     rows.nodes.extend(out.nodes.values())
     rows.edges.extend(out.edges)
+    rows.definitions.update(out.definitions)
+    for parsed_import in out.imports:
+        rows.imports.setdefault(parsed_import.name, parsed_import.module)
+    rows.import_details.extend(out.imports)
+    rows.calls.extend(out.calls)
     return rows
 
 
