@@ -17,7 +17,6 @@ import { Route as DashboardRepositoriesRouteRouteImport } from './routes/dashboa
 import { Route as DashboardReviewsRouteRouteImport } from './routes/dashboard/reviews/route'
 import { Route as DashboardSettingsRouteRouteImport } from './routes/dashboard/settings/route'
 import { Route as DashboardOwnerRepoPullsRouteRouteImport } from './routes/dashboard/$owner/$repo/pulls/route'
-import { Route as DashboardSearchOwnerNameRouteRouteImport } from './routes/dashboard/search/$owner/$name/route'
 import { Route as DashboardOwnerRepoPullNumberRouteRouteImport } from './routes/dashboard/$owner/$repo/pull/$number/route'
 
 const IndexRoute = IndexRouteImport.update({
@@ -62,12 +61,6 @@ const DashboardOwnerRepoPullsRouteRoute =
     path: '/$owner/$repo/pulls',
     getParentRoute: () => DashboardRouteRoute,
   } as any)
-const DashboardSearchOwnerNameRouteRoute =
-  DashboardSearchOwnerNameRouteRouteImport.update({
-    id: '/search/$owner/$name',
-    path: '/search/$owner/$name',
-    getParentRoute: () => DashboardRouteRoute,
-  } as any)
 const DashboardOwnerRepoPullNumberRouteRoute =
   DashboardOwnerRepoPullNumberRouteRouteImport.update({
     id: '/$owner/$repo/pull/$number',
@@ -84,7 +77,6 @@ export interface FileRoutesByFullPath {
   '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/dashboard/$owner/$repo/pulls': typeof DashboardOwnerRepoPullsRouteRoute
-  '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
   '/dashboard/$owner/$repo/pull/$number': typeof DashboardOwnerRepoPullNumberRouteRoute
 }
 export interface FileRoutesByTo {
@@ -95,7 +87,6 @@ export interface FileRoutesByTo {
   '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard': typeof DashboardIndexRoute
   '/dashboard/$owner/$repo/pulls': typeof DashboardOwnerRepoPullsRouteRoute
-  '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
   '/dashboard/$owner/$repo/pull/$number': typeof DashboardOwnerRepoPullNumberRouteRoute
 }
 export interface FileRoutesById {
@@ -108,7 +99,6 @@ export interface FileRoutesById {
   '/dashboard/settings': typeof DashboardSettingsRouteRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/dashboard/$owner/$repo/pulls': typeof DashboardOwnerRepoPullsRouteRoute
-  '/dashboard/search/$owner/$name': typeof DashboardSearchOwnerNameRouteRoute
   '/dashboard/$owner/$repo/pull/$number': typeof DashboardOwnerRepoPullNumberRouteRoute
 }
 export interface FileRouteTypes {
@@ -122,7 +112,6 @@ export interface FileRouteTypes {
     | '/dashboard/settings'
     | '/dashboard/'
     | '/dashboard/$owner/$repo/pulls'
-    | '/dashboard/search/$owner/$name'
     | '/dashboard/$owner/$repo/pull/$number'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -133,7 +122,6 @@ export interface FileRouteTypes {
     | '/dashboard/settings'
     | '/dashboard'
     | '/dashboard/$owner/$repo/pulls'
-    | '/dashboard/search/$owner/$name'
     | '/dashboard/$owner/$repo/pull/$number'
   id:
     | '__root__'
@@ -145,7 +133,6 @@ export interface FileRouteTypes {
     | '/dashboard/settings'
     | '/dashboard/'
     | '/dashboard/$owner/$repo/pulls'
-    | '/dashboard/search/$owner/$name'
     | '/dashboard/$owner/$repo/pull/$number'
   fileRoutesById: FileRoutesById
 }
@@ -213,13 +200,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardOwnerRepoPullsRouteRouteImport
       parentRoute: typeof DashboardRouteRoute
     }
-    '/dashboard/search/$owner/$name': {
-      id: '/dashboard/search/$owner/$name'
-      path: '/search/$owner/$name'
-      fullPath: '/dashboard/search/$owner/$name'
-      preLoaderRoute: typeof DashboardSearchOwnerNameRouteRouteImport
-      parentRoute: typeof DashboardRouteRoute
-    }
     '/dashboard/$owner/$repo/pull/$number': {
       id: '/dashboard/$owner/$repo/pull/$number'
       path: '/$owner/$repo/pull/$number'
@@ -236,7 +216,6 @@ interface DashboardRouteRouteChildren {
   DashboardSettingsRouteRoute: typeof DashboardSettingsRouteRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
   DashboardOwnerRepoPullsRouteRoute: typeof DashboardOwnerRepoPullsRouteRoute
-  DashboardSearchOwnerNameRouteRoute: typeof DashboardSearchOwnerNameRouteRoute
   DashboardOwnerRepoPullNumberRouteRoute: typeof DashboardOwnerRepoPullNumberRouteRoute
 }
 
@@ -246,7 +225,6 @@ const DashboardRouteRouteChildren: DashboardRouteRouteChildren = {
   DashboardSettingsRouteRoute: DashboardSettingsRouteRoute,
   DashboardIndexRoute: DashboardIndexRoute,
   DashboardOwnerRepoPullsRouteRoute: DashboardOwnerRepoPullsRouteRoute,
-  DashboardSearchOwnerNameRouteRoute: DashboardSearchOwnerNameRouteRoute,
   DashboardOwnerRepoPullNumberRouteRoute:
     DashboardOwnerRepoPullNumberRouteRoute,
 }

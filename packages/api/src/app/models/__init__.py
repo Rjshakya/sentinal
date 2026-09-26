@@ -8,7 +8,6 @@ from app.models.enums import (
     ReviewVerdict,
     SandboxState,
 )
-from app.models.indexing import IndexRun, IndexRunState
 from app.models.installation import Installation
 from app.models.llm_config import LLMConfigRecord
 from app.models.pull_request import PullRequest
@@ -23,8 +22,6 @@ __all__ = [
     "CommentSeverity",
     "CommentSide",
     "CommentState",
-    "IndexRun",
-    "IndexRunState",
     "Installation",
     "LLMConfigRecord",
     "PRStatus",

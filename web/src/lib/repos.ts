@@ -2,8 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
   apiClient,
+  type ConfigureResponse,
   type Repo,
-  type SetupAck,
   type SetupRepo,
   type UserRepo,
 } from "./api";
@@ -24,9 +24,10 @@ export function useUserRepos() {
 
 export function useSetup() {
   const qc = useQueryClient();
-  return useMutation<SetupAck, ApiError, SetupRepo[]>({
+  return useMutation<ConfigureResponse, ApiError, SetupRepo[]>({
     mutationFn: (repos) => apiClient.setup(repos),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["github", "repos"] });
       qc.invalidateQueries({ queryKey: ["users", "repos"] });
     },
   });

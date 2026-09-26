@@ -39,13 +39,21 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.db import async_session_maker
-from app.core.github_app import get_installation, list_installation_repos
-from app.core.install_state import sign as sign_install_state
-from app.core.install_state import verify as verify_install_state
 from app.models.installation import Installation
 from app.models.repo import Repo
 from app.repositories.installation import InstallationRepository
 from app.repositories.repo import RepoRepository
+from app.services.github import (
+    GitHubInstallationError,
+    GitHubRepoError,
+    createInstallationCtx,
+    createRepoCtx,
+    getInstallation,
+    listInstallationRepos,
+    signState,
+    verifyState,
+)
+from app.utils.branded import InstallationId, RepoName, RepoOwner, UserId
 from app.utils.util import uuidToStr
 
 log = logging.getLogger(__name__)
@@ -96,17 +104,6 @@ class RepoOut(BaseModel):
             "local 'repo' table for the calling user. The dashboard "
             "uses this to mark already-configured repos in the list "
             "and exclude them from the configure payload."
-        ),
-    )
-    is_indexed: bool = Field(
-        default=False,
-        description=(
-            "True when the latest :class:`IndexRun` for this repo "
-            "completed with ``state=SUCCESS``. ``False`` for never-"
-            "indexed repos, repos whose last index run errored, or "
-            "repos not yet configured on the local side. Computed "
-            "at the boundary from :attr:`Repo.is_indexed` "
-            "(``None`` is coerced to ``False``)."
         ),
     )
 
@@ -189,32 +186,46 @@ async def list_installation_repos_route(request: Request) -> list[RepoOut]:
         if inst.suspended_at is not None:
             continue
         try:
-            repos = await list_installation_repos(inst.github_installation_id)
+            repo_ctx = createRepoCtx(
+                userId=UserId(user_id),
+                installationId=InstallationId(inst.github_installation_id),
+                owner=RepoOwner(""),
+                repo=RepoName(""),
+            )
+            repos_or_err = await listInstallationRepos(repo_ctx)
         except Exception as exc:
             log.warning(
-                "list_installation_repos failed for installation_id=%s: %s",
+                "listInstallationRepos failed for installation_id=%s: %s",
                 inst.github_installation_id,
                 exc,
             )
             errors.append(str(inst.github_installation_id))
             continue
-        for r in repos:
+        if isinstance(repos_or_err, GitHubRepoError):
+            log.warning(
+                "listInstallationRepos failed for installation_id=%s: %s",
+                inst.github_installation_id,
+                repos_or_err.message,
+            )
+            errors.append(str(inst.github_installation_id))
+            continue
+        for r in repos_or_err:
             gh_id = r.id
             if gh_id in seen:
                 continue
             seen[gh_id] = RepoOut(
                 id=gh_id,
                 name=r.name,
-                full_name=r.full_name,
+                full_name=r.fullName,
                 owner=r.owner,
                 private=r.private,
                 description=r.description,
-                default_branch=r.default_branch,
-                html_url=r.html_url,
-                stargazers_count=r.stargazers_count,
+                default_branch=r.defaultBranch,
+                html_url=r.htmlUrl,
+                stargazers_count=r.stargazersCount,
                 language=r.language,
-                updated_at=r.updated_at,
-                clone_url=r.clone_url,
+                updated_at=r.updatedAt,
+                clone_url=r.cloneUrl,
                 installation_id=inst.id,
                 github_installation_id=inst.github_installation_id,
             )
@@ -230,12 +241,8 @@ async def list_installation_repos_route(request: Request) -> list[RepoOut]:
 
     # Cross-reference the merged GitHub-side repo list with the
     # local ``repo`` table to flag which ones the user has already
-    # started configuring and to surface the indexing mirror
-    # (``is_indexed``) of each local row. One indexed
-    # ``SELECT … WHERE github_repo_id IN (…)`` keyed on
-    # ``Repo.github_repo_id`` (UNIQUE) and ``Repo.user_id``
-    # (indexed). ``is_indexed`` is coerced ``None → False`` at the
-    # boundary so the response shape stays a strict ``bool``.
+    # configured. One indexed ``SELECT … WHERE github_repo_id IN (…)``
+    # keyed on ``Repo.github_repo_id`` (UNIQUE) and ``Repo.user_id``.
     if seen:
         async with async_session_maker() as session:
             repo = RepoRepository(session=session)
@@ -243,12 +250,9 @@ async def list_installation_repos_route(request: Request) -> list[RepoOut]:
                 col(Repo.user_id) == user_id,
                 col(Repo.github_repo_id).in_(list(seen.keys())),
             )
-            local_state: dict[int, bool] = {
-                row.github_repo_id: bool(row.is_indexed) for row in rows
-            }
+            configured_ids: set[int] = {row.github_repo_id for row in rows}
         for r in seen.values():
-            r.is_configured = r.id in local_state
-            r.is_indexed = local_state.get(r.id, False)
+            r.is_configured = r.id in configured_ids
 
     return list(seen.values())
 
@@ -316,7 +320,7 @@ async def get_install_url(request: Request) -> InstallUrlOut:
             detail="GitHub App is not fully configured",
         )
 
-    state = sign_install_state(user_id, secret)
+    state = signState(user_id, secret)
     slug = settings.github_app_slug
     url = f"https://github.com/apps/{slug}/installations/new?state={quote(state, safe='')}"
     return InstallUrlOut(url=url)
@@ -391,7 +395,7 @@ async def setup_callback(
     """GitHub's redirect target after a successful App install.
 
     Verifies the HMAC-signed ``state``, fetches the installation
-    details from GitHub via :func:`get_installation`, upserts the
+    details from GitHub via :func:`getInstallation`, upserts the
     local :class:`Installation` row, and 302s to the dashboard with
     ``?installation=success|failed`` so the new tab can toast the
     outcome.
@@ -407,7 +411,7 @@ async def setup_callback(
     secret = settings.github_install_state_secret
     user_id = None
     if secret:
-        user_id = verify_install_state(state, secret)
+        user_id = verifyState(state, secret)
     if not user_id:
         log.warning(
             "github_setup: rejected (bad state, installation_id=%s)", installation_id
@@ -415,15 +419,28 @@ async def setup_callback(
         return _setup_redirect(reason="bad_state", setup_action=setup_action)
 
     try:
-        details = await get_installation(installation_id)
+        install_ctx = createInstallationCtx(
+            userId=UserId(user_id),
+            installationId=InstallationId(installation_id),
+        )
+        details_or_err = await getInstallation(install_ctx)
     except Exception as exc:
         log.warning(
-            "github_setup: get_installation failed (installation_id=%s, user_id=%s): %s",
+            "github_setup: getInstallation failed (installation_id=%s, user_id=%s): %s",
             installation_id,
             user_id,
             exc,
         )
         return _setup_redirect(reason="github_fetch_failed", setup_action=setup_action)
+    if isinstance(details_or_err, GitHubInstallationError):
+        log.warning(
+            "github_setup: getInstallation failed (installation_id=%s, user_id=%s): %s",
+            installation_id,
+            user_id,
+            details_or_err.message,
+        )
+        return _setup_redirect(reason="github_fetch_failed", setup_action=setup_action)
+    details = details_or_err
 
     if details.id != installation_id:
         log.warning(
@@ -437,11 +454,11 @@ async def setup_callback(
     try:
         created = await _upsert_installation(
             user_id=user_id,
-            github_installation_id=details.id,
-            account_login=details.account_login,
-            account_type=details.account_type,
-            repository_selection=details.repository_selection,
-            suspended_at=details.suspended_at,
+            github_installation_id=int(details.id),
+            account_login=details.accountLogin,
+            account_type=details.accountType,
+            repository_selection=details.repositorySelection,
+            suspended_at=details.suspendedAt,
         )
     except Exception as exc:
         log.warning(
@@ -456,7 +473,7 @@ async def setup_callback(
         "github_setup: %s installation_id=%s account=%s user_id=%s setup_action=%s",
         "created" if created else "updated",
         details.id,
-        details.account_login,
+        details.accountLogin,
         user_id,
         setup_action,
     )

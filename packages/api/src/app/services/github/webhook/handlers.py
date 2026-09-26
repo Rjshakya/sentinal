@@ -11,15 +11,15 @@ Two families:
 - **Mirror handlers** (``installation`` / ``installation_repositories``)
   — the local-DB bookkeeping for events the install-flow setup callback
   does not cover.
-- **Delegation handlers** (``pull_request`` / ``issue_comment`` /
-  ``push``) — forward the domain events to the DBOS dispatch adapters.
+- **Delegation handlers** (``pull_request`` / ``issue_comment``)
+  — forward the domain events to the DBOS dispatch adapters.
   ``pull_request`` ``opened`` and ``issue_comment`` ``created`` run the
   refactored review workflow via
-  :mod:`app.workflows.triggers.review`; ``push`` keeps the legacy
-   incremental-indexing adapter. The adapter imports are **deferred to
-  call time**: the adapters pull in the review / indexing pipelines,
-  which in turn import :mod:`app.services.github` — a module-level
-  import here would cycle through the partially initialized package.
+  :mod:`app.workflows.triggers.review`. The adapter imports are
+  **deferred to call time**: the adapters pull in the review
+  pipeline, which in turn imports :mod:`app.services.github` — a
+  module-level import here would cycle through the partially
+  initialized package.
 
 Handlers never raise; malformed payloads record
 ``skipReason="malformed_installation"`` on the ctx so the ack stays
@@ -238,12 +238,9 @@ async def handleIssueCommentCreated(ctx: WebhookCtx, session: AsyncSession):
 
 
 async def handlePush(ctx: WebhookCtx, session: AsyncSession):
-    """Forward a ``push`` delivery to the incremental-indexing adapter."""
-    from app.services.indexing.incremental import handle_push_event
-
-    ack = await handle_push_event(ctx.payload, ctx.delivery)
-    ctx.accepted = ack.accepted
-    ctx.skipReason = ack.skip_reason
+    """Accept ``push`` deliveries without indexing (pipeline removed)."""
+    ctx.accepted = False
+    ctx.skipReason = "unhandled_event"
 
     return None
 

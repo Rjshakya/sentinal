@@ -12,7 +12,7 @@ itself. The DBOS workflow's own state is the source of truth; this table
 is the user-facing mirror.
 
 The LLM columns snapshot the resolved
-:class:`app.core.llm.LLMConfig` at run time so failed runs keep their
+:class:`app.services.llm.LLMCtx` at run time so failed runs keep their
 LLM identity even though no usage/summary rows exist. ``llm_provider``
 records the config source (``"system"`` for the settings default,
 ``"user"`` for the user's stored ``llm_configs`` row); ``llm_client``
@@ -39,7 +39,7 @@ from app.utils.util import uuidToStr
 class ReviewState(str, enum.Enum):
     """Lifecycle state of a :class:`Review` row.
 
-    Stored as a ``String(16)`` column (the ``IndexRun`` pattern) to
+    Stored as a ``String(16)`` column (plain string, not a PG ENUM) to
     avoid PG-ENUM ALTER churn.
     """
 

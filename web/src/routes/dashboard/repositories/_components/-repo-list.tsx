@@ -4,24 +4,21 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { Repo } from "@/lib/api";
-import { IconDatabase, IconGitPullRequest, IconLock } from "@tabler/icons-react";
+import { IconGitPullRequest, IconLock } from "@tabler/icons-react";
 import { Link } from "@tanstack/react-router";
 
 type Props = {
   repos: Repo[];
   selected: Set<string>;
   onToggle: (fullName: string) => void;
-  onIndex: (repo: Repo) => void;
 };
 
-export function RepoList({ repos, selected, onToggle, onIndex }: Props) {
+export function RepoList({ repos, selected, onToggle }: Props) {
   return (
     <div className="divide-y rounded-lg ">
       {repos.map((repo) => {
         const isSelected = selected.has(repo.full_name);
         const isConfigured = repo.is_configured;
-        const isIndexed = repo.is_indexed;
-        const canIndex = isConfigured && !isIndexed;
         const checkboxId = `repo-${repo.id}`;
         return (
           <Label
@@ -76,21 +73,6 @@ export function RepoList({ repos, selected, onToggle, onIndex }: Props) {
               >
                 <IconGitPullRequest className="size-3.5" />
                 {"Pulls"}
-              </Button>
-            )}
-            {canIndex && (
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onIndex(repo);
-                }}
-              >
-                <IconDatabase className="size-3.5" />
-                {"Index"}
               </Button>
             )}
           </Label>

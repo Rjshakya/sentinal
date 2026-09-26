@@ -7,9 +7,8 @@ Entry points:
   stored ``llm_configs`` row (fresh DB query; no borrowing from the
   :mod:`app.services.llm.config` sub-service).
 - :func:`createLLMModel` — build the LangChain chat model
-  (:class:`langchain_core.language_models.BaseChatModel`) for a ctx;
-  fresh implementation over ``langchain.chat_models.init_chat_model``
-  (no delegation to :mod:`app.core.llm`).
+   (:class:`langchain_core.language_models.BaseChatModel`) for a ctx;
+   implemented over ``langchain.chat_models.init_chat_model``.
 - :func:`acquireSharedLimiter` / :func:`releaseSharedLimiter` —
   process-wide shared rate limiters, one per fan-out batch wave.
   Steps reference them by key (serializable — the live limiter never
@@ -160,8 +159,8 @@ def createLLMModel(
 ) -> BaseChatModel | LLMConfigError:
     """Build the LangChain chat model for a :class:`LLMCtx`.
 
-    Fresh implementation over ``langchain.chat_models.init_chat_model`` —
-    no delegation to :mod:`app.core.llm`. Applies the ctx's knobs
+    Implemented over ``langchain.chat_models.init_chat_model``.
+    Applies the ctx's knobs
     uniformly: ``maxRetries``, an :class:`InMemoryRateLimiter` when
     ``rateLimitRps`` is positive, ``baseUrl``, ``defaultHeaders``, and a
     :class:`SecretStr`-wrapped key. Provider extras are applied for

@@ -5,8 +5,6 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.core.llm import LLMConfig
-
 BASE_DIR = Path(__file__).resolve().parents[3]
 
 
@@ -474,24 +472,6 @@ class Settings(BaseSettings):
         provider = model.split(":", 1)[0]
         env_key = _PROVIDER_ENV_KEY.get(provider, "")
         return bool(env_key) and bool(os.environ.get(env_key))
-
-    @property
-    def llm_config(self) -> LLMConfig:
-        """The :class:`LLMConfig` value object for the review agent.
-
-        Frozen, DBOS-serializable. A single value object replaces
-        the four scattered fields (provider / base_url / api_key /
-        model) that used to cross the webhook → workflow → step
-        boundary.
-        """
-        return LLMConfig(
-            model=self.llm_model,
-            api_key=self.llm_api_key or None,
-            base_url=self.llm_base_url or None,
-            headers=dict(self.llm_default_headers),
-            max_retries=self.llm_max_retries,
-            rate_limit_rps=self.llm_rate_limit_rps,
-        )
 
     @property
     def github_webhook_configured(self) -> bool:

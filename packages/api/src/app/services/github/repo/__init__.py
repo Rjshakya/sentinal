@@ -5,6 +5,7 @@ Public surface:
 - :func:`createRepoCtx` — ctx constructor.
 - :func:`listInstallationRepos` — paginated repo list for an installation.
 - :func:`getRepo` — single repo.
+- :func:`getInstallationIdForRepo` — owner/repo → installation id fallback.
 - :func:`mintAccessToken` — fresh installation access token.
 - :func:`getCloneUrl` — authenticated https clone URL.
 
@@ -17,6 +18,7 @@ from app.services.github.repo.errors import GitHubRepoError
 from app.services.github.repo.service import (
     createRepoCtx,
     getCloneUrl,
+    getInstallationIdForRepo,
     getRepo,
     listInstallationRepos,
     mintAccessToken,
@@ -29,6 +31,7 @@ __all__ = [
     "RepoCtx",
     "createRepoCtx",
     "getCloneUrl",
+    "getInstallationIdForRepo",
     "getRepo",
     "listInstallationRepos",
     "mintAccessToken",

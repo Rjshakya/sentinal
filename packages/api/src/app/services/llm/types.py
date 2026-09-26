@@ -6,10 +6,7 @@ error variant of the context-creator union (:class:`LLMContextError`),
 and the branded identifier types the package carries.
 
 Naming convention: this package intentionally uses **camelCase**
-identifiers — the same convention as :mod:`app.services.sandbox`. The
-one exception is the value-object shape of :class:`LLMCtx`, which maps
-onto the snake_case :class:`app.core.llm.LLMConfig` at the
-:func:`app.services.llm.service.createLLMModel` boundary.
+identifiers — the same convention as :mod:`app.services.sandbox`.
 
 Design notes:
 
@@ -44,8 +41,7 @@ class LLMCtx(BaseModel):
     Assembled by :func:`app.services.llm.service.createDefaultLLMContext`
     (settings-driven) or :func:`app.services.llm.service.createUserLLMContext`
     (per-user DB row); consumed by
-    :func:`app.services.llm.service.createLLMModel`, which converts it to
-    :class:`app.core.llm.LLMConfig` at the factory boundary.
+    :func:`app.services.llm.service.createLLMModel`.
     """
 
     model: str = Field(

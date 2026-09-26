@@ -12,7 +12,7 @@ cache_creation breakdown (``{"cache_read": int | None,
 optional because not every provider surfaces cache metadata.
 
 The ``llm_model_id`` / ``llm_provider`` / ``llm_base_url`` columns
-snapshot the resolved :class:`app.core.llm.LLMConfig` at run time so
+snapshot the resolved :class:`app.services.llm.LLMCtx` at run time so
 per-model cost and quality analytics never depend on a config row
 that may later be edited or deleted. All three are nullable.
 """

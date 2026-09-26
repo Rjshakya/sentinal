@@ -7,6 +7,8 @@ Entry points (camelCase, matching the package convention):
 - :func:`listInstallationRepos` — paginated ``GET /installation/repositories``
   for the ctx's installation.
 - :func:`getRepo` — single repo via ``GET /repos/{owner}/{repo}``.
+- :func:`getInstallationIdForRepo` — owner/repo → installation id
+  fallback via ``GET /repos/{owner}/{repo}/installation``.
 - :func:`mintAccessToken` — fresh installation access token
   (``POST /app/installations/{id}/access_tokens``).
 - :func:`getCloneUrl` — authenticated https clone URL from a minted
@@ -125,6 +127,26 @@ async def getRepo(ctx: RepoCtx) -> GitHubRepo | GitHubRepoError:
     return _toGitHubRepo(parsed)
 
 
+async def getInstallationIdForRepo(
+    owner: RepoOwner, repo: RepoName
+) -> InstallationId | None:
+    """Resolve ``owner/repo`` to the App's installation id.
+
+    Fallback for callers that only know owner/repo (not the local
+    installation row). Returns ``None`` when the App has no
+    installation for that repo.
+    """
+    app = getAppGitHub()
+    try:
+        resp = await app.rest.apps.async_get_repo_installation(owner=owner, repo=repo)
+    except Exception:
+        return None
+    installation_id = getattr(resp.parsed_data, "id", None)
+    if not installation_id:
+        return None
+    return InstallationId(int(installation_id))
+
+
 async def mintAccessToken(ctx: RepoCtx) -> AccessToken | GitHubRepoError:
     """Force-mint a fresh installation access token.
 
@@ -192,6 +214,7 @@ def _toGitHubRepo(parsed: FullRepository) -> GitHubRepo:
 __all__ = [
     "createRepoCtx",
     "getCloneUrl",
+    "getInstallationIdForRepo",
     "getRepo",
     "listInstallationRepos",
     "mintAccessToken",

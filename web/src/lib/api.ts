@@ -44,7 +44,6 @@ export type Repo = {
   installation_id: string;
   github_installation_id: number;
   is_configured: boolean;
-  is_indexed: boolean;
 };
 
 export type SetupRepo = {
@@ -55,37 +54,15 @@ export type SetupRepo = {
   default_branch: string;
 };
 
-export type SetupEcosystem = "node" | "python" | "rust" | "go" | "ruby" | "mixed" | "none";
-
-export type SetupResult = {
-  ok: boolean;
-  ecosystem: SetupEcosystem;
-  manager: string | null;
-  install_cmd: string | null;
-  duration_s: number;
-  notes: string;
-  bootstrapped_tools: string[];
-};
-
-export type RepoSetupResult = {
-  repo_id: string | null;
+export type ConfiguredRepo = {
   github_repo_id: number;
-  setup: SetupResult;
+  repo_id: string | null;
+  skipped: boolean;
+  error: string | null;
 };
 
-export type SetupAck = {
-  results: RepoSetupResult[];
-};
-
-export type IndexRepoTriggerIn = {
-  repo_owner: string;
-  repo_name: string;
-  repo_url: string;
-  default_branch?: string | null;
-};
-
-export type IndexRepoTriggerOut = {
-  workflow_id: string;
+export type ConfigureResponse = {
+  repos: ConfiguredRepo[];
 };
 
 export type LlmConfig = {
@@ -123,30 +100,6 @@ export type LlmConfigPayload = {
   api_key: string;
 };
 
-export type CodeSearchRequest = {
-  owner: string;
-  repo: string;
-  query: string;
-  limit?: number;
-};
-
-export type CodeSearchResult = {
-  file_name: string;
-  language: string;
-  start_line: number;
-  end_line: number;
-  node_types: string[];
-  content: string;
-  _relevance_score: number;
-};
-
-export type CodeSearchResponse = {
-  owner: string;
-  repo: string;
-  query: string;
-  results: CodeSearchResult[];
-};
-
 export type UserRepo = {
   id: string;
   user_id: string;
@@ -156,7 +109,6 @@ export type UserRepo = {
   url: string | null;
   private: boolean;
   default_branch: string | null;
-  is_indexed: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -427,22 +379,10 @@ export const apiClient = {
       `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/sentinel${reviewId ? `?review_id=${encodeURIComponent(reviewId)}` : ""}`,
     ),
   setup: (repos: SetupRepo[]) =>
-    request<SetupAck>("/ai/repo/setup", {
+    request<ConfigureResponse>("/ai/repo/setup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repos }),
-    }),
-  indexRepo: (payload: IndexRepoTriggerIn) =>
-    request<IndexRepoTriggerOut>("/indexing/repo", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }),
-  codeSearch: (payload: CodeSearchRequest) =>
-    request<CodeSearchResponse>("/search/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
     }),
   installUrl: () => request<{ url: string }>("/github/install-url"),
   getLlmConfig: () => request<LlmConfig[]>("/llm_config/"),

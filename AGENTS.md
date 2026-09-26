@@ -128,8 +128,8 @@ application. `create_app()` wires `CORSMiddleware` (`credentials=True`, so
 sealed cookies round-trip), then `AuthMiddleware`, then registers the seven
 routers under `settings.api_prefix` (`/api`). The `lifespan` hook runs
 `create_db_and_tables()` (a `SQLModel.metadata.create_all` convenience for
-greenfield dev), initialises DBOS from `_dbos_config()` and `DBOS.launch()`,
-and calls `build_e2b_template()`; on shutdown it runs `DBOS.destroy()`.
+greenfield dev), initialises DBOS from `_dbos_config()` and `DBOS.launch()`;
+on shutdown it runs `DBOS.destroy()`.
 OpenLLMetry telemetry (`app/core/telemetry.py::init_telemetry`) is
 initialised at import time when `settings.telemetry_configured`
 (`TRACELOOP_BASE_URL` / `TRACELOOP_API_KEY` present) and is the
@@ -195,14 +195,10 @@ Windows, the `__main__` block swaps uvicorn's asyncio loop factory to
   stdlib-only: `base64url(payload) "." base64url(hmac_sha256(secret, payload))`
   with payload `"{user_id}|{exp_unix_seconds}"`, default TTL 600s.
   `sign(user_id, secret)` / `verify(token, secret)`.
-- `sandbox/` — pluggable sandbox abstraction.
-  - `base.py` — `BaseSandbox` ABC (create / connect / stop + spec access).
-  - `types.py` — `SandboxSpec` (provider, api_key, template, cpu, memory…).
-  - `factory.py` — `create_sandbox(spec=…)` picks the adapter; callers use
-    `BaseSandbox`, never the concrete classes. `build_default_spec(provider)`
-    builds a spec from settings, raising when the provider's key is missing.
-  - `e2b.py` — `E2BSandbox` + `build_e2b_template()` (called at lifespan).
-  - `daytona.py` — `DaytonaSandbox` adapter.
+- `sandbox/` — removed. E2B code-sandbox template builders live in
+  `services/sandbox/e2b_template.py` (`CODE_SANDBOX_TEMPLATE_NAME`,
+  `build_e2b_template()`); runtime sandbox access lives in
+  `services/sandbox/` (deepagents backend).
 - `llm.py` — `LLMConfig` (frozen, DBOS-serializable: model as
   `"provider:model"`, api_key, base_url, headers, max_retries,
   rate_limit_rps; `provider` / `model_id` properties) and
@@ -958,8 +954,9 @@ corresponding route file does not exist yet.
 - **LLM configuration is a frozen value object** (`LLMConfig`) resolved
   per-user at review time (`resolve_active_llm_config`, falling back to
   `settings.llm_config`), consumed only through `build_chat_model`.
-- **Sandbox access goes through `BaseSandbox`**; the factory is the only
-  place that imports E2B/Daytona adapters.
+- **Sandbox access goes through `BaseSandbox`** (`deepagents` backend);
+  the provider map in `services/sandbox/service.py` is the only place
+  that imports the E2B/Daytona adapters.
 - **SQLModel is the source of truth for the schema**, Alembic mirrors it,
   CASCADE deletes live at the DB layer with `passive_deletes=True`.
 - **Severity and verdict are enums, not free text.**
@@ -1021,7 +1018,7 @@ corresponding route file does not exist yet.
 - ORM models → `packages/api/src/app/models/`
 - API routers → `packages/api/src/app/routers/`
 - GitHub App client + install state → `packages/api/src/app/core/{github_app,install_state}.py`
-- Sandbox abstraction → `packages/api/src/app/core/sandbox/`
+- Sandbox abstraction → `packages/api/src/app/services/sandbox/` (E2B template builders in `e2b_template.py`)
 - LLM factory (`LLMConfig` + `build_chat_model`) → `packages/api/src/app/core/llm.py`
 - AI agent prompts → `packages/api/src/app/services/agent_v2/prompts/`
 - AI agent response schemas → `packages/api/src/app/utils/schema.py`

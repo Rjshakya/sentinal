@@ -3,8 +3,7 @@ import { RepoList } from "@/routes/dashboard/repositories/_components/-repo-list
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { protectPage } from "@/lib/auth";
-import type { Repo, SetupRepo } from "@/lib/api";
-import { useIndexRepo } from "@/lib/indexing";
+import type { SetupRepo } from "@/lib/api";
 import { useInstallation } from "@/lib/installation";
 import { useRepos, useSetup } from "@/lib/repos";
 import { useQueryClient } from "@tanstack/react-query";
@@ -39,7 +38,6 @@ function RepositoriesPage() {
 function ConnectedView() {
   const { data: repos, isLoading, isError, refetch } = useRepos();
   const setup = useSetup();
-  const indexRepo = useIndexRepo();
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("")
@@ -106,42 +104,27 @@ function ConnectedView() {
   function handleConfigure() {
     if (selectedPayload.length === 0) return;
     setup.mutate(selectedPayload, {
-
-      onSuccess: () => {
+      onSuccess: (data) => {
         setSelected(new Set());
-        setQuery("")
-
-        toast.success(`Configuring repos`);
+        setQuery("");
+        const configured = data.repos.filter((r) => !r.skipped && !r.error).length;
+        const skipped = data.repos.filter((r) => r.skipped).length;
+        const failed = data.repos.filter((r) => r.error).length;
+        if (failed > 0) {
+          toast.error(`${failed} repo(s) failed to configure`);
+        } else if (configured > 0) {
+          toast.success(
+            `Configured ${configured} repo(s)${skipped > 0 ? ` (${skipped} already configured)` : ""}`,
+          );
+        } else {
+          toast.success("Repositories already configured");
+        }
         queryClient.invalidateQueries({ queryKey: ["github", "repos"] });
       },
-
-
       onError: (err) => {
         toast.error(err.message);
       },
-
-
     });
-  }
-
-  function handleIndex(repo: Repo) {
-    indexRepo.mutate(
-      {
-        repo_owner: repo.owner,
-        repo_name: repo.name,
-        repo_url: repo.clone_url,
-        default_branch: repo.default_branch,
-      },
-      {
-        onSuccess: () => {
-          toast.success(`Indexing ${repo.full_name}`);
-          queryClient.invalidateQueries({ queryKey: ["github", "repos"] });
-        },
-        onError: (err) => {
-          toast.error(err.message);
-        },
-      },
-    );
   }
 
   const allConfigured = !!repos && repos.length > 0 && repos.every((r) => r.is_configured);
@@ -214,12 +197,7 @@ function ConnectedView() {
         </div>
       </div>
 
-      <RepoList
-        repos={sortedRepos}
-        selected={selected}
-        onToggle={handleToggle}
-        onIndex={handleIndex}
-      />
+      <RepoList repos={sortedRepos} selected={selected} onToggle={handleToggle} />
     </div>
   );
 }
