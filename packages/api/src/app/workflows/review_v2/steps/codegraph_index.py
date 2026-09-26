@@ -47,6 +47,7 @@ from deepagents.backends.protocol import ExecuteResponse
 from deepagents.backends.sandbox import BaseSandbox
 from pydantic import BaseModel
 
+from app.services.sandbox.e2b_template import CODEGRAPH_PCK_NAME
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.service import getProvider
 from app.services.sandbox.types import SandboxCtx
@@ -63,9 +64,6 @@ from app.workflows.review_v2.errors import (
 )
 
 log = logging.getLogger(__name__)
-
-CODEGRAPH_PIN: str = "sentinel-codegraph==0.3.0"
-"""Published distribution pin (bump on every codegraph release)."""
 
 INSTALL_TIMEOUT_S: int = 300
 """Upper bound on the in-sandbox ``pip install`` (wheel downloads)."""
@@ -105,7 +103,7 @@ def _truncateOutput(raw: str, *, maxChars: int = 500) -> str:
 
 def buildInstallCommand() -> str:
     """Return the in-sandbox install command for the pinned CLI."""
-    return f"pip install {shlex.quote(CODEGRAPH_PIN)}"
+    return f"pip install {shlex.quote(CODEGRAPH_PCK_NAME)}"
 
 
 def buildIndexCommand(*, repoName: RepoName) -> str:
@@ -298,7 +296,6 @@ async def installCodeGraphAndIndexRepoStep(
 
 
 __all__ = [
-    "CODEGRAPH_PIN",
     "CodeGraphIndexResult",
     "buildIndexCommand",
     "buildInstallCommand",

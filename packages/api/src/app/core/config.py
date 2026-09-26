@@ -108,8 +108,11 @@ class Settings(BaseSettings):
         description=(
             "E2B template name. The default is the E2B-hosted "
             "'code-interpreter-v1' template, which requires no "
-            "build. Set to a custom template slug to use a "
-            "pre-baked image."
+            "build. Set to the pre-baked template "
+            "('SENTINAL_CODE_SANDBOX_TEMP': code-interpreter-v1 "
+            "plus the sentinel-codegraph CLI, rebuilt by CI on "
+            "every push touching the template inputs) once it "
+            "has been built."
         ),
     )
     e2b_cpu_count: int = Field(

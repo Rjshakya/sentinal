@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from app.services.agent_v2.prompts import SEARCH_CODEGRAPH_TOOL_DESCRIPTION
+from app.services.sandbox.e2b_template import CODEGRAPH_PCK_NAME
 from app.services.agent_v2.prompts.file_review import (
     createFileReviewSystemPrompt,
 )
@@ -26,7 +27,6 @@ from app.workflows.review_v2.errors import (
     CodeGraphInstallTransientError,
 )
 from app.workflows.review_v2.steps.codegraph_index import (
-    CODEGRAPH_PIN,
     CodeGraphIndexResult,
     buildIndexCommand,
     buildInstallCommand,
@@ -38,8 +38,8 @@ from app.workflows.review_v2.steps.codegraph_index import (
 def test_install_command_pins_published_dist() -> None:
     command: str = buildInstallCommand()
     assert command.startswith("pip install ")
-    assert CODEGRAPH_PIN in command
-    assert CODEGRAPH_PIN == "sentinel-codegraph==0.3.0"
+    assert CODEGRAPH_PCK_NAME in command
+    assert CODEGRAPH_PCK_NAME == "sentinel-codegraph==0.3.0"
 
 
 def test_index_command_targets_repo_and_fixed_db() -> None:

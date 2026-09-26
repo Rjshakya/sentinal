@@ -1,0 +1,34 @@
+# Rebuild the pre-baked E2B sandbox template (code-interpreter-v1 +
+# sentinel-codegraph CLI) and verify it with the live template tests.
+# Path-filtered: only runs when the template inputs change. Requires
+# the E2B_API_KEY repo secret (Settings -> Secrets -> Actions).
+name: build-template
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/api/src/app/services/sandbox/e2b_template.py"
+      - "packages/api/scripts/build_e2b_template.py"
+      - "packages/api/tests/sandbox/e2b/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --frozen
+      - name: Build E2B template
+        run: uv run python scripts/build_e2b_template.py
+        env:
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+      - name: Verify template (live tests)
+        run: uv run pytest tests/sandbox/e2b/ -v
+        env:
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
