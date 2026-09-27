@@ -255,6 +255,7 @@ def buildCodeGraphQueryCommand(
     file: str | None,
     node_id: str | None,
     limit: int,
+    db_path: str | None = None,
 ) -> str | None:
     """Build the in-sandbox ``codegraph query`` argv, or None.
 
@@ -262,10 +263,12 @@ def buildCodeGraphQueryCommand(
     verb (``search`` without a fragment, a drill without id or name,
     ``imports`` without file or id) so the tool answers without
     spending a sandbox round-trip on a guaranteed CLI error. The
-    database path is the fixed run constant both the index step and
-    this tool recompute.
+    database path defaults to the fixed run constant both the index
+    step and this tool recompute; pass ``db_path`` to target another
+    database (e.g. the CLI default in live tests).
     """
-    parts: list[str] = ["codegraph", "query", "--db", graph_db_path(), "--json", verb]
+    db: str = db_path or graph_db_path()
+    parts: list[str] = ["codegraph", "query", "--db", db, "--json", verb]
     if verb == "search":
         if not name:
             return None
@@ -310,7 +313,12 @@ def buildCodeGraphSearchTool(*, ctx: AgentV2Ctx) -> BaseTool:
         limit: int = 20,
     ) -> str:
         command: str | None = buildCodeGraphQueryCommand(
-            verb=verb, name=name, file=file, node_id=node_id, limit=limit
+            verb=verb,
+            name=name,
+            file=file,
+            node_id=node_id,
+            limit=limit,
+            db_path=graph_db_path(),
         )
         if command is None:
             return (

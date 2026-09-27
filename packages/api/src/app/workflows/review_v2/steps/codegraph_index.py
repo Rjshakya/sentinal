@@ -106,16 +106,18 @@ def buildInstallCommand() -> str:
     return f"pip install {shlex.quote(CODEGRAPH_PCK_NAME)}"
 
 
-def buildIndexCommand(*, repoName: RepoName) -> str:
+def buildIndexCommand(*, repoName: RepoName, db_path: str | None = None) -> str:
     """Return the in-sandbox index command for the checked-out tree.
 
     ``--overwrite`` keeps the worker idempotent across a DBOS retry;
-    the database path is the fixed run constant both the step and the
-    ``search_codegraph`` tool recompute.
+    the database path defaults to the fixed run constant both the step
+    and the ``search_codegraph`` tool recompute; pass ``db_path`` to
+    target another database (e.g. the CLI default in live tests).
     """
+    db: str = db_path or graph_db_path()
     return (
         f"codegraph index {shlex.quote(repo_path(str(repoName)))} "
-        f"--db {shlex.quote(graph_db_path())} --overwrite"
+        f"--db {shlex.quote(db)} --overwrite"
     )
 
 
@@ -196,7 +198,8 @@ async def installCodeGraphAndIndexRepo(
 
     try:
         indexed = await backend.aexecute(
-            buildIndexCommand(repoName=repoName), timeout=INDEX_TIMEOUT_S
+            buildIndexCommand(repoName=repoName, db_path=graph_db_path()),
+            timeout=INDEX_TIMEOUT_S,
         )
     except Exception as exc:
         return CodeGraphInstallTransientError(
