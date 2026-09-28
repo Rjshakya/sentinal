@@ -316,7 +316,6 @@ class V2AgentsError(ReviewStepError):
 
     failedFiles: list[FileLaneError]
     succeededFiles: list[str]
-    plannerDegraded: bool = True
 
 
 # --------------------------------------------------------------------------- #

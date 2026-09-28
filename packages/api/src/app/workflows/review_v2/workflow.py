@@ -197,6 +197,13 @@ def _plannerLimits() -> ReviewLimits:
     )
 
 
+_MIN_PLANNER_COVERAGE = 0.05
+"""Degeneracy tripwire for planner triage: re-invoke the planner once
+when jobs cover less than 5% of reviewable files (20 files -> >=1
+job). Selective triage above this passes untouched — this catches
+only near-total skips, not planner judgment."""
+
+
 def _fileLimits() -> ReviewLimits:
     """Fixed per-file call limits for one file-review agent.
 
@@ -357,10 +364,9 @@ async def reviewWorkflowV2(
             headSha=input.headSha,
         )
 
-        # --- Planner phase (enrichment-only; degrades, never fails) ---
+        # --- Planner phase (triage gate; failures raise) ---
         plannerContext = PlannerContext()
         plannerUsage: dict[str, UsageMetadata] = {}
-        plannerDegraded = False
         if inventory.actualFiles:
             try:
                 plannerUsage = await invokePlannerStep(
@@ -378,7 +384,6 @@ async def reviewWorkflowV2(
                         input=input,
                     )
                 except BaseException as exc:
-                    plannerDegraded = True
                     log.warning(
                         "review_v2: plan read degraded "
                         "(continuing without planner context): "
@@ -387,8 +392,8 @@ async def reviewWorkflowV2(
                         type(exc).__name__,
                         exc,
                     )
+                    raise exc
             except BaseException as exc:
-                plannerDegraded = True
                 log.warning(
                     "review_v2: planner degraded "
                     "(continuing without planner context): "
@@ -397,6 +402,7 @@ async def reviewWorkflowV2(
                     type(exc).__name__,
                     exc,
                 )
+                raise exc
         else:
             log.info(
                 "review_v2: no reviewable chunks (workflow_id=%s); "
@@ -408,26 +414,84 @@ async def reviewWorkflowV2(
             inventory=inventory,
             plannerContext=plannerContext,
         )
+
         if built.ignoredPlannerFiles:
             log.warning(
                 "review_v2: planner mentioned %d unknown file(s), ignored: %s",
                 len(built.ignoredPlannerFiles),
                 built.ignoredPlannerFiles,
             )
-        if built.skippedUnpairedFiles:
+        if built.skippedFiles:
             log.warning(
-                "review_v2: %d inventoried file(s) had no observed chunk, skipped: %s",
-                len(built.skippedUnpairedFiles),
-                built.skippedUnpairedFiles,
+                "review_v2: %d skipped: %s",
+                len(built.skippedFiles),
+                built.skippedFiles,
             )
+
+        reviewableFiles = built.reviewableFiles
         jobs = built.jobs
+        coverage = len(jobs) / len(reviewableFiles) if reviewableFiles else 1.0
         log.info(
-            "review_v2: fanning out to %d file agent(s) "
-            "(planner_degraded=%s missing_context=%d)",
+            "review_v2: planner triage coverage %.1f%% (%d/%d jobs) "
+            "(skipped=%d ignored=%d)",
+            100.0 * coverage,
             len(jobs),
-            plannerDegraded,
-            sum(1 for job in jobs if not job.hasPlannerContext),
+            len(reviewableFiles),
+            len(built.skippedFiles),
+            len(built.ignoredPlannerFiles),
         )
+        if reviewableFiles and (
+            not jobs or coverage < _MIN_PLANNER_COVERAGE
+        ):
+            log.warning(
+                "review_v2: triage below %.0f%% (%d/%d jobs); "
+                "re-invoking planner once (workflow_id=%s)",
+                100.0 * _MIN_PLANNER_COVERAGE,
+                len(jobs),
+                len(reviewableFiles),
+                workflow_id,
+            )
+            retryUsage = await invokePlannerStep(
+                sandboxCtx=sandbox_ctx,
+                llmCtx=ctx.llmCtx,
+                repo=repo,
+                input=input,
+                actualFiles=inventory.actualFiles,
+                limits=_plannerLimits(),
+            )
+            plannerUsage = {**plannerUsage, **retryUsage}
+            plannerContext = await getPlanStep(
+                sandboxCtx=sandbox_ctx,
+                repoId=repo.id,
+                input=input,
+            )
+            built = buildFileReviewJobs(
+                inventory=inventory,
+                plannerContext=plannerContext,
+            )
+            if built.ignoredPlannerFiles:
+                log.warning(
+                    "review_v2: re-triage planner mentioned %d unknown file(s), ignored: %s",
+                    len(built.ignoredPlannerFiles),
+                    built.ignoredPlannerFiles,
+                )
+            if built.skippedFiles:
+                log.warning(
+                    "review_v2: re-triage skipped %d file(s): %s",
+                    len(built.skippedFiles),
+                    built.skippedFiles,
+                )
+            reviewableFiles = built.reviewableFiles
+            jobs = built.jobs
+            coverage = len(jobs) / len(reviewableFiles) if reviewableFiles else 1.0
+            log.warning(
+                "review_v2: re-triage coverage %.1f%% (%d/%d jobs); "
+                "accepted (workflow_id=%s)",
+                100.0 * coverage,
+                len(jobs),
+                len(reviewableFiles),
+                workflow_id,
+            )
 
         # --- Per-file fan-out: sequential batches of concurrent lanes ---
         # One wave shares ONE rate limiter (acquired per wave, released
@@ -506,7 +570,6 @@ async def reviewWorkflowV2(
                         coerceFileLaneError(exc, file) for file, exc in failedOutcomes
                     ],
                     succeededFiles=[],
-                    plannerDegraded=plannerDegraded,
                 )
             )
 

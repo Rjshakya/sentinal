@@ -74,6 +74,14 @@ stable node ids - feed ids back into node/callees/callers/children.
 If truncated is true, narrow with name/file/limit. On graph
 unavailability an error string is returned (never a failure) - say so
 and continue with grep/reads.
+
+Tool-call economics: one graph call returns up to 20 deduplicated,
+id-bearing rows. Reproducing the same facts with grep/glob costs
+5-10 calls (list, grep, read every hit, repeat per hop). Default to
+the graph for every structural question; reach for grep/glob ONLY
+when the graph cannot answer: deleted/renamed symbols (no node
+exists post-delete), string literals or comments, files in
+unindexed languages, or this tool reporting unavailability.
 """
 
 

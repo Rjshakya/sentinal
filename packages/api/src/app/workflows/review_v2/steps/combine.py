@@ -125,17 +125,22 @@ class BuiltJobs(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     jobs: list[FileReviewJob]
-    """One job per non-trivial inventory file, sorted by path."""
+    """One job per planner-covered, non-trivial inventory file, sorted by path."""
 
     ignoredPlannerFiles: list[str]
     """Planner entries with no matching inventory file (typos /
     hallucinations) — ignored, reported for logging."""
 
-    skippedUnpairedFiles: list[str]
-    """Inventory files with no observed chunk file — skipped, reported
-    for logging. Impossible when the inventory comes from the
-    list-chunks step (it always pairs them); a non-empty list means a
-    hand-built inventory or a parser regression."""
+    skippedFiles: list[str]
+    """Non-trivial inventory files with no job: either no observed
+    chunk file (defence-in-depth — impossible from the list-chunks
+    step) or no planner context (triage skip). Sorted, reported for
+    logging."""
+
+    reviewableFiles: list[str] = []
+    """Every non-trivial inventory file with an observed chunk — i.e.
+    every file that could have been reviewed. The coverage
+    denominator: ``len(jobs) / len(reviewableFiles)``."""
 
 
 def buildFileReviewJobs(
@@ -143,58 +148,75 @@ def buildFileReviewJobs(
     inventory: ChunkInventory,
     plannerContext: PlannerContext,
 ) -> BuiltJobs:
-    """Join the chunk inventory (truth) with the planner context (enrichment).
+    """Join the chunk inventory (truth) with the planner context (triage).
 
     Deterministic: jobs are sorted by path; planner lookup is by exact
-    file match. Trivial files are dropped. Every job carries both the
-    real code path (``filePath``) and its observed on-disk chunk file
-    (``diffPath``) — the chunk name is looked up, never recomputed.
-    Inventory files the planner never mentioned still get a job (empty
-    context slice, ``hasPlannerContext=False``). Planner entries without
-    an inventory file land in ``ignoredPlannerFiles``.
+    file match. Trivial files are dropped host-side. The planner is the
+    triage gate: only inventory files with a planner entry get a job.
+    Every job carries both the real code path (``filePath``) and its
+    observed on-disk chunk file (``diffPath``) — the chunk name is
+    looked up, never recomputed. ``reviewableFiles`` records every
+    non-trivial file with a chunk, so the workflow can compute triage
+    coverage as ``len(jobs) / len(reviewableFiles)``. Planner entries
+    without an inventory file land in ``ignoredPlannerFiles``.
     """
-    byFile = {entry.file: entry for entry in plannerContext.fileContexts}
-    chunkByFile = {ref.filePath: ref.diffPath for ref in inventory.chunks}
+    fileContextsMap = {context.file: context for context in plannerContext.fileContexts}
+
+    # - ref.filePath — the real repo-relative code path, exactly as it appears in the chunk's ### <real path> header.
+    # - Example: src/app/routers/ai.py. This is what gets reviewed (full current content) and what lands in the finding block's file: field.
+    # - ref.diffPath — the exact on-disk chunk filename inside splitted_diffs/. Example: src.app.routers.ai.py.md.
+    # - This is where the reviewable diff lives — the fenced diff with LEFT/RIGHT gutter numbers that
+    # - GitHub anchors (from_line/to_line/side) are copied from.
+
+    filePathMap = {ref.filePath: ref.diffPath for ref in inventory.chunks}
     inventoryFiles = set(inventory.actualFiles)
 
     jobs: list[FileReviewJob] = []
-    unpaired: list[str] = []
+    skippedFiles: list[str] = []
+
+    reviewableFiles: list[str] = []
+
     for path in sorted(inventoryFiles):
         if isTrivialFile(path):
             continue
-        diffPath = chunkByFile.get(path)
+        diffPath = filePathMap.get(path)
         if diffPath is None:
             # No observed chunk file for this path (older inventory
             # shape) — skip rather than guess a file name. The
             # list-chunks step always pairs them; this branch is
             # defence-in-depth, not a fallback mapping.
-            unpaired.append(path)
+            skippedFiles.append(path)
             continue
-        entry = byFile.get(path)
 
-        if entry is None:
-            jobs.append(FileReviewJob(filePath=path, diffPath=diffPath))
+        reviewableFiles.append(path)
+        fileContext = fileContextsMap.get(path)
+
+        if fileContext is None:
+            skippedFiles.append(path)
             continue
+
         jobs.append(
             FileReviewJob(
                 filePath=path,
                 diffPath=diffPath,
-                focus=list(entry.focus),
-                crossFileContext=entry.crossFileContext[:_MAX_CONTEXT_CHARS],
-                relevantSymbols=list(entry.relevantSymbols),
+                focus=list(fileContext.focus),
+                crossFileContext=fileContext.crossFileContext[:_MAX_CONTEXT_CHARS],
+                relevantSymbols=list(fileContext.relevantSymbols),
                 hasPlannerContext=True,
             )
         )
 
     ignored = sorted(
         path
-        for path in byFile
+        for path in fileContextsMap
         if path not in inventoryFiles and not isTrivialFile(path)
     )
+
     return BuiltJobs(
         jobs=jobs,
         ignoredPlannerFiles=ignored,
-        skippedUnpairedFiles=sorted(unpaired),
+        skippedFiles=sorted(skippedFiles),
+        reviewableFiles=reviewableFiles,
     )
 
 

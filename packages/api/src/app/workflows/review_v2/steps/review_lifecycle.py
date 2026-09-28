@@ -222,7 +222,6 @@ def buildErrorContext(exc: BaseException) -> dict[str, Any] | None:
             "error_name": ", ".join(type(f).__name__ for f in error.failedFiles)
             or type(error).__name__,
             "succeeded_agents": list(error.succeededFiles),
-            "planner_degraded": error.plannerDegraded,
         }
     return None
 
