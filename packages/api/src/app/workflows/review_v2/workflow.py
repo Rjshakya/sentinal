@@ -440,9 +440,7 @@ async def reviewWorkflowV2(
             len(built.skippedFiles),
             len(built.ignoredPlannerFiles),
         )
-        if reviewableFiles and (
-            not jobs or coverage < _MIN_PLANNER_COVERAGE
-        ):
+        if reviewableFiles and (not jobs or coverage < _MIN_PLANNER_COVERAGE):
             log.warning(
                 "review_v2: triage below %.0f%% (%d/%d jobs); "
                 "re-invoking planner once (workflow_id=%s)",
@@ -483,11 +481,33 @@ async def reviewWorkflowV2(
                 )
             reviewableFiles = built.reviewableFiles
             jobs = built.jobs
-            coverage = len(jobs) / len(reviewableFiles) if reviewableFiles else 1.0
-            log.warning(
-                "review_v2: re-triage coverage %.1f%% (%d/%d jobs); "
-                "accepted (workflow_id=%s)",
-                100.0 * coverage,
+
+            if not jobs:
+                log.error(
+                    "review_v2: re-triage (%d/%d jobs); "
+                    "failing closed (workflow_id=%s)",
+                    len(jobs),
+                    len(reviewableFiles),
+                    workflow_id,
+                )
+                raise ReviewStepFailure(
+                    V2AgentsError(
+                        message=(
+                            "v2 planner triage empty after re-triage for "
+                            f"pr={input.prNumber} "
+                            f"head_sha={input.headSha[:7]}: jobs={len(jobs)} "
+                            f"reviewable={len(reviewableFiles)}"
+                        ),
+                        userId=input.userId,
+                        repoId=repo.id,
+                        prNumber=input.prNumber,
+                        headSha=input.headSha,
+                        failedFiles=[],
+                        succeededFiles=[],
+                    )
+                )
+            log.info(
+                "review_v2: re-triage  (%d/%d jobs); " "accepted (workflow_id=%s)",
                 len(jobs),
                 len(reviewableFiles),
                 workflow_id,
