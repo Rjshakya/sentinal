@@ -1,7 +1,7 @@
 """Delete the cloned repo from the sandbox (best-effort cleanup).
 
 The repair pipeline clones the repo (reusing the review pipeline's
-``cloneRepoStep``) only to produce the diff via ``git diff``; the
+``cloneRepoV2Step``) only to produce the diff via ``git diff``; the
 clone is not needed afterwards. This step removes it, so the sandbox
 holds only the diff artefacts at ``{diff_dir}/`` while the repair
 agent works.
@@ -12,7 +12,7 @@ Layers:
   on the repo path in the sandbox, returns ``None`` or a
   :class:`DeleteRepoError` value.
 - :func:`deleteRepoStep` — the **DBOS-wrapped** step edge. Best-effort
-  like :func:`app.workflows.review.steps.kill_sandbox.killSandboxStep`:
+  like :func:`app.workflows.review_v2.steps.kill_sandbox.killSandboxStep`:
   failures are logged, never raised — a cleanup failure must not mask
   the run's outcome.
 """
@@ -28,8 +28,8 @@ from deepagents.backends.sandbox import BaseSandbox
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import RepoName
 from app.workflows.repair_and_publish.errors import DeleteRepoError
-from app.workflows.review.errors import SandboxConnectError
-from app.workflows.review.steps._helpers import (
+from app.workflows.review_v2.errors import SandboxConnectError
+from app.workflows.review_v2.steps._helpers import (
     asAsyncSandbox,
     connectSandbox,
     getRepoPath,

@@ -6,7 +6,7 @@ Only ``authenticate_with_code`` is async (network call to WorkOS).
 
 The Pipes surface (used previously for GitHub OAuth via WorkOS) has
 been removed; the GitHub integration is now driven by a native GitHub
-App, see :mod:`app.core.github_app`.
+ App, see :mod:`app.services.github`.
 """
 
 from __future__ import annotations

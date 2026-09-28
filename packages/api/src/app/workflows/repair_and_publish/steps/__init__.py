@@ -16,7 +16,7 @@ edge:
   ``review`` / ``code_comments`` / ``review_summaries`` rows.
 
 The sandbox create / clone / diff / split / kill steps are imported
-from :mod:`app.workflows.review.steps` for exact parity with the review
+from :mod:`app.workflows.review_v2.steps` for exact parity with the review
 pipeline.
 """
 

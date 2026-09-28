@@ -16,17 +16,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.db import create_db_and_tables
 from app.core.middleware import AuthMiddleware
-from app.core.sandbox.e2b import build_e2b_index_template, build_e2b_template
 from app.core.telemetry import init_telemetry, instrument_fastapi
 from app.routers import (
     ai,
     auth,
     github,
     health,
-    indexing,
     llm_configs,
+    pulls,
     reviews,
-    search,
     users,
     webhooks,
 )
@@ -36,8 +34,7 @@ from app.routers import (
 # import their adapters lazily (cycle avoidance) — so the workflows
 # must be imported here to register their @DBOS.workflow decorated
 # entry points before DBOS.launch(). The review workflow (and its
-# triggers) live in app.workflows.review; the setup and indexing
-# pipelines register through their routers' imports.
+# triggers) live in app.workflows.review_v2 and app.workflows.triggers.
 
 
 logging.basicConfig(
@@ -106,9 +103,8 @@ def create_app() -> FastAPI:
     app.include_router(ai.router, prefix=settings.api_prefix)
     app.include_router(users.router, prefix=settings.api_prefix)
     app.include_router(reviews.router, prefix=settings.api_prefix)
+    app.include_router(pulls.router, prefix=settings.api_prefix)
     app.include_router(llm_configs.router, prefix=settings.api_prefix)
-    app.include_router(indexing.router, prefix=settings.api_prefix)
-    app.include_router(search.router, prefix=settings.api_prefix)
     app.include_router(webhooks.router, prefix=settings.api_prefix)
 
     # One OTLP HTTP span per request (skipped when telemetry is
@@ -124,17 +120,6 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    # import uvicorn.loops.asyncio as uvicorn_asyncio_loop
-    #
-    # if sys.platform == "win32":
-    #
-    #     def _selector_loop_factory(
-    #         use_subprocess: bool = False,
-    #     ) -> type[asyncio.AbstractEventLoop]:
-    #         return asyncio.SelectorEventLoop
-    #
-    #     uvicorn_asyncio_loop.asyncio_loop_factory = _selector_loop_factory
-    #
     uvicorn.run(
         app,
         host="0.0.0.0",

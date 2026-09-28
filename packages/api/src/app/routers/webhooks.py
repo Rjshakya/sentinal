@@ -10,12 +10,10 @@ dispatches the ``(event, action)`` pair through its registry:
   handlers (install-flow bookkeeping the setup callback does not
   cover).
 - ``pull_request`` (``opened``) -> dispatches the review workflow
-  (:func:`app.workflows.review.workflow.reviewWorkflow`).
+  (:func:`app.workflows.review_v2.workflow.reviewWorkflowV2`).
 - ``issue_comment`` (``created``) -> dispatches the review workflow
   (incremental re-review when the head moved since the last run).
-- ``push`` -> dispatches the incremental indexing workflow (legacy
-  adapter).
-- anything else -> an ``accepted=False`` ack with
+- anything else (including ``push``) -> an ``accepted=False`` ack with
   ``skip_reason="unhandled_event"``.
 
 The handler sits outside AuthMiddleware's protected prefixes: GitHub

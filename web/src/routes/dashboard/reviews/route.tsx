@@ -122,7 +122,7 @@ function ReviewsPage() {
                 <TableHead>Time Taken</TableHead>
               </TableRow>
             </TableHeader>
-            <TableBody className=" bg-accent dark:bg-card">
+            <TableBody className=" ">
               {reviews.map((review) => (
                 <ReviewRow key={review.id} review={review} />
               ))}

@@ -1,4 +1,4 @@
-"""Users routes: surface the caller's indexed repos from the ``repos`` table
+"""Users routes: surface the caller's configured repos from the ``repos`` table
 and the aggregated review stats for the dashboard.
 
 All endpoints are user-scoped: they read ``request.state.user_id`` (set by
@@ -32,7 +32,6 @@ class UserRepoOut(BaseModel):
     url: str | None = None
     private: bool
     default_branch: str | None = None
-    is_indexed: bool
     created_at: datetime
     updated_at: datetime
 
@@ -56,16 +55,15 @@ async def list_my_repos(
     session: AsyncSession = Depends(get_session),
     limit: int = Query(100, ge=1, le=100),
 ) -> list[UserRepoOut]:
-    """List the caller's indexed repositories.
+    """List the caller's configured repositories.
 
-    Only repos with ``is_indexed = True`` are returned — the endpoint is
-    the source of truth for the dashboard's "indexed repositories" list.
+    Returns every ``Repo`` row for the caller — the source of truth for
+    the dashboard's repository list.
     """
     try:
         repo = RepoRepository(session=session)
         rows = await repo.find(
             col(Repo.user_id) == request.state.user_id,
-            col(Repo.is_indexed) == True,
             order_by=col(Repo.updated_at).desc(),
             limit=limit,
         )
@@ -80,14 +78,13 @@ async def list_my_repos(
                 url=r.url,
                 private=r.private,
                 default_branch=r.default_branch,
-                is_indexed=r.is_indexed or False,
                 created_at=r.created_at,
                 updated_at=r.updated_at,
             )
             for r in rows
         ]
     except Exception:
-        raise HTTPException(status_code=500, detail="Failed to list indexed repos")
+        raise HTTPException(status_code=500, detail="Failed to list repos")
 
 
 @router.get("/stats", response_model=UserStatsOut)

@@ -44,7 +44,6 @@ export type Repo = {
   installation_id: string;
   github_installation_id: number;
   is_configured: boolean;
-  is_indexed: boolean;
 };
 
 export type SetupRepo = {
@@ -55,37 +54,15 @@ export type SetupRepo = {
   default_branch: string;
 };
 
-export type SetupEcosystem = "node" | "python" | "rust" | "go" | "ruby" | "mixed" | "none";
-
-export type SetupResult = {
-  ok: boolean;
-  ecosystem: SetupEcosystem;
-  manager: string | null;
-  install_cmd: string | null;
-  duration_s: number;
-  notes: string;
-  bootstrapped_tools: string[];
-};
-
-export type RepoSetupResult = {
-  repo_id: string | null;
+export type ConfiguredRepo = {
   github_repo_id: number;
-  setup: SetupResult;
+  repo_id: string | null;
+  skipped: boolean;
+  error: string | null;
 };
 
-export type SetupAck = {
-  results: RepoSetupResult[];
-};
-
-export type IndexRepoTriggerIn = {
-  repo_owner: string;
-  repo_name: string;
-  repo_url: string;
-  default_branch?: string | null;
-};
-
-export type IndexRepoTriggerOut = {
-  workflow_id: string;
+export type ConfigureResponse = {
+  repos: ConfiguredRepo[];
 };
 
 export type LlmConfig = {
@@ -123,30 +100,6 @@ export type LlmConfigPayload = {
   api_key: string;
 };
 
-export type CodeSearchRequest = {
-  owner: string;
-  repo: string;
-  query: string;
-  limit?: number;
-};
-
-export type CodeSearchResult = {
-  file_name: string;
-  language: string;
-  start_line: number;
-  end_line: number;
-  node_types: string[];
-  content: string;
-  _relevance_score: number;
-};
-
-export type CodeSearchResponse = {
-  owner: string;
-  repo: string;
-  query: string;
-  results: CodeSearchResult[];
-};
-
 export type UserRepo = {
   id: string;
   user_id: string;
@@ -156,7 +109,6 @@ export type UserRepo = {
   url: string | null;
   private: boolean;
   default_branch: string | null;
-  is_indexed: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -196,6 +148,178 @@ export type Review = {
   usage: ReviewUsage | null;
 };
 
+export type PullsState = "open" | "closed" | "all";
+
+export type PRListItem = {
+  number: number;
+  title: string;
+  body: string;
+  author: string;
+  authorAvatar: string | null;
+  state: string;
+  draft: boolean;
+  baseBranch: string;
+  headBranch: string;
+  headSha: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  closedAt: string | null;
+  mergedAt: string | null;
+  htmlUrl: string | null;
+};
+
+export type PRStateSnapshot = {
+  ghPrId: number;
+  state: string;
+  merged: boolean;
+  title: string;
+  body: string;
+  author: string;
+  baseBranch: string;
+  baseSha: string;
+  headBranch: string;
+  headSha: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+};
+
+export type SentinelRef = {
+  reviewId: string | null;
+  state: string | null;
+  verdict: string | null;
+  commentCount: number | null;
+  commitId: string | null;
+  createdAt: string | null;
+};
+
+export type PullDetail = {
+  owner: string;
+  repo: string;
+  number: number;
+  github: PRStateSnapshot;
+  localPrId: string | null;
+  sentinel: SentinelRef | null;
+};
+
+export type PRCommitItem = {
+  sha: string;
+  message: string;
+  authorLogin: string;
+  authorAvatar: string | null;
+  authorName: string;
+  date: string | null;
+  htmlUrl: string | null;
+};
+
+export type PRFileItem = {
+  sha: string;
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  changes: number;
+  patch: string | null;
+  blobUrl: string | null;
+  rawUrl: string | null;
+  previousFilename: string | null;
+};
+
+export type PullFiles = {
+  files: PRFileItem[];
+  total: number;
+};
+
+export type IssueCommentItem = {
+  id: number;
+  authorLogin: string;
+  authorAvatar: string | null;
+  body: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  htmlUrl: string | null;
+};
+
+export type ReviewCommentItem = {
+  id: number;
+  authorLogin: string;
+  authorAvatar: string | null;
+  body: string;
+  path: string;
+  line: number | null;
+  side: string | null;
+  commitId: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  htmlUrl: string | null;
+  reviewId: number | null;
+};
+
+export type PRReviewItem = {
+  id: number;
+  authorLogin: string;
+  authorAvatar: string | null;
+  state: string;
+  body: string;
+  commitId: string | null;
+  submittedAt: string | null;
+  htmlUrl: string | null;
+};
+
+export type Conversation = {
+  issueComments: IssueCommentItem[];
+  reviewComments: ReviewCommentItem[];
+  reviews: PRReviewItem[];
+};
+
+export type SentinelReview = {
+  id: string;
+  state: string;
+  trigger: string | null;
+  commitId: string;
+  commentCount: number | null;
+  llmClient: string | null;
+  llmModel: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+};
+
+export type SentinelSummary = {
+  summary: string;
+  verdict: string;
+  commitId: string;
+  githubReviewId: string | null;
+  createdAt: string;
+};
+
+export type SentinelComment = {
+  id: string;
+  fileName: string;
+  comment: string;
+  severity: string;
+  fromLine: number;
+  toLine: number;
+  side: string;
+  nodeType: string | null;
+  state: string;
+  createdAt: string;
+};
+
+export type SentinelUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reviewStatus: string;
+};
+
+export type SentinelDetail = {
+  review: SentinelReview | null;
+  summary: SentinelSummary | null;
+  comments: SentinelComment[];
+  usage: SentinelUsage | null;
+};
+
 export class ApiError extends Error {
   status: number;
   body: string;
@@ -230,23 +354,35 @@ export const apiClient = {
   userRepos: () => request<UserRepo[]>("/users/repos"),
   userStats: () => request<UserStats>("/users/stats"),
   reviews: () => request<Review[]>("/review"),
+  pulls: (owner: string, repo: string, state: PullsState = "open") =>
+    request<PRListItem[]>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}?state=${state}&per_page=100`,
+    ),
+  pullDetail: (owner: string, repo: string, number: number) =>
+    request<PullDetail>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}`,
+    ),
+  pullCommits: (owner: string, repo: string, number: number) =>
+    request<PRCommitItem[]>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/commits?per_page=100`,
+    ),
+  pullFilesPage: (owner: string, repo: string, number: number, page: number) =>
+    request<PullFiles>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/files?per_page=100&page=${page}`,
+    ),
+  pullConversation: (owner: string, repo: string, number: number) =>
+    request<Conversation>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/conversation?per_page=100`,
+    ),
+  pullSentinel: (owner: string, repo: string, number: number, reviewId?: string) =>
+    request<SentinelDetail>(
+      `/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}/sentinel${reviewId ? `?review_id=${encodeURIComponent(reviewId)}` : ""}`,
+    ),
   setup: (repos: SetupRepo[]) =>
-    request<SetupAck>("/ai/repo/setup", {
+    request<ConfigureResponse>("/ai/repo/setup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repos }),
-    }),
-  indexRepo: (payload: IndexRepoTriggerIn) =>
-    request<IndexRepoTriggerOut>("/indexing/repo", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }),
-  codeSearch: (payload: CodeSearchRequest) =>
-    request<CodeSearchResponse>("/search/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
     }),
   installUrl: () => request<{ url: string }>("/github/install-url"),
   getLlmConfig: () => request<LlmConfig[]>("/llm_config/"),

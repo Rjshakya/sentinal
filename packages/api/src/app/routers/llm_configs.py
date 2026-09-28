@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import get_session
-from app.schemas.llm_config import (
+from app.routers.schemas.llm_config import (
     CreateLLMConfigRequest,
     LLMConfigResponse,
     LLMConfigTestResponse,

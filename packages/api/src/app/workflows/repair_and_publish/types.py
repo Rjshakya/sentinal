@@ -9,7 +9,7 @@ Design notes:
 
 - :class:`RepairAndPublishWorkflowCtx` — the resolved run environment
   (LLM + sandbox configuration), built at the edge next to the input.
-  Mirrors :class:`app.workflows.review.types.ReviewWorkflowCtx`.
+  Mirrors :class:`app.workflows.review_v2.types.ReviewWorkflowCtx`.
 - :class:`RepairAndPublishWorkflowInput` — the workflow's only input:
   the ``review`` lifecycle row whose unpushed summary + comments should
   be repaired and pushed to GitHub.

@@ -1,23 +1,10 @@
-import {
-  IconAlertTriangle,
-  IconCheck,
-  IconCircleDashed,
-  IconKey,
-  IconRefresh,
-} from "@tabler/icons-react";
+import { IconAlertTriangle, IconCheck, IconRefresh } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { CommonCard } from "@/components/common-card";
+import { CardDescription, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -142,147 +129,155 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
   }
 
   return (
-    <Card className="flex flex-col  p-1 gap-1 drop-shadow-sm  ">
-      <CardHeader className=" p-1 gap-0">
-        <div className="flex items-center justify-between  gap-2">
-          <div className="flex items-center  gap-2">
-            <CardTitle>LLM provider</CardTitle>
-          </div>
-          {existing ? (
-            <span className=" flex items-center gap-2 px-2 py-1  border-2 border-dashed text-green-500  ">
-              <IconCheck className="size-3" />
-              <p className="text-[10px]">configured</p>
-
-            </span>
-          ) : (
-            <span className=" flex items-center gap-2 px-2 py-1  bg-muted   ">
-              <IconCheck className="size-3.5" />
-              <p className="text-xs">not configured</p>
-
-            </span>
-          )}
-        </div>
-        <CardDescription>
-          The chat model Sentinel will use to review your pull requests.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4 bg-muted dark:bg-muted p-4 border-t ">
-        <div className="grid gap-4 ">
-          <Label htmlFor="llm-provider">Provider</Label>
-          <div className="space-y-2">
-            <Select
-              value={providerSelect}
-              onValueChange={(v) => {
-                if (v == null) return;
-                setProviderSelect(v);
-                if (v !== OTHER_VALUE) setCustomProvider("");
-              }}
-            >
-              <SelectTrigger id="llm-provider" className="w-full text-muted-foreground ">
-                <SelectValue placeholder="Select a provider  " />
-              </SelectTrigger>
-              <SelectContent>
-                {PROVIDER_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {providerSelect === OTHER_VALUE && (
-              <Input
-                value={customProvider}
-                onChange={(e) => setCustomProvider(e.target.value)}
-                placeholder="provider prefix (e.g. fireworks)"
-                aria-label="Custom provider prefix"
-              />
+    <CommonCard
+      className="drop-shadow-sm"
+      headerClassName="flex-col items-stretch p-1 gap-0"
+      bodyClassName="space-y-4 "
+      footerClassName=" flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between"
+      header={
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <CardTitle>LLM provider</CardTitle>
+            </div>
+            {existing ? (
+              <span className="flex items-center gap-2 border-2 border-dashed px-2 py-1 text-green-500">
+                <IconCheck className="size-3" />
+                <p className="text-[10px]">configured</p>
+              </span>
+            ) : (
+              <span className="flex items-center gap-2 bg-muted px-2 py-1">
+                <IconCheck className="size-3.5" />
+                <p className="text-xs">not configured</p>
+              </span>
             )}
           </div>
-        </div>
+          <CardDescription>
+            The chat model Sentinel will use to review your pull requests.
+          </CardDescription>
+        </>
+      }
+      body={
+        <>
+          <div className="grid gap-4 ">
+            <Label htmlFor="llm-provider">Provider</Label>
+            <div className="space-y-2">
+              <Select
+                value={providerSelect}
+                onValueChange={(v) => {
+                  if (v == null) return;
+                  setProviderSelect(v);
+                  if (v !== OTHER_VALUE) setCustomProvider("");
+                }}
+              >
+                <SelectTrigger id="llm-provider" className="w-full text-muted-foreground ">
+                  <SelectValue placeholder="Select a provider  " />
+                </SelectTrigger>
+                <SelectContent>
+                  {PROVIDER_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {providerSelect === OTHER_VALUE && (
+                <Input
+                  value={customProvider}
+                  onChange={(e) => setCustomProvider(e.target.value)}
+                  placeholder="provider prefix (e.g. fireworks)"
+                  aria-label="Custom provider prefix"
+                />
+              )}
+            </div>
+          </div>
 
-        <div className="grid gap-4 ">
-          <Label htmlFor="llm-model">Model ID</Label>
-          <Input
-            id="llm-model"
-            value={modelId}
-            onChange={(e) => setModelId(e.target.value)}
-            placeholder="e.g. gpt-4o-mini, claude-3-5-sonnet-latest"
-            autoComplete="off"
-            className=" text-muted-foreground"
-          />
-        </div>
-
-        <div className="grid gap-4 ">
-          <Label htmlFor="llm-base-url">Base URL</Label>
-          <Input
-            id="llm-base-url"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://api.openai.com/v1"
-            autoComplete="off"
-            className=" text-muted-foreground"
-          />
-        </div>
-
-        <div className="grid gap-4 ">
-          <Label htmlFor="llm-api-key">API key</Label>
-          <div className="space-y-1">
+          <div className="grid gap-4 ">
+            <Label htmlFor="llm-model">Model ID</Label>
             <Input
-              id="llm-api-key"
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={existing ? "•••••••• (set)" : "sk-…"}
+              id="llm-model"
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              placeholder="e.g. gpt-4o-mini, claude-3-5-sonnet-latest"
               autoComplete="off"
               className=" text-muted-foreground"
             />
-            <p className="text-muted-foreground text-xs">
-              The server stores this encrypted at rest. Re-enter the key each time you change it —
-              the existing key is never displayed back.
-            </p>
           </div>
-        </div>
 
-        {touched && !formValid && (
-          <p className="text-destructive text-xs">All four fields are required.</p>
-        )}
+          <div className="grid gap-4 ">
+            <Label htmlFor="llm-base-url">Base URL</Label>
+            <Input
+              id="llm-base-url"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://api.openai.com/v1"
+              autoComplete="off"
+              className=" text-muted-foreground"
+            />
+          </div>
 
-        {result && (
-          <>
-            <Separator />
-            <div
-              className={
-                result.ok
-                  ? "text-foreground flex items-start gap-2 text-xs"
-                  : "text-destructive flex items-start gap-2 text-xs"
-              }
-            >
-              {result.ok ? (
-                <IconCheck className="mt-0.5 size-3.5 shrink-0" />
-              ) : (
-                <IconAlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              )}
-              <span className="wrap-break-word">{result.message}</span>
+          <div className="grid gap-4 ">
+            <Label htmlFor="llm-api-key">API key</Label>
+            <div className="space-y-1">
+              <Input
+                id="llm-api-key"
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={existing ? "•••••••• (set)" : "sk-…"}
+                autoComplete="off"
+                className=" text-muted-foreground"
+              />
+              <p className="text-muted-foreground text-xs">
+                The server stores this encrypted at rest. Re-enter the key each time you change it —
+                the existing key is never displayed back.
+              </p>
             </div>
-          </>
-        )}
-      </CardContent>
-      <CardFooter className=" mb-1 bg-muted dark:bg-muted     flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
-        {showTestHint(payload) ? (
-          <p className="text-muted-foreground text-xs">Test the connection before saving.</p>
-        ) : (
-          <span />
-        )}
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={handleTest} disabled={!formValid || test.isPending}>
-            <IconRefresh />
-            {test.isPending ? "Testing…" : "Test connection"}
-          </Button>
-          <Button onClick={handleSave} disabled={!canSave || update.isPending}>
-            {update.isPending ? "Saving…" : existing ? "update" : "Save"}
-          </Button>
-        </div>
-      </CardFooter>
-    </Card>
+          </div>
+
+          {touched && !formValid && (
+            <p className="text-destructive text-xs">All four fields are required.</p>
+          )}
+
+          {result && (
+            <>
+              <Separator />
+              <div
+                className={
+                  result.ok
+                    ? "text-foreground flex items-start gap-2 text-xs"
+                    : "text-destructive flex items-start gap-2 text-xs"
+                }
+              >
+                {result.ok ? (
+                  <IconCheck className="mt-0.5 size-3.5 shrink-0" />
+                ) : (
+                  <IconAlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                )}
+                <span className="wrap-break-word">{result.message}</span>
+              </div>
+            </>
+          )}
+        </>
+      }
+      footer={
+        <>
+          {showTestHint(payload) ? (
+            <p className="text-muted-foreground text-xs">Test the connection before saving.</p>
+          ) : (
+            <span />
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={handleTest} disabled={!formValid || test.isPending}>
+              <IconRefresh />
+              {test.isPending ? "Testing…" : "Test connection"}
+            </Button>
+            <Button onClick={handleSave} disabled={!canSave || update.isPending}>
+              {update.isPending ? "Saving…" : existing ? "update" : "Save"}
+            </Button>
+          </div>
+        </>
+      }
+    />
   );
 }

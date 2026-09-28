@@ -23,7 +23,7 @@ Submodules:
 - :mod:`.steps`     — one file per I/O boundary: check, delete-repo
   cleanup, repair-and-publish (deepagent harness), save back-links. The
   sandbox create / clone / diff / split / kill steps are imported from
-  :mod:`app.workflows.review.steps` for exact parity with the review
+  :mod:`app.workflows.review_v2.steps` for exact parity with the review
   pipeline.
 """
 

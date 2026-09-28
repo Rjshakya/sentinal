@@ -7,6 +7,8 @@ Public surface:
 - :func:`getInstallation` — installation details from the GitHub API.
 - :func:`listInstallations` — the user's local installation rows.
 - :func:`forgetInstallation` — local forget (delete rows).
+- :func:`signState` / :func:`verifyState` — sign / verify the
+  install-flow state token.
 
 Error contract: **no function raises.** Failures are returned as
 :class:`GitHubInstallationError` values; callers discriminate with
@@ -20,6 +22,8 @@ from app.services.github.installation.service import (
     getInstallUrl,
     getInstallation,
     listInstallations,
+    signState,
+    verifyState,
 )
 from app.services.github.installation.types import (
     InstallationCtx,
@@ -37,4 +41,6 @@ __all__ = [
     "getInstallUrl",
     "getInstallation",
     "listInstallations",
+    "signState",
+    "verifyState",
 ]

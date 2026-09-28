@@ -25,6 +25,7 @@ Design notes:
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from githubkit import GitHub
@@ -98,11 +99,115 @@ class PRReviewDraft(BaseModel):
     comments: list[PRCommentDraft] = Field(default_factory=list)
 
 
+PullListState = Literal["open", "closed", "all"]
+"""``GET /pulls`` state filter — passed straight to the GitHub API."""
+
+
+class PRListItem(BaseModel):
+    """One row of ``GET /pulls`` — header fields only, no patch/diff."""
+
+    number: int
+    title: str
+    body: str = ""
+    author: str
+    authorAvatar: str | None = None
+    state: str
+    draft: bool = False
+    baseBranch: str
+    headBranch: str
+    headSha: str
+    createdAt: datetime | None = None
+    updatedAt: datetime | None = None
+    closedAt: datetime | None = None
+    mergedAt: datetime | None = None
+    htmlUrl: str | None = None
+
+
+class PRCommitItem(BaseModel):
+    """One row of ``GET /pulls/{n}/commits``."""
+
+    sha: str
+    message: str
+    authorLogin: str
+    authorAvatar: str | None = None
+    authorName: str
+    date: datetime | None = None
+    htmlUrl: str | None = None
+
+
+class PRFileItem(BaseModel):
+    """One row of ``GET /pulls/{n}/files`` — ``patch`` verbatim from GitHub.
+
+    GitHub omits ``patch`` for binary / too-large diffs; that ``None``
+    is passed through untouched (no server-side truncation).
+    """
+
+    sha: str
+    filename: str
+    status: str
+    additions: int = 0
+    deletions: int = 0
+    changes: int = 0
+    patch: str | None = None
+    blobUrl: str | None = None
+    rawUrl: str | None = None
+    previousFilename: str | None = None
+
+
+class IssueCommentItem(BaseModel):
+    """One row of ``GET /issues/{n}/comments`` (Conversation tab)."""
+
+    id: int
+    authorLogin: str
+    authorAvatar: str | None = None
+    body: str
+    createdAt: datetime | None = None
+    updatedAt: datetime | None = None
+    htmlUrl: str | None = None
+
+
+class ReviewCommentItem(BaseModel):
+    """One inline review comment (Conversation tab)."""
+
+    id: int
+    authorLogin: str
+    authorAvatar: str | None = None
+    body: str
+    path: str
+    line: int | None = None
+    side: str | None = None
+    commitId: str | None = None
+    createdAt: datetime | None = None
+    updatedAt: datetime | None = None
+    htmlUrl: str | None = None
+    reviewId: int | None = None
+
+
+class PRReviewItem(BaseModel):
+    """One submitted PR review (Conversation tab)."""
+
+    id: int
+    authorLogin: str
+    authorAvatar: str | None = None
+    state: str
+    body: str = ""
+    commitId: str | None = None
+    submittedAt: datetime | None = None
+    htmlUrl: str | None = None
+
+
 __all__ = [
     "PRCommentDraft",
+    "PRCommitItem",
     "PRCtx",
+    "PRFileItem",
+    "PRListItem",
     "PRReviewDraft",
+    "PRReviewItem",
     "PRState",
     "PRVerdict",
+    "PullListState",
+    "IssueCommentItem",
     "ReactionContent",
+    "ReviewCommentItem",
 ]

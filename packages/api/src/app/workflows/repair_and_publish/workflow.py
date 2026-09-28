@@ -10,20 +10,21 @@ Flow — exact parity with the review workflow's sandbox sequence:
    — ``None`` when no unpublished review exists (no review row, no
    summary, or the summary already carries a ``github_commitId``):
    the workflow completes without posting.
-2. :func:`app.workflows.review.steps.create_sandbox.createSandboxStep`
-   — the per-run ephemeral sandbox (exported from the review package).
-3. :func:`app.workflows.review.steps.clone_repo.cloneRepoStep` + the
-   review pipeline's
-   :func:`app.workflows.review.steps.fetch_diff.fetchDiffStep` — the
+2. :func:`app.workflows.review_v2.steps.create_sandbox.createSandboxStep`
+   — the per-run ephemeral sandbox.
+3. :func:`app.workflows.review_v2.steps.clone_repo_v2.cloneRepoV2Step` +
+   the
+   :func:`app.workflows.review_v2.steps.fetch_diff.fetchDiffStep` — the
    diff is produced from a git clone inside the sandbox
    (``git diff base...head``), not the GitHub API: the API refuses to
    render the ``.diff`` media type for PRs whose diff exceeds 20,000
-   lines (``406 too_large``), while git has no line cap.
+   lines (``406 too_large``), while git has no line cap. The v2 clone
+   leaves the tree checked out at the reviewed head (fail-closed).
 4. :func:`app.workflows.repair_and_publish.steps.delete_repo.deleteRepoStep`
    — remove the clone: only the diff artefacts at ``{diff_dir}/`` are
    needed from here on (best-effort cleanup).
-5. :func:`app.workflows.review.steps.split_diff.splitDiffStep` — the
-   split script (exported from the review package) turns the diff into
+5. :func:`app.workflows.review_v2.steps.split_diff.splitDiffStep` — the
+   split script turns the diff into
    ``overview.md`` + ``splitted_diffs/`` chunks.
 6. :func:`app.workflows.repair_and_publish.steps.repair_and_publish.repairAndPublishToGithub`
    — the deepagent harness: the saved summary + comments are final, the
@@ -36,7 +37,7 @@ Flow — exact parity with the review workflow's sandbox sequence:
    written explicitly), and deletes the rows that were never posted.
 
 The sandbox is destroyed in the ``finally`` via
-:func:`app.workflows.review.steps.kill_sandbox.killSandboxStep`, so a
+:func:`app.workflows.review_v2.steps.kill_sandbox.killSandboxStep`, so a
 raising step never leaks a paused sandbox.
 """
 
@@ -69,11 +70,11 @@ from app.workflows.repair_and_publish.types import (
     RepairAndPublishWorkflowCtx,
     RepairAndPublishWorkflowInput,
 )
-from app.workflows.review.steps.clone_repo import cloneRepoStep
-from app.workflows.review.steps.create_sandbox import createSandboxStep
-from app.workflows.review.steps.fetch_diff import fetchDiffStep
-from app.workflows.review.steps.kill_sandbox import killSandboxStep
-from app.workflows.review.steps.split_diff import splitDiffStep
+from app.workflows.review_v2.steps.clone_repo_v2 import cloneRepoV2Step
+from app.workflows.review_v2.steps.create_sandbox import createSandboxStep
+from app.workflows.review_v2.steps.fetch_diff import fetchDiffStep
+from app.workflows.review_v2.steps.kill_sandbox import killSandboxStep
+from app.workflows.review_v2.steps.split_diff import splitDiffStep
 from traceloop.sdk.decorators import workflow as traceloop_workflow
 from traceloop.sdk import Traceloop
 
@@ -134,13 +135,14 @@ async def repairAndPublishReviewWorkflow(
 
     sandbox_ctx = await createSandboxStep(ctx.sandboxCtx)
     try:
-        await cloneRepoStep(
+        await cloneRepoV2Step(
             sandboxCtx=sandbox_ctx,
             userId=unpublished.userId,
             repoId=unpublished.repoId,
             repoOwner=unpublished.repoOwner,
             repoName=unpublished.repoName,
             prNumber=unpublished.prNumber,
+            headSha=unpublished.commitId,
             githubInstallationId=unpublished.installationId,
         )
 

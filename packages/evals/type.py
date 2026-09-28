@@ -28,13 +28,13 @@ class EvalReviewUsage(BaseModel):
 
 
 class EvalReviewResponse(BaseModel):
-    """What ``POST /review`` returns on success.
+    """What ``POST /review`` (v2) returns on success.
 
     ``workflow_id`` is the deterministic
-    ``review:{repo_id}:{pr_number}:{head_sha[:7]}`` id, so duplicate
-    POSTs for the same head SHA dedupe in DBOS and the second caller
-    receives the first run's cached result. ``comments`` are sorted
-    P1_CRITICAL → P2_WARNING → P3_NITPICK by the workflow's combine step.
+    ``review-v2:{repo_id}:{pr_number}:{head_sha[:7]}`` id (plus the eval
+    route's ``:{rand6}`` suffix so repeated eval POSTs re-run instead of
+    deduping). ``comments`` are the extractor output over the concatenated
+    per-file reports, merged by the v2 combine step.
     """
 
     workflow_id: str

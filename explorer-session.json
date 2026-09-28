@@ -1,0 +1,213 @@
+{
+  "settings": {
+    "allSettings": {
+      "graphViz": {
+        "default": {
+          "node": {
+            "labelCfg": {
+              "style": {
+                "fontSize": 12,
+                "fontFamily": "Helvetica Neue, Helvetica, Arial, sans-serif",
+                "fontWeight": 300,
+                "fill": "#ffffff"
+              }
+            },
+            "size": 75,
+            "style": {
+              "lineWidth": 3,
+              "fill": "#FF0000"
+            }
+          },
+          "rel": {
+            "size": 3,
+            "opacity": 1,
+            "style": {
+              "endArrow": {
+                "path": "M 0,0 L 8,4 L 8,-4 Z",
+                "fill": "#e2e2e2"
+              },
+              "stroke": "#e2e2e2"
+            },
+            "labelCfg": {
+              "style": {
+                "fontSize": 12,
+                "fontFamily": "Helvetica Neue, Helvetica, Arial, sans-serif",
+                "fontWeight": 300,
+                "background": {
+                  "fill": "#ffffff",
+                  "padding": [
+                    2,
+                    2,
+                    2,
+                    2
+                  ],
+                  "radius": 2
+                }
+              },
+              "autoRotate": true
+            }
+          }
+        },
+        "nodes": {
+          "CodeNode": {
+            "name": "CodeNode",
+            "g6Settings": {
+              "labelCfg": {
+                "style": {
+                  "fontSize": 12,
+                  "fontFamily": "Helvetica Neue, Helvetica, Arial, sans-serif",
+                  "fontWeight": 300,
+                  "fill": "#ffffff"
+                }
+              },
+              "size": 75,
+              "style": {
+                "lineWidth": 3,
+                "fill": "#4e79a7",
+                "stroke": "#3e6085"
+              }
+            },
+            "label": "id"
+          }
+        },
+        "rels": {
+          "Calls": {
+            "name": "Calls",
+            "g6Settings": {
+              "size": 3,
+              "opacity": 1,
+              "style": {
+                "endArrow": {
+                  "path": "M 0,0 L 8,4 L 8,-4 Z",
+                  "fill": "#e2e2e2"
+                },
+                "stroke": "#e2e2e2",
+                "startArrow": false
+              },
+              "labelCfg": {
+                "style": {
+                  "fontSize": 12,
+                  "fontFamily": "Helvetica Neue, Helvetica, Arial, sans-serif",
+                  "fontWeight": 300,
+                  "background": {
+                    "fill": "#ffffff",
+                    "padding": [
+                      2,
+                      2,
+                      2,
+                      2
+                    ],
+                    "radius": 2
+                  }
+                },
+                "autoRotate": true
+              }
+            },
+            "label": "_label"
+          },
+          "Contains": {
+            "name": "Contains",
+            "g6Settings": {
+              "size": 3,
+              "opacity": 1,
+              "style": {
+                "endArrow": {
+                  "path": "M 0,0 L 8,4 L 8,-4 Z",
+                  "fill": "#e2e2e2"
+                },
+                "stroke": "#e2e2e2",
+                "startArrow": false
+              },
+              "labelCfg": {
+                "style": {
+                  "fontSize": 12,
+                  "fontFamily": "Helvetica Neue, Helvetica, Arial, sans-serif",
+                  "fontWeight": 300,
+                  "background": {
+                    "fill": "#ffffff",
+                    "padding": [
+                      2,
+                      2,
+                      2,
+                      2
+                    ],
+                    "radius": 2
+                  }
+                },
+                "autoRotate": true
+              }
+            },
+            "label": "_label"
+          },
+          "Imports": {
+            "name": "Imports",
+            "g6Settings": {
+              "size": 3,
+              "opacity": 1,
+              "style": {
+                "endArrow": {
+                  "path": "M 0,0 L 8,4 L 8,-4 Z",
+                  "fill": "#e2e2e2"
+                },
+                "stroke": "#e2e2e2",
+                "startArrow": false
+              },
+              "labelCfg": {
+                "style": {
+                  "fontSize": 12,
+                  "fontFamily": "Helvetica Neue, Helvetica, Arial, sans-serif",
+                  "fontWeight": 300,
+                  "background": {
+                    "fill": "#ffffff",
+                    "padding": [
+                      2,
+                      2,
+                      2,
+                      2
+                    ],
+                    "radius": 2
+                  }
+                },
+                "autoRotate": true
+              }
+            },
+            "label": "_label"
+          }
+        }
+      },
+      "performance": {
+        "maxNumberOfNodes": 500,
+        "maxNumberOfNodesWithLabels": 200,
+        "maxNumberOfNodesToExpand": 50
+      },
+      "tableView": {
+        "rowsPerPage": 10
+      },
+      "schemaView": {
+        "showRelLabels": "ALWAYS"
+      },
+      "gpt": {
+        "model": "gpt-4.1",
+        "llmProvider": "OPENAI",
+        "url": ""
+      },
+      "colors": [
+        "#76b7b2",
+        "#9c755f",
+        "#e58d96",
+        "#d5b441",
+        "#af7aa1",
+        "#d97f27",
+        "#e15759",
+        "#59a14f"
+      ]
+    }
+  },
+  "history": [
+    {
+      "uuid": "1cf4f7dc-e2d0-4da9-b720-ce95bd7c1e9a",
+      "isQueryGenerationMode": false,
+      "cypherQuery": "// 1. find the caller id (rel path depends on your scan root)\r\n// MATCH (n:CodeNode)\r\n// WHERE n.name = 'reviewWorkflowV2' AND n.file_path CONTAINS 'review_v2/workflow.py'\r\n// RETURN n;\r\n\r\n// 2. all callees, in implementation order\r\nMATCH (c:CodeNode {id: 'src/app/workflows/review_v2/workflow.py:reviewWorkflowV2:210:642'})-[e:Calls]->(d)\r\nRETURN d\r\nORDER BY e.site_line;"
+    }
+  ]
+}

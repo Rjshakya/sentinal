@@ -12,7 +12,7 @@ Submodules:
   (registry dispatch + per-event handlers).
 
 The GitHub post-pipeline (posting a review + the back-link updates)
-lives in :mod:`app.workflows.review.steps.post_review`, built on the
+lives in :mod:`app.workflows.review_v2.steps.post_review`, built on the
 :mod:`.pr` sub-service.
 """
 
@@ -26,6 +26,8 @@ from app.services.github.installation import (
     getInstallUrl,
     getInstallation,
     listInstallations,
+    signState,
+    verifyState,
 )
 from app.services.github.repo import (
     GitHubRepo,
@@ -33,6 +35,7 @@ from app.services.github.repo import (
     RepoCtx,
     createRepoCtx,
     getCloneUrl,
+    getInstallationIdForRepo,
     getRepo,
     listInstallationRepos,
     mintAccessToken,
@@ -77,11 +80,14 @@ __all__ = [
     "getInstallUrl",
     "getInstallation",
     "listInstallations",
+    "signState",
+    "verifyState",
     "GitHubRepo",
     "GitHubRepoError",
     "RepoCtx",
     "createRepoCtx",
     "getCloneUrl",
+    "getInstallationIdForRepo",
     "getRepo",
     "listInstallationRepos",
     "mintAccessToken",

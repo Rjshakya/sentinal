@@ -24,17 +24,15 @@ ai-code-review/
 │   │   ├── alembic/
 │   │   │   ├── env.py
 │   │   │   └── versions/     # 12 revisions
-│   │   └── src/app/
-│   │       ├── core/         # config, db, auth, middleware, workos, github_app,
-│   │       │                 #   install_state, sandbox/, llm, result,
-│   │       │                 #   telemetry
+│   │   └── src/app/        # a README lives in every dir
+│   │       ├── core/         # config, db, auth, middleware, workos, telemetry
 │   │       ├── models/       # SQLModel tables + enums
-│   │       ├── schemas/      # HTTP request/response shapes (setup, llm_config)
 │   │       ├── repositories/ # generic BaseRepository[T] + per-model subclasses
-│   │       ├── routers/      # health, auth, github, ai, users, llm_configs, webhooks
-│   │       ├── services/     # agent/, setup/, indexing/, github/, llm_config/
-│   │       ├── workflows/    # review/ (durable review pipeline + triggers)
-│   │       └── utils/        # uuidToStr, etc.
+│   │       ├── routers/      # health, auth, github, ai, users, pulls,
+│   │       │                 #   reviews, llm_configs, webhooks (+ schemas/)
+│   │       ├── services/     # agent_v2/, github/, llm/, sandbox/
+│   │       ├── workflows/    # review_v2/, repair_and_publish/, triggers/
+│   │       └── utils/        # branded ids, sandbox paths, agent schemas
 │   └── evals/                # evaluation harness (uv member; see §3.8)
 │       ├── main.py           # sequential runner: prepare → review → judge
 │       ├── dataset/          # authored cases: {repo}-pr-{n}/{input,output}.json
@@ -105,8 +103,8 @@ Data flow at a glance:
 7. GitHub webhook deliveries (verified by `X-Hub-Signature-256`) land on
    `POST /api/webhooks/github` and drive the durable review workflows:
    `pull_request` `opened` and `issue_comment` `created` (mentioning
-   `@<app_slug> review`) both dispatch `reviewWorkflow` via
-   `workflows/review/triggers.py`.
+   `@<app_slug> review`) both dispatch `reviewWorkflowV2` via
+   `workflows/triggers/review.py`.
 
 ## 3. Backend — `packages/api`
 
@@ -128,8 +126,8 @@ application. `create_app()` wires `CORSMiddleware` (`credentials=True`, so
 sealed cookies round-trip), then `AuthMiddleware`, then registers the seven
 routers under `settings.api_prefix` (`/api`). The `lifespan` hook runs
 `create_db_and_tables()` (a `SQLModel.metadata.create_all` convenience for
-greenfield dev), initialises DBOS from `_dbos_config()` and `DBOS.launch()`,
-and calls `build_e2b_template()`; on shutdown it runs `DBOS.destroy()`.
+greenfield dev), initialises DBOS from `_dbos_config()` and `DBOS.launch()`;
+on shutdown it runs `DBOS.destroy()`.
 OpenLLMetry telemetry (`app/core/telemetry.py::init_telemetry`) is
 initialised at import time when `settings.telemetry_configured`
 (`TRACELOOP_BASE_URL` / `TRACELOOP_API_KEY` present) and is the
@@ -172,9 +170,11 @@ Windows, the `__main__` block swaps uvicorn's asyncio loop factory to
   projects the user payload, extracts `github_login` from the
   `GitHubOAuth` connection's `connection_id`, and 401s on any missing field.
 - `middleware.py` — `AuthMiddleware(BaseHTTPMiddleware)`. `PROTECTED_PREFIXES`
-  = `/api/github`, `/api/ai`, `/api/users`, `/api/llm_config`.
-  `BYPASS_PREFIXES` = `/api/github/setup` (GitHub calls it via a browser
-  redirect with no session cookie). Skips `OPTIONS`; on success attaches the
+  = `/api/github`, `/api/ai`, `/api/users`, `/api/llm_config`,
+  `/api/review`, `/api/pulls`. `BYPASS_PREFIXES` =
+  `/api/github/setup` (GitHub calls it via a browser redirect with no
+  session cookie); `BYPASS_METHODS` exempts `POST /api/review` (gated by
+  `X-Eval-Token` instead). Skips `OPTIONS`; on success attaches the
   full `Session` plus flat fields (`user_id`, `session_id`, `email`,
   `user_name`, `profile_picture`) to `request.state`; on failure returns
   `{"detail": "Unauthorized"}` / 401.
@@ -183,32 +183,6 @@ Windows, the `__main__` block swaps uvicorn's asyncio loop factory to
   `authenticate_code(code)`, `seal_session(auth_response)`, and
   `load_session(cookie_value)`. Session sealing/loading is local (Fernet),
   so no network IO on the hot path.
-- `github_app.py` — GitHub App client factory. `get_app_github()` builds the
-  process-wide `GitHub[AppAuthStrategy]` lazily from settings (private key
-  from `GITHUB_APP_PRIVATE_KEY` base64 or the `*_PATH` file). Exposes
-  `installation_client(installation_id)` (mints + caches installation
-  tokens), `list_installation_repos` (paginated `GET /installation/repositories`),
-  `mint_installation_token` (explicit token for the setup pipeline),
-  `installation_id_for_repo(owner, repo)` (fallback resolution), and
-  `get_installation` (for the setup callback).
-- `install_state.py` — HMAC-signed state tokens for the install flow,
-  stdlib-only: `base64url(payload) "." base64url(hmac_sha256(secret, payload))`
-  with payload `"{user_id}|{exp_unix_seconds}"`, default TTL 600s.
-  `sign(user_id, secret)` / `verify(token, secret)`.
-- `sandbox/` — pluggable sandbox abstraction.
-  - `base.py` — `BaseSandbox` ABC (create / connect / stop + spec access).
-  - `types.py` — `SandboxSpec` (provider, api_key, template, cpu, memory…).
-  - `factory.py` — `create_sandbox(spec=…)` picks the adapter; callers use
-    `BaseSandbox`, never the concrete classes. `build_default_spec(provider)`
-    builds a spec from settings, raising when the provider's key is missing.
-  - `e2b.py` — `E2BSandbox` + `build_e2b_template()` (called at lifespan).
-  - `daytona.py` — `DaytonaSandbox` adapter.
-- `llm.py` — `LLMConfig` (frozen, DBOS-serializable: model as
-  `"provider:model"`, api_key, base_url, headers, max_retries,
-  rate_limit_rps; `provider` / `model_id` properties) and
-  `build_chat_model(config, callbacks=…)` — the single factory delegating to
-  `langchain.chat_models.init_chat_model`, applying rate limiter / base URL /
-  default headers / SecretStr-wrapped api_key uniformly.
 - `telemetry.py` — OpenLLMetry (`traceloop-sdk`) wiring, the single
   observability entry point: `init_telemetry()` (import-time init gated on
   `settings.telemetry_configured`; sets `TRACELOOP_TRACE_CONTENT` /
@@ -217,9 +191,6 @@ Windows, the `__main__` block swaps uvicorn's asyncio loop factory to
   `LoggerProvider` + `LoggingHandler` that routes stdlib `logging`
   to `<endpoint>/v1/logs`) and `instrument_fastapi(app)`
   (attaches `FastAPIInstrumentor` when telemetry is on).
-- `result.py` — `Ok` / `Err` result helpers (currently unused; retained
-  for future result-style services).
-
 `src/app/models/` — see §3.4 Domain model. `__init__.py` re-exports every
 table and enum so `from app.models import *` in `alembic/env.py` registers
 them on `SQLModel.metadata`.
@@ -248,119 +219,50 @@ them on `SQLModel.metadata`.
     row (unique on `(user_id, github_installation_id)`), and 302s to
     `/dashboard?installation=success|failed&reason=…&setup_action=…`.
     Outside `AuthMiddleware`'s protected prefixes (in `BYPASS_PREFIXES`).
-- `ai.py` — `POST /ai/repo/setup` (202): accepts `{repos: [{id, owner,
-  name, installation_id}]}`, skips repos that already have a `repos` row,
-  503s when the LLM is not configured, and dispatches one `setup_workflow`
-  per repo with id `setup:{user_id}:{github_repo_id}`. `GET
-  /ai/repo/setup/{workflow_id}` returns DBOS status plus the typed error
-  name/message on terminal error; cross-user reads return 404 (the id
-  encodes the owner).
-- `indexing.py` — indexing-pipeline routes:
-  - `POST /indexing/repo` (202): accepts `{repo_owner, repo_name, repo_url,
-    default_branch?}`. The client supplies `repo_owner` + `repo_name`
-    as canonical identifiers (it already has them on the `Repo` row),
-    so the handler trusts them and skips URL parsing. Verifies the
-    repo is in the user's `repos` table (`404` otherwise) and dispatches
-    `indexRepo` under the deterministic id `index:{owner}:{repo}`.
-  - `GET /indexing/{workflow_id}` — return the `IndexRun` row for the
-    workflow id; `404` on cross-user reads.
-  - `GET /indexing` — list the user's runs, paginated newest-first.
-- `users.py` — user-scoped reads: `GET /users/repos` (indexed `repos` rows)
+- `ai.py` — `POST /ai/repo/setup`: sync bulk-insert of one `Repo` row
+  per requested repo (`{repos: [{id, owner, name, installation_id}]}`,
+  skips repos that already have a row). Shapes in
+  `routers/schemas/ai.py`.
+- `users.py` — user-scoped reads: `GET /users/repos` (configured `repos` rows)
   and `GET /users/stats` (`prs_reviewed`, `comments_issued`,
   `bugs_caught` = P1 comment count, all joined through `pull_requests` so
   another user's repos can never leak).
+- `pulls.py` — live GitHub PR reads plus the local Sentinel mirror:
+  `GET /pulls/{owner}/{repo}[/{number}[/commits|files|conversation|sentinel]]`.
+- `reviews.py` — `GET /review` (run list) and `POST /review`, the
+  eval-only sync trigger gated by `X-Eval-Token`.
 - `llm_configs.py` — per-user LLM config: `POST /` (test-and-upsert), `POST
   /test` (probe only), `GET /` (stored row, `api_key` redacted). All return
   the `{data, success, error, test_result}` envelope with HTTP 200 so the
-  frontend never branches on status.
+  frontend never branches on status. Shapes in
+  `routers/schemas/llm_config.py`.
 - `webhooks.py` — the GitHub App webhook receiver (see §3.5).
 
 `src/app/services/`:
 
-- `agent/` — the review-agent schemas + prompts.
-  - `models.py` — `CodeCommentDraft`, `ReviewComments` (mixed severities),
-    `SummaryResult`, `ReviewResult`.
-  - `prompts.py` — `PR_SUMMARY_SYSTEM_PROMPT` (summarizer agent) and
-    `REVIEW_COMMENTS_SYSTEM_PROMPT` (the merged security/correctness/style
-    rubric assigning P1_CRITICAL / P2_WARNING / P3_NITPICK).
-  - `helpers.py` — small prompt/result helpers (`extract_message_kinds`).
-- `setup/` — the durable per-repo setup workflow:
-  `ensure_repo_and_sandbox_step` → `mint_installation_token_step` →
-  `git_clone_step` → (`finally`) `stop_setup_sandbox_step`. Typed errors in
-  `errors.py`, Pydantic surface in `types.py` (`SetupWorkflowInput`,
-  `RepoContext`, `SetupWorkflowResult`), pure helpers in `_helpers.py`.
-  Workflow id `setup:{user_id}:{github_repo_id}`. When
-  `index_after_setup` is true (router sets it from
-  `Settings.indexing_configured`), the workflow fires off `indexRepo`
-  fire-and-forget as its final step.
-- `indexing/` — the full-indexing pipeline: tree-sitter chunking in
-  the sandbox, LanceDB ingest + S3 persistence inside the same
-  sandbox.
-  - `workflow.py` — `indexRepo` (id `index:{owner}:{repo}`): index
-    run row → sandbox create → authenticated clone URL → shallow
-    clone → upload scripts → combined chunking + ingestion
-    (`mode="overwrite"` full rewrite) → success/error mirrors; sandbox
-    killed in `finally`. Lifecycle mirror rows live in `index_runs`.
-  - `helpers.py` — pure helpers (`build_table_uri`, `index_workflow_id`,
-    `parse_index_summary`); `types.py` — frozen workflow input/context;
-    `errors.py` — the `IndexingError` hierarchy + `_should_retry_index`.
-  - `steps/` — `ensureIndexSandbox`, `getRepoUrl` (installation token
-    → authenticated clone URL), `gitCloneToSandbox`,
-    `uploadScriptsToSandbox`, `runIndexPipeline` (`run_index.py`),
-    `index_run_steps.py` (best-effort `index_runs` mirror),
-    `update_repo.py` (best-effort `repos.is_indexed` mirror),
-    `stop_sandbox.py` (finally).
-  - `scripts/` — in-sandbox files uploaded as bytes (never imported
-    on the host): `chunking.py` (tree-sitter generator), `ingestion.py`
-    (LanceDB writer).
-  - `incremental/` — the incremental-indexing pipeline, triggered by
-    GitHub `push` webhooks on the default branch.
-    - `webhook.py` — `handle_push_event` (the push adapter): default
-      branch check → aggregate changed files across all commits →
-      resolve user/repo → gate on `is_indexed` + indexing config →
-      dispatch `incrementalIndexRepo`. Every skip path returns a
-      `PushWebhookAck` with a `skip_reason`.
-    - `workflow.py` — `incrementalIndexRepo` (id
-      `index:{owner}:{repo}:{head_sha[:7]}`): host-side delete of the
-      `removed + modified` chunks → (only when files remain) a fresh
-      index sandbox → clone → upload scripts → append-only in-sandbox
-      ingest. Success mirrors keep `is_indexed = true`; **errors never
-      flip `is_indexed`** (the dataset still exists).
-    - `steps/` — `delete_stale_chunks.py` (host-side
-      `lancedb.connect_async` + `table.delete`, no sandbox),
-      `ensure_sandbox.py` (fresh E2B sandbox per run),
-      `upload_scripts.py` (uploads shared `chunking.py` +
-      incremental `incremental_ingestion.py`),
-      `run_incremental_ingest.py` (the append command).
-    - `scripts/incremental_ingestion.py` — in-sandbox append-only
-      LanceDB writer for the explicit file list + FTS rebuild.
-    - `helpers.py` — pure `push_skip_reason`, `extract_push_files`,
-      `incremental_workflow_id`, `build_delete_predicates`.
-- `workflows/review/` — the refactored durable review pipeline (the
-  successor of the legacy `services/review/` + `services/pr_issue_comment/`
-  packages, which were removed), built on the §9 service layer.
-  - `workflow.py` — the `reviewWorkflow` DBOS orchestrator (see §3.5)
-    plus the pure helpers `createReviewWorkflowId` (the deterministic
-    `review:{repo_id}:{pr_number}:{head_sha[:7]}` id),
-    `computeReviewLimits` (sizes the per-run agent call limits from the
-    PR's size stats), and `buildReviewWorkflowInput`.
-  - `triggers.py` — the webhook edge adapters (the successor of the
-    legacy `review.webhook` + `pr_issue_comment.workflow`): 
-    `handlePullRequestOpened` (a `pull_request` `opened` delivery) and
-    `handleIssueCommentCreated` (an `issue_comment` `created` delivery
-    mentioning `@<app_slug> review`). Both resolve user/repo, gate on
-    LLM + sandbox config, resolve the per-user LLM config + the
-    settings-driven sandbox ctx, and dispatch `reviewWorkflow` under
-    the deterministic id. The comment adapter fetches PR state via the
-    `github.pr` sub-service, adds the best-effort 👀 reaction, and sets
-    `diffBaseSha` for an **incremental re-review** when the head moved
-    since the latest successful `review` row.
-  - `helpers.py` — pure comment-trigger logic: `validateCommentPayload`
-    (typed projection onto `CommentTriggerInput`, `None` on malformed),
-    `classifyComment` (`action` / `is_pr` / `is_self` / `has_mention` /
-    `is_authorized` short-circuit), `effectiveDiffBase` (the
-    incremental-re-review decision), `REVIEW_MENTION_RE`,
-    `WRITE_ASSOCIATIONS`.
+- `agent_v2/` — the review-agent layer (planning agent + per-file
+  review agents, delegation disabled).
+  - `types.py` — `AgentV2Ctx` (identity + live model/sandbox deps, never
+    crosses DBOS) and the serializable `PlannerContext` / `FileContext`
+    / `ChunkInventory` / `FileReviewJob`.
+  - `prompts/` — one function per prompt: `planning.py` (planning rubric
+    + `submit_plan` contract), `file_review.py` (single-chunk review
+    rubric), `summary.py` (walkthrough synthesis), `shared.py`
+    (comment-body contract, `NO_FINDINGS` marker, identity/PR-intent
+    blocks, `getReviewDiffDirPath`, `SEARCH_CODEGRAPH_TOOL_DESCRIPTION`).
+  - `service.py` — ctx factory + agent builders + the `submit_plan`
+    tool mechanics + the `search_codegraph` tool (full query ladder
+    over the run's codegraph DB, closed over the ctx; planner gets
+    both tools, file agents get the search tool).
+  - `_middleware.py` — private `NoDelegationMiddleware` (strips the
+    `task` tool per model request) + the retry/limits stack.
+  - `errors.py` — `AgentV2BuildError` (returned as a value, never raised).
+- `workflows/review_v2/` — the durable review pipeline: planner +
+  per-file review agents over shared infra steps.
+  - `workflow.py` — the `reviewWorkflowV2` DBOS orchestrator (see §3.5)
+    plus the pure helpers `createReviewV2WorkflowId` (the deterministic
+    `review-v2:{repo_id}:{pr_number}:{head_sha[:7]}` id) and
+    `buildReviewWorkflowInput`.
   - `types.py` — the serializable contract: `ReviewWorkflowCtx`
     (resolved LLM + sandbox environment), `ReviewWorkflowInput`,
     `RepoSnapshot`, `ReviewRunResult`, `ReviewLimits`, the `TotalUsages`
@@ -374,38 +276,56 @@ them on `SQLModel.metadata`.
     `isLlmRetryError` / `isRetryableStatusCode` predicates.
   - `steps/` — one file per I/O boundary, each exposing a pure worker
     and a DBOS-wrapped step: `get_repo`, `create_sandbox` (per-run
-    **ephemeral** sandbox; no `sandboxes` row), `clone_repo` (mints an
-    installation token, clones the default branch — token via `envs`,
-    never argv — and best-effort fetches `refs/pull/{pr}/head` so
-    fork-PR heads are diffable), `upsert_pr`, `review_lifecycle` (the
-    durable `review` lifecycle-row steps), `fetch_diff`, `split_diff`
-    (uploads + runs the split script, returns the `SplitDiffResult`
-    summary), `invoke_agent` (the two parallel research lanes +
-    `runExtractorLanes` / `combineLaneOutcomes`), `extract_result` (the
-    structured extractor steps), `persist` (summary / comments / usage
-    rows), `post_review` (inline GitHub post with its own retry policy +
-    `updatePostBacklinksTx`), `kill_sandbox` (destroys the ephemeral
-    sandbox in the workflow's `finally`).
+    **ephemeral** sandbox; no `sandboxes` row), `clone_repo_v2` (v2-native
+    atomic clone: default-branch clone + PR-ref fetch + detached head
+    checkout, fail-closed — token via `envs`, never argv), `upsert_pr`,
+    `review_lifecycle` (the durable `review` lifecycle-row steps),
+    `fetch_diff`, `split_diff` (uploads + runs the split script, returns
+    the `SplitDiffResult` summary), `list_chunks` (inventories
+    `splitted_diffs/` into the `ChunkInventory` diff truth),
+    `invoke_planner` (planning-agent research + `plan.json` read-back),
+    `invoke_file` (one scoped per-file lane, retried alone),
+    `synthesize_summary` (walkthrough synthesis, degrades to empty),
+    `combine` (pure join/merge: trivial filter, context join, report
+    concat, `combineV2Reports` over the local `CombinedReview` /
+    `combineReviewResults` / `verdictFor` merge rules),
+    `extract_result` (the structured extractor steps), `persist`
+    (summary / comments / usage rows), `post_review` (inline GitHub post
+    with its own retry policy + `updatePostBacklinksTx`),
+    `kill_sandbox` (destroys the ephemeral sandbox in the workflow's
+    `finally`).
   - `scripts/` — `split_diff.py`, the in-sandbox splitter (stdlib-only,
     uploaded as bytes, never imported on the host): writes `overview.md`
     and the per-file chunks into `splitted_diffs/` and prints the tiny
     `SplitDiffResult` summary JSON to stdout (`overview_written`,
     `files_changed`, `skipped` — no per-file line sets).
+- `workflows/triggers/` — the webhook edge adapters:
+  `review.py` (`handlePullRequestOpened` for `pull_request` `opened`,
+  `handleIssueCommentCreated` for `issue_comment` `created` mentioning
+  `@<app_slug> review`), `comment.py` (pure comment-trigger logic:
+  `validateCommentPayload`, `classifyComment`, `effectiveDiffBase`),
+  `_common.py` (shared run-environment resolvers), `types.py`
+  (trigger contract), `repair.py` (repair-and-publish follow-up
+  dispatch). Both review adapters resolve user/repo, gate on LLM +
+  sandbox config, resolve the per-user LLM config + the
+  settings-driven sandbox ctx, and dispatch `reviewWorkflowV2` under
+  the deterministic id. The comment adapter fetches PR state via the
+  `github.pr` sub-service, adds the best-effort 👀 reaction, and sets
+  `diffBaseSha` for an **incremental re-review** when the head moved
+  since the latest successful `review` row.
 - `github/` — the GitHub service package (sub-services follow the §9
   pattern): `installation/`, `repo/`, `pr/`, `webhook/`, plus the
   private `client.py` App-auth client factory. The GitHub post-pipeline
   (posting a review + the DB back-link updates) lives in
-  `workflows/review/steps/post_review.py`, built on the `pr`
-  sub-service — the legacy `post_review.py` / `workflow.py` modules
-  were removed.
-- `llm_config/` — plain async service (no DBOS workflow):
-  `test_user_llm_config` (never raises; runs a `create_deep_agent`
+  `workflows/review_v2/steps/post_review.py`, built on the `pr`
+  sub-service.
+- `llm/config/` — per-user `llm_configs` sub-service (no DBOS
+  workflow): `testLLMConfig` (never raises; runs a `create_deep_agent`
   probe with a `response_format` pydantic schema — the same
-  structured-output path the review agents use — and validates the
-  `structured_response`), `upsert_user_llm_config` (probe
-  then upsert), `list_user_llm_configs`,
-  `resolve_active_llm_config(user_id)` (used by the review webhook; raises
-  `NoActiveLLMConfigError` when the user has no row).
+  structured-output path the review agents use),
+  `saveUserLLMConfig` (probe then upsert), `listUserLLMConfigs`.
+  Types in `types.py` (`LLMConfigTestResultPublic` is the wire
+  shape); `LLMConfigStoreError` in `errors.py`.
 
 ### 3.3 Config surface at a glance
 
@@ -592,10 +512,10 @@ of truth); `installation.deleted` → delete rows; `suspend`/`unsuspend` →
 toggle `suspended_at`; `installation_repositories.added` → upsert one
 `repos` row per added repo (user recovered from the `installations` row);
 `removed` → delete rows; `pull_request.opened` →
-`workflows.review.triggers.handlePullRequestOpened` (dispatches
-`reviewWorkflow`); `issue_comment.created` →
-`workflows.review.triggers.handleIssueCommentCreated` (dispatches
-`reviewWorkflow`); `push` → `handle_push_event` (dispatches the
+`workflows.triggers.review.handlePullRequestOpened` (dispatches
+`reviewWorkflowV2`); `issue_comment.created` →
+`workflows.triggers.review.handleIssueCommentCreated` (dispatches
+`reviewWorkflowV2`); `push` → `handle_push_event` (dispatches the
 incremental indexing workflow for default-branch pushes — see the
 indexing pipeline below);
 everything else → 202 with a log line.
@@ -656,14 +576,14 @@ Both the full and incremental runs record one row in `index_runs`
 (each `workflow_id` is unique), so the dashboard lists them
 indistinguishably.
 
-**Review pipeline.** Two triggers dispatch `reviewWorkflow`:
+**Review pipeline.** Two triggers dispatch `reviewWorkflowV2`:
 
 1. GitHub `pull_request` `opened` webhook →
-   `workflows/review/triggers.handlePullRequestOpened` (validates,
+   `workflows/triggers/review.handlePullRequestOpened` (validates,
    resolves user + repo, gates config, resolves the per-user LLM
    config, builds the settings-driven sandbox ctx).
 2. A PR comment mentioning `@<app_slug> review` →
-   `workflows/review/triggers.handleIssueCommentCreated` (classify →
+   `workflows/triggers/review.handleIssueCommentCreated` (classify →
    resolve → fetch PR state via the `github.pr` sub-service → resolve
    last review → 👀 → dispatch). The trigger resolves the latest
    successful `review` row for the PR (`loadLastReview`, filtering
@@ -673,94 +593,99 @@ indistinguishably.
    commits pushed since the previous review are diffed. `diffBaseSha`
    never touches `baseSha` — the `pull_requests` and `review` rows keep
    the PR's true base. The pure gate logic lives in
-   `workflows/review/helpers.py` (`validateCommentPayload` /
+   `workflows/triggers/comment.py` (`validateCommentPayload` /
    `classifyComment` / `effectiveDiffBase`).
 
 Both start the workflow with the deterministic id
-`review:{repo_id}:{pr_number}:{head_sha[:7]}`, so duplicate deliveries for
-the same head SHA do not re-run the agent. `review_workflow` then runs:
+`review-v2:{repo_id}:{pr_number}:{head_sha[:7]}`, so duplicate deliveries for
+the same head SHA do not re-run the agent. `reviewWorkflowV2` then runs:
 
-1. `resolve_repo_tx` — look up the `Repos` row (`@dbos_datasource.transaction`).
-2. `create_review_sandbox_step` — create a fresh **ephemeral** E2B
-   sandbox for this run (no `sandboxes` row; the run's
-   `review.sandbox_id` records it). Only the sandbox **id** travels
-   onward; each step reconnects.
-3. `clone_repo_step` — mint an installation token, clone the default
-   branch into the sandbox (token via `envs`, never argv), and
-   best-effort fetch `refs/pull/{pr}/head` so fork-PR heads are
-   diffable.
-4. `upsert_pull_request_tx` — insert/update the `PullRequest` row.
-5. `mark_review_is_running_step` — create (or reset on restart) the
+1. `getRepoTx` — look up the `repos` row.
+2. `createSandboxStep` — create a fresh **ephemeral** sandbox for this
+   run (no `sandboxes` row; the run's `review.sandbox_id` records it).
+   Only the sandbox **id** travels onward; each step reconnects.
+3. `cloneRepoV2Step` — v2-native atomic clone: default-branch clone +
+   PR-ref fetch + detached head checkout, verify-gated. Fail-closed:
+   any checkout refusal fails the run instead of reviewing a
+   half-built tree. Past this step there is exactly one world: PR
+   tree + PR diff.
+4. `installCodeGraphAndIndexRepoStep` — `pip install
+   sentinel-codegraph==0.3.0` (public PyPI, no tokens) + `codegraph
+   index` of the PR-head tree into the fixed run database
+   (`<workspace>/graph.lbdb`, `--overwrite` for retry idempotency).
+   Fail-closed: a dead search tool fails the run instead of
+   reviewing without it.
+5. `upsertPullRequestTx` — insert/update the `PullRequest` row.
+6. `markReviewRunningStep` — create (or reset on restart) the
    `review` lifecycle row in `RUNNING`, keyed by the deterministic
    `workflow_id` (unique index), with the PR link, sandbox, and LLM
    snapshot; returns the row id. The step is **durable**: retried 3x on
-   transient DB failures and raises `ReviewRunUpdateError` otherwise.
-6. `fetch_diff_step` — `git diff {diff_base_sha or base_sha}...head_sha`
+   transient DB failures.
+7. `fetchDiffStep` — `git diff {diff_base_sha or base_sha}...head_sha`
    written to the sandbox (`file.diff`). `diff_base_sha` narrows the
    range on an incremental re-review; `base_sha` (the PR's true base)
    still lands on the `pull_requests` / `review` rows.
-7. `split_diff_step` — upload `split_diff.py` into the sandbox and run it
+8. `splitDiffStep` — upload `split_diff.py` into the sandbox and run it
    against `file.diff`; the script writes `overview.md` (the four-bucket
    paths-only gate document) and the per-file annotated chunks into
    `splitted_diffs/`, and prints the tiny `SplitDiffResult` summary JSON
    to stdout (`overview_written`, `files_changed`, `skipped` — no per-file
    line sets; exit-code contract: `0` success, `-1` transient
    runner dropout, `>0` final `DiffSplitError`). The summary is parsed by
-   the shared `parse_split_summary` in `helpers.py`; the diff text itself
+   `parseSplitSummary` in `steps/split_diff.py`; the diff text itself
    never crosses the sandbox boundary.
-8. `invoke_summary_agent_step` / `invoke_comments_agent_step` — the
-   **two parallel agent steps**, started concurrently from the workflow
-   body via `asyncio.gather(return_exceptions=True)` (the documented DBOS
-   parallel-steps pattern; deterministic start order). Each
-   (`@DBOS.step`, `retries_allowed=True`, `max_attempts=3`,
-   `backoff_rate=2`, retry predicate `_SHOULD_RETRY_AGENT`) reconnects to
-   the shared E2B sandbox by id, builds its own chat model + deep-agent
-   (`summarizer` / `comments`, each with the `get_diff` tool and the
-   `build_review_middleware()` stack), runs it, wraps failures in the
-   per-lane error class
-   with a `retryable` flag, and returns `(result, usage)`. A transient
-   failure retries **that lane alone**; the invoke steps never stop the
-   sandbox (the workflow's `finally` owns the stop). `combine_agent_outcomes`
-   then partitions the two results: both failed → raises
-   `ReviewAgentsInvocationError` (logged with run context);
-   partial → failed lanes degrade to empty defaults (`""` summary / empty
-   comment lists) with a warning log, and the review completes with the
-   successful lanes' output; token usage is aggregated per model from
-   successful lanes only.
-9. `persist_review_summary_tx` + `persist_code_comments_tx` — one
-   `ReviewSummary` row and one `CodeComment` row per draft,
-   each carrying the run's `review_id` (the lifecycle row).
-10. `persist_review_usage_tx` — one `ReviewUsage` row with aggregated token
+9. `listChunkFilesStep` — inventories `splitted_diffs/` into the
+   `ChunkInventory` diff truth (real paths + observed chunk files).
+10. `invokePlannerStep` + `getPlanStep` — the planning agent researches
+    the repo + chunks (graph-first via the `search_codegraph` tool)
+    and submits via the `submit_plan` tool; the plan
+    is read back from `plan.json` into a `PlannerContext`.
+    **Enrichment-only**: any planner failure degrades to an empty
+    context, never fails the run.
+11. `buildFileReviewJobs` (pure) — joins inventory (truth) with planner
+    context (enrichment); trivial files dropped host-side.
+12. `invokeFileReviewStep` — one scoped per-file lane per job, fanned
+    out in sequential batches (`V2_FANOUT_BATCH_SIZE`, one wave sharing
+    one rate limiter). Each file agent carries the `search_codegraph`
+    tool for blast-radius checks. Each file retries alone; failed files
+    degrade to nothing. All lanes failed → raises `V2AgentsError`
+    (logged with run context).
+13. `extractCommentsStep` — transcribes the concatenated file reports
+    into `CodeComment` drafts (structured extractor).
+14. `synthesizeSummaryStep` — synthesizes the walkthrough summary from
+    planner context + findings; degrades to empty, never fails the run.
+15. `persistReviewSummaryTx` + `persistCodeCommentsTx` — one
+    `ReviewSummary` row and one `CodeComment` row per draft,
+    each carrying the run's `review_id` (the lifecycle row).
+16. `persistReviewUsageTx` — one `ReviewUsage` row with aggregated token
     counts (success path; `review_status=SUCCESS`), carrying `review_id`.
-11. `mark_review_is_stopped_step` — flip the `review` row to `SUCCESS`
+17. `markReviewStoppedStep` — flip the `review` row to `SUCCESS`
     with the surviving comment count and the GitHub review id (from the
     inline post step, when it posted). Durable like the running step.
-12. `kill_sandbox_step` — always, in a `finally`: destroys the ephemeral
+18. `killSandboxStep` — always, in a `finally`: destroys the ephemeral
     per-run sandbox (best-effort; a kill failure never masks the run's
     outcome).
 
-Steps 2–5 run **inside** the `try`, so the `finally` sandbox kill also
-covers a raising clone / `upsert_pull_request_tx` / running step. The `except`
+Steps 2–6 run **inside** the `try`, so the `finally` sandbox kill also
+covers a raising clone / codegraph index / `upsertPullRequestTx` /
+running step. The `except`
 block flips the `review` row to `FAILED` via
-`mark_review_is_errored_step` (guarded by its own try/except so a
+`markReviewErroredStep` (guarded by its own try/except so a
 failure while recording the error never masks the original exception —
 which is then re-raised) and re-raises. All three `mark_*` steps are
 durable (`@DBOS.step`, `retries_allowed=True`, `max_attempts=3`,
-`should_retry=_SHOULD_RETRY_TRANSIENT`) and raise
-`ReviewRunUpdateError` on failure, so a persistent lifecycle-row
-failure marks the workflow ERROR instead of silently leaving the row
-stuck in `RUNNING`; the running step's find-or-create semantics keep
+`should_retry=shouldRetry`); the running step's find-or-create semantics keep
 retries idempotent via the unique `workflow_id`.
 
-The summary in `review_summaries.summary` is the `summarizer` agent's
-markdown output (from its `SummaryResult` structured response), and the verdict is
-recomputed deterministically in code by `verdict_for()` from the merged
+The summary in `review_summaries.summary` is the synthesized walkthrough
+markdown, and the verdict is recomputed deterministically in code by
+`verdictFor()` in `steps/combine.py` from the merged
 severities (any P1 → `REQUEST_CHANGES`, else any P2/P3 → `COMMENT`, else
 `APPROVE`).
 
 If `post_to_github` is enabled (always true on the webhook path), the
 workflow posts the review inline via `postReviewStep`
-(`workflows/review/steps/post_review.py`): a DBOS step with its own
+(`workflows/review_v2/steps/post_review.py`): a DBOS step with its own
 retry policy (429 / 5xx retried without re-running the LLM); terminal
 4xx failures return `posted=False` and the local review completes
 regardless. On success `updatePostBacklinksTx` writes the GitHub
@@ -800,14 +725,14 @@ signals over the same OTLP/HTTP pipeline, so any collector can ingest
 them:
 
 - **Traces.** The SDK auto-instruments LangChain + the provider
-  SDKs, so every LLM call of the review agents (both lanes + both
-  extractor steps) becomes a `gen_ai` span with model, token usage, and
+  SDKs, so every LLM call of the review agents (planner + file lanes +
+  extractor/summary steps) becomes a `gen_ai` span with model, token usage, and
   latency — no call-site changes. The FastAPI app is instrumented via
   `opentelemetry-instrumentation-fastapi` (`instrument_fastapi(app)` in
   `create_app()`, skippable with `TELEMETRY_FASTAPI=false`). Each review
-  run is grouped under one `review` workflow span (the
-  `@traceloop.sdk.decorators.workflow(name="review")` wrapper on
-  `reviewWorkflow`) tagged with the run's business context via
+  run is grouped under one `review_v2_workflow` workflow span (the
+  `@traceloop.sdk.decorators.workflow(name="review_v2_workflow")` wrapper on
+  `reviewWorkflowV2`) tagged with the run's business context via
   `Traceloop.set_association_properties` (repo_id / pr_number / head_sha /
   user_id / workflow_id) — the join key for correlating the fire-and-forget
   review trace with the webhook HTTP span. `TRACELOOP_TRACE_CONTENT`
@@ -827,20 +752,13 @@ them:
 
 ### 3.8 Evaluation harness — `packages/evals`
 
-A minimal three-stage sequential runner (`main.py <pr-id>`) that
+A minimal two-stage sequential runner (`main.py <pr-id>`) that
 evaluates the production review agents against authored datasets:
 
-1. **prepare** (`sandbox/main.py`) — clones the repo into the shared
-   sandbox root (`sandbox/sentinel-workspace/<repo>`), writes the
-   unified diff to `sandbox/tmp/{pr}/{head}/file.diff`, and runs the
-   prod split script. One sandbox serves every PR; idempotent per
-   (repo, pr, head).
-2. **review** (`agents/review/`) — runs both production lanes (same
-   prompts, middleware, user prompt, and extractor steps) over a
-   `LocalShellBackend` rooted at the sandbox; renders the output to
-   `results/<pr-id>/result.md` (fixed template: verdict, summary,
-   comments with severity + anchors, parsed back deterministically).
-3. **judge** (`agents/judge/`) — an isolated structured-output LLM
+1. **review** — POST `input.json` to the production `POST /api/review`
+   route (`reviewWorkflowV2`, gated by `X-Eval-Token`); adapt the typed
+   response and render `results/<pr-id>/result.json`.
+2. **judge** (`agents/judge/`) — an isolated structured-output LLM
    judge scores the review against `dataset/<pr-id>/output.json` (gold
    bugs) + the diff and writes `report/<pr-id>/report.json`
    (per-comment verdicts + derived precision/recall/F1/FP rate).
@@ -940,7 +858,7 @@ corresponding route file does not exist yet.
 - **Workflow ids are deterministic and encode the domain**
   (`setup:{user_id}:{gh_repo_id}`, `index:{owner}:{repo}` for full
   indexing, `index:{owner}:{repo}:{head_sha[:7]}` for incremental
-  indexing, `review:{repo_id}:{pr}:{head_sha[:7]}`, `post:{…}`) so
+   indexing, `review-v2:{repo_id}:{pr}:{head_sha[:7]}`, `post:{…}`) so
   duplicate deliveries dedupe and restarts are safe.
 - **Workflow inputs declare canonical identifiers explicitly.**
   `IndexWorkflowInput.repo_owner` and `IndexWorkflowInput.repo_name` are
@@ -950,8 +868,9 @@ corresponding route file does not exist yet.
 - **LLM configuration is a frozen value object** (`LLMConfig`) resolved
   per-user at review time (`resolve_active_llm_config`, falling back to
   `settings.llm_config`), consumed only through `build_chat_model`.
-- **Sandbox access goes through `BaseSandbox`**; the factory is the only
-  place that imports E2B/Daytona adapters.
+- **Sandbox access goes through `BaseSandbox`** (`deepagents` backend);
+  the provider map in `services/sandbox/service.py` is the only place
+  that imports the E2B/Daytona adapters.
 - **SQLModel is the source of truth for the schema**, Alembic mirrors it,
   CASCADE deletes live at the DB layer with `passive_deletes=True`.
 - **Severity and verdict are enums, not free text.**
@@ -975,7 +894,7 @@ corresponding route file does not exist yet.
 | `WORKOS_COOKIE_PASSWORD` | `""` | ≥32 random chars; seals the session cookie |
 | `FRONTEND_URL` | `http://localhost:3000` | Post-login redirect target |
 | `SANDBOX_PROVIDER` | `e2b` | `e2b` or `daytona` |
-| `E2B_API_KEY`, `E2B_TEMPLATE`, `E2B_CPU_COUNT`, `E2B_MEMORY_MB`, `E2B_TIMEOUT_S` | `""` / `code-interpreter-v1` / `2` / `2048` / `1200` | E2B sandbox defaults |
+| `E2B_API_KEY`, `E2B_TEMPLATE`, `E2B_CPU_COUNT`, `E2B_MEMORY_MB`, `E2B_TIMEOUT_S` | `""` / `code-interpreter-v1` / `2` / `2048` / `1200` | E2B sandbox defaults (`E2B_TEMPLATE` → pre-baked `SENTINAL_CODE_SANDBOX_TEMP` once built by CI) |
 | `DAYTONA_API_KEY`, `DAYTONA_TEMPLATE` | `""` | Daytona adapter config |
 | `LLM_MODEL` | `""` | `provider:model` string for the review agents |
 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_DEFAULT_HEADERS` | `""` / `""` / `{}` | Provider credential / gateway base URL / headers |
@@ -1012,17 +931,17 @@ corresponding route file does not exist yet.
 - Database schema → `packages/api/alembic/versions/`
 - ORM models → `packages/api/src/app/models/`
 - API routers → `packages/api/src/app/routers/`
-- GitHub App client + install state → `packages/api/src/app/core/{github_app,install_state}.py`
-- Sandbox abstraction → `packages/api/src/app/core/sandbox/`
-- LLM factory (`LLMConfig` + `build_chat_model`) → `packages/api/src/app/core/llm.py`
-- AI agent prompts → `packages/api/src/app/services/agent/prompts.py`
-- AI agent response schemas → `packages/api/src/app/services/agent/models.py`
-- Review pipeline (workflow + steps + agent fan-out) → `packages/api/src/app/workflows/review/`
-- Comment-trigger logic (classify / validate / diff-base) → `packages/api/src/app/workflows/review/{helpers,triggers}.py`
+- GitHub services (client, install, repo, pr, webhook) → `packages/api/src/app/services/github/`
+- Sandbox abstraction → `packages/api/src/app/services/sandbox/` (E2B template builders in `e2b_template.py`)
+- LLM factory (`LLMCtx` + `createLLMModel`) → `packages/api/src/app/services/llm/`
+- AI agent prompts → `packages/api/src/app/services/agent_v2/prompts/`
+- AI agent response schemas → `packages/api/src/app/utils/schema.py`
+  (`CodeCommentDraft`, `ReviewComments`, `ReviewResult`)
+- Review pipeline (workflow + steps + agent fan-out) → `packages/api/src/app/workflows/review_v2/`
+- Comment-trigger logic (classify / validate / diff-base) → `packages/api/src/app/workflows/triggers/{comment,review}.py`
 - GitHub post workflow → `packages/api/src/app/services/github/`
-- Setup workflow → `packages/api/src/app/services/setup/`
-- Indexing pipeline (full + incremental) → `packages/api/src/app/services/indexing/`
-- Per-user LLM config service + routes → `packages/api/src/app/services/llm_config/`, `packages/api/src/app/routers/llm_configs.py`
+- Per-user LLM config service + routes → `packages/api/src/app/services/llm/config/`, `packages/api/src/app/routers/llm_configs.py`
+- Route request/response shapes → `packages/api/src/app/routers/schemas/`
 - Webhook receiver → `packages/api/src/app/routers/webhooks.py`
 - Route tree → `web/src/routeTree.gen.ts` (generated)
 - Pages → `web/src/routes/`
@@ -1031,11 +950,9 @@ corresponding route file does not exist yet.
 
 ## 9. New Refactoring services patterns
 
-The `app/services/{github,llm,sandbox}` packages are being refactored
-into a shared service pattern. This section is the contract for those
-packages (and any future service refactors); the older services
-(`indexing`, `setup`) still follow the older conventions and will
-migrate over time.
+The `app/services/{github,llm,sandbox}` packages follow a shared
+service pattern. This section is the contract for those packages
+(and any future service refactors).
 
 ### 9.1 Package layout
 
@@ -1106,7 +1023,7 @@ private key — which startup validation prevents).
   `SandboxCtx`, `LLMCtx`).
 - App-level operations that a per-installation client cannot perform
   (token minting, installation fetch) use the process-wide client
-  from the package's private `_client.py`.
+  from the package's private `client.py`.
 
 ### 9.6 I/O at the edge
 
@@ -1118,12 +1035,16 @@ private key — which startup validation prevents).
 
 ### 9.7 Status
 
-- `github` — refactored: sub-services (`installation`, `repo`, `pr`,
-  `webhook`), ctx-carried client, no gates, no logging. The legacy
-  `post_review.py` / `workflow.py` modules were removed; posting now
-  runs inline in `workflows/review/steps/post_review.py` via the `pr`
+- `github` — the sole GitHub surface: sub-services (`installation`,
+  `repo`, `pr`, `webhook`), ctx-carried client, no gates, no logging.
+  The legacy `core/github_app.py` + `core/install_state.py` modules
+  were removed; `routers/github.py` consumes this package directly
+  (install URL, repo list, setup callback), and posting runs inline
+  in `workflows/review_v2/steps/post_review.py` via the `pr`
   sub-service.
 - `llm` / `sandbox` — ctx-based services; `llm` drops env gates (env
   validated at startup), `sandbox` keeps its provider map + provider
-  classes as the wiring seam. Both are built but not yet consumed by
-  the pipeline.
+  classes as the wiring seam. Both are consumed by the pipeline
+  (triggers resolve ctxs; steps build models and providers from
+  them). The legacy `core/llm.py` (`LLMConfig` + `build_chat_model`)
+  was removed; `LLMCtx` + `createLLMModel` are the only factory.

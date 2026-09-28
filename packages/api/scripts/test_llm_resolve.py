@@ -1,7 +1,7 @@
-"""Multi-provider smoke test for :class:`app.core.llm.LLMConfig`.
+"""Multi-provider smoke test for :class:`app.services.llm.LLMCtx`.
 
 Iterates a hard-coded list of ``"provider:model"`` strings and prints
-the resolved :class:`LLMConfig` and the chat-model class
+the resolved :class:`LLMCtx` and the chat-model class
 :func:`langchain.chat_models.init_chat_model` returns. Catches
 provider-prefix typos and missing integration packages without
 hitting the network.
@@ -24,7 +24,13 @@ import logging
 import sys
 from typing import NamedTuple
 
-from app.core.llm import LLMConfig, build_chat_model
+from app.services.llm import (
+    ApiKey,
+    BaseUrl,
+    LLMCtx,
+    LLMConfigError,
+    createLLMModel,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +61,7 @@ CASES: list[_Case] = [
     # Provider prefixes from the docs that require additional
     # integration packages not currently in pyproject.toml. These
     # are expected to fail today with an ImportError — useful as
-    # a check that the LLMConfig API is provider-agnostic.
+    # a check that the LLMCtx API is provider-agnostic.
     _Case("baseten (no integration pkg)", "baseten:zai-org/GLM-5.2"),
     _Case("fireworks (no integration pkg)", "fireworks:accounts/fireworks/models/glm-5p1"),
     _Case("openrouter (no integration pkg)", "openrouter:z-ai/glm-5.1"),
@@ -68,24 +74,31 @@ CASES: list[_Case] = [
 def _try_resolve(case: _Case) -> str:
     """Resolve one case and return a one-line summary."""
     try:
-        cfg = LLMConfig(
+        ctx = LLMCtx(
             model=case.model,
-            api_key="test-key-not-real",
-            base_url=case.base_url,
-            headers=case.headers or {},
+            origin="system",
+            apiKey=ApiKey("test-key-not-real"),
+            baseUrl=BaseUrl(case.base_url) if case.base_url else None,
+            defaultHeaders=dict(case.headers or {}),
         )
-        provider = cfg.provider
-        model_id = cfg.model_id
+        provider = ctx.provider
+        model_id = ctx.modelId
     except Exception as exc:  # ValidationError, ValueError, etc.
-        return f"  rejected (LLMConfig): {type(exc).__name__}: {exc}"
+        return f"  rejected (LLMCtx): {type(exc).__name__}: {exc}"
 
     try:
-        model = build_chat_model(config=cfg)
+        model_or_err = createLLMModel(ctx)
     except Exception as exc:
         return (
             f"  provider={provider!r} model_id={model_id!r} "
             f"  unresolved: {type(exc).__name__}: {exc}"
         )
+    if isinstance(model_or_err, LLMConfigError):
+        return (
+            f"  provider={provider!r} model_id={model_id!r} "
+            f"  unresolved: LLMConfigError: {model_or_err}"
+        )
+    model = model_or_err
 
     return (
         f"  provider={provider!r} model_id={model_id!r} "
@@ -94,7 +107,7 @@ def _try_resolve(case: _Case) -> str:
 
 
 def main() -> int:
-    log.info("resolving %d LLMConfig cases", len(CASES))
+    log.info("resolving %d LLMCtx cases", len(CASES))
     print("=" * 72)
     for case in CASES:
         print(f"[{case.label}]  model={case.model!r}")

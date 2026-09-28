@@ -7,8 +7,8 @@
 
 Sentinel is built as a small monorepo: a Python FastAPI backend, a
 TanStack Start web client, and a single Postgres database. It integrates
-with **WorkOS** for sign-in, a **GitHub App** for repo access, **E2B** (or
-Daytona) for sandboxed code execution, and any of **OpenAI / Anthropic /
+with **WorkOS** for sign-in, a **GitHub App** for repo access, **E2B**
+for sandboxed code execution, and any of **OpenAI / Anthropic /
 Google** as the review LLM.
 
 > Looking for the deep architecture reference? See [AGENTS.md](./AGENTS.md).
@@ -42,27 +42,32 @@ Google** as the review LLM.
    `(user_id, github_installation_id)`.
 3. **Pick repos** on the dashboard. Sentinel mints a short-lived
    installation token and lists every repo the App can see.
-4. **Configure repos** — the synchronous setup agent clones the repo
-   into an E2B sandbox, detects the package manager, installs
-   dependencies, and records the bootstrap command.
-5. **Open a PR** on a connected repo. GitHub's `pull_request` webhook
-   hands the delivery to a **durable DBOS workflow** that:
-   - resolves the local `Repo` row and the active sandbox,
-   - fetches the unified diff,
+4. **Configure repos** — `POST /api/ai/repo/setup` bulk-inserts one
+   `Repo` row per selected repo (skipping already-configured ones),
+   synchronously. No sandbox involved.
+5. **Open a PR** on a connected repo. GitHub's `pull_request`
+   `opened` webhook hands the delivery to a **durable DBOS workflow**
+   that:
+   - creates a fresh ephemeral sandbox and clones the repo at the
+     PR head SHA (fail-closed),
+   - indexes the tree with the codegraph and fetches the unified
+     diff,
    - splits it in-sandbox into per-file annotated chunks (the gutter
      line numbers tell the agent which `(file, line, side)` anchors
      GitHub will accept),
-   - runs the review deep-agent (orchestrator + 4 specialist subagents:
-     `summarizer`, `security`, `correctness`, `style`),
+   - runs a planning agent (repo context) plus one review agent per
+     changed file,
    - persists a `ReviewSummary` and one `CodeComment` per draft,
-   - and — separately — posts the review to GitHub via a retryable
-     workflow.
+   - and posts the review inline to GitHub (best-effort, own retry
+     policy).
+   A PR comment mentioning `@<app_slug> review` triggers an
+   incremental re-review of just the commits since the last run.
 6. **Triage** on GitHub: a short PR summary up top, inline comments
    tagged `P1_CRITICAL` / `P2_WARNING` / `P3_NITPICK`, and a verdict
    of `APPROVE` / `COMMENT` / `REQUEST_CHANGES`.
 
 The review pipeline is **idempotent** — its workflow id is
-`review:{repo_id}:{pr_number}:{head_sha[:7]}`, so duplicate webhook
+`review-v2:{repo_id}:{pr_number}:{head_sha[:7]}`, so duplicate webhook
 deliveries for the same head SHA do not re-run the LLM. A process
 crash mid-invocation resumes from the last completed step without
 re-running the agent.
@@ -78,7 +83,7 @@ Three planes, one persistence tier:
 │  Web (TanStack Start)    │    │  Integrations            │
 │  - Cloudflare Workers    │    │  - WorkOS (auth)         │
 │  - React 19 + Vite 8     │    │  - GitHub App (repos)    │
-│  - TanStack Query        │    │  - E2B / Daytona (sandbox)│
+│  - TanStack Query        │  │  - E2B (sandbox)         │
 │  - shadcn/ui (base-lyra) │    │  - OpenAI / Anthropic /  │
 └──────────┬───────────────┘    │    Google (LLM)          │
            │                    └────────────┬─────────────┘
@@ -86,7 +91,8 @@ Three planes, one persistence tier:
            ▼                                 ▼
 ┌──────────────────────────────────────────────────────┐
 │  API (FastAPI, async)                               │
-│  - /auth, /github, /ai, /users, /webhooks, /health  │
+│  - /auth, /github, /ai, /users, /pulls, /review,    │
+│    /llm_config, /webhooks, /health                  │
 │  - DBOS durable workflows                           │
 │  - SQLModel + asyncpg → PostgreSQL 18               │
 └──────────────────────────────────────────────────────┘
@@ -143,8 +149,8 @@ Read flow for a PR review:
 | API          | FastAPI, Python 3.13, SQLModel, SQLAlchemy async, asyncpg, Alembic, pydantic-settings |
 | Auth         | WorkOS User Management (Google + GitHub OAuth), sealed session cookies (Fernet)   |
 | GitHub       | Native GitHub App via `githubkit` (typed REST), HMAC-signed install flow, webhook receiver |
-| Sandbox      | E2B (default) — Daytona adapter shipped alongside; pluggable via `BaseSandbox`     |
-| AI           | `deepagents` orchestrator + 4 `SubAgent`s, LangChain chat models, `tree-sitter-language-pack` for parsing |
+| Sandbox      | E2B — provider map (`Providers`) resolves the class per run ctx                    |
+| AI           | `deepagents` (planning agent + per-file review agents, delegation disabled), LangChain chat models |
 | Durable jobs | DBOS — durable workflows, idempotent steps, retryable transactions on the same Postgres |
 | Database     | PostgreSQL 18 (docker-compose), `gen_random_uuid()` defaults, CASCADE FKs           |
 | Logging      | stdlib `logging` → OpenTelemetry logs over OTLP (console fallback)                |
@@ -169,17 +175,14 @@ ai-code-review/
 │       ├── alembic/
 │       │   ├── env.py
 │       │   └── versions/     # 8 migrations
-│       └── src/app/
-│           ├── core/         # config, db, auth, middleware, workos, github_app, llm, logging, sandbox/
+│       └── src/app/        # backend package (a README lives in every dir)
+│           ├── core/         # settings, db, auth, middleware, workos, telemetry
 │           ├── models/       # SQLModel tables + enums
-│           ├── schemas/      # HTTP request/response shapes
-│           ├── routers/      # health, auth, github, ai, users, webhooks
 │           ├── repositories/ # generic BaseRepository[T] + per-model subclasses
-│           ├── services/
-│           │   ├── agent/        # deep-agent + subagent prompts/models + setup pipeline
-│           │   ├── github/       # post-review to GitHub
-│           │   └── review/       # DBOS durable workflow + steps + diff/hunk-map parsing
-│           └── utils/        # uuidToStr, etc.
+│           ├── routers/      # health, auth, github, ai, users, pulls, reviews, webhooks, llm_configs (+ schemas/)
+│           ├── services/     # agent_v2, github, llm, sandbox (ctx DI, errors-as-values)
+│           ├── workflows/    # review_v2, repair_and_publish, triggers
+│           └── utils/        # branded ids, sandbox paths, agent schemas, badges
 └── web/                      # TanStack Start frontend (pnpm)
     ├── package.json
     ├── vite.config.ts
@@ -323,7 +326,7 @@ A single `.env` at the repo root is loaded by `app.core.config.Settings`
 | **Sandbox provider**                  |                                             | |
 | `SANDBOX_PROVIDER`                    | `e2b`                                       | Active provider tag: `e2b` or `daytona` |
 | `E2B_API_KEY`                         | `""`                                        | E2B API key |
-| `E2B_TEMPLATE`                        | `sentinel-indexing`                         | E2B template name |
+| `E2B_TEMPLATE`                        | `code-interpreter-v1`                       | E2B template name (pre-baked `SENTINAL_CODE_SANDBOX_TEMP` once built by CI) |
 | `E2B_CPU_COUNT`                       | `1`                                         | vCPU count for new sandboxes |
 | `E2B_MEMORY_MB`                       | `1024`                                      | Memory (MB) for new sandboxes |
 | `E2B_TIMEOUT_S`                       | `600`                                       | Timeout (seconds) for new sandboxes |
@@ -463,7 +466,8 @@ uv run pyright
 
 ### Adding a new API route
 
-1. Add the handler under `packages/api/src/app/routers/<area>.py`.
+1. Add the handler under `packages/api/src/app/routers/<area>.py`
+   (request/response shapes go in `routers/schemas/<area>.py`).
 2. Register it in `packages/api/main.py` under `settings.api_prefix`.
 3. If the route requires auth, make sure the path starts with one of
    `AuthMiddleware.PROTECTED_PREFIXES` — add the new prefix there if
@@ -495,23 +499,30 @@ All routes are mounted under `settings.api_prefix` (default `/api`).
 | `GET`    | `/github/install-url`                 | required      | Mints a server-signed GitHub App install URL. |
 | `GET`    | `/github/setup`                       | **bypass**    | GitHub's redirect target after install. Verifies HMAC state, upserts the local `installation` row, 302s to dashboard. |
 | `DELETE` | `/github/installation/{installation_id}` | required   | Local "forget". Deletes the row. User still has to uninstall the App on github.com. |
-| `POST`   | `/ai/repo/setup`                      | required      | Synchronous setup agent. Clones each repo into an E2B sandbox, detects ecosystem + package manager, installs deps, returns a per-repo `SetupResult`. |
-| `GET`    | `/users/repos`                        | required      | Lists indexed repos owned by the signed-in user. |
-| `POST`   | `/webhooks/github`                    | **HMAC**      | Receives `ping` / `installation` / `installation_repositories` / `pull_request` deliveries. Verified via `X-Hub-Signature-256`. `pull_request` `opened` / `synchronize` dispatches the durable review workflow. |
+| `POST`   | `/ai/repo/setup`                      | required      | Bulk-inserts one `Repo` row per requested repo (skips configured ones). Synchronous, no sandbox. |
+| `GET`    | `/users/repos`                        | required      | Lists configured repos owned by the signed-in user. |
+| `GET`    | `/users/stats`                        | required      | Dashboard stats: PRs reviewed, comments issued, P1 bugs caught. |
+| `GET`    | `/pulls/{owner}/{repo}[/{number}[...]]` | required    | Live GitHub PR reads (list, detail, commits, files, conversation) plus the local Sentinel mirror (`.../sentinel`). |
+| `GET`    | `/review`                             | required      | Lists review runs. |
+| `POST`   | `/review`                             | **eval token**| Eval-only sync review trigger (header `X-Eval-Token`). |
+| `POST`   | `/llm_config/`                        | required      | Probes a candidate LLM config, upserts on success. Always 200 with a `{data, success, error, test_result}` envelope. |
+| `POST`   | `/llm_config/test`                    | required      | Probes without persisting. Same envelope minus `data`. |
+| `GET`    | `/llm_config/`                        | required      | Stored configs with `api_key` redacted. |
+| `POST`   | `/webhooks/github`                    | **HMAC**      | Receives `ping` / `installation` / `installation_repositories` / `pull_request` / `issue_comment` / `push` deliveries. Verified via `X-Hub-Signature-256`. `pull_request` `opened` and `@<app_slug> review` comments dispatch `reviewWorkflowV2`. |
 
 Protected prefixes (enforced by `AuthMiddleware`):
-`/api/github`, `/api/ai`, `/api/users`. Bypass list: `/api/github/setup`
-(GitHub calls it via user-agent redirect with no session cookie).
+`/api/github`, `/api/ai`, `/api/users`, `/api/llm_config`,
+`/api/review`, `/api/pulls`. Bypass list: `/api/github/setup`
+(GitHub calls it via user-agent redirect with no session cookie) and
+`POST /api/review` (gated by `X-Eval-Token` instead).
 
 ---
 
 ## Domain model
 
-Seven tables; all UUID primary keys, all `gen_random_uuid()` defaults
-on the DB side, all `uuid4()` defaults in Python (string ids —
-`uuidToStr()`). Timestamps are `TIMESTAMP(timezone=True)` with `now()`
-server defaults. CASCADE deletes are declared at the DB layer;
-SQLModel relationships use `passive_deletes=True`.
+Nine tables; string-UUID primary keys (`uuidToStr()`), `TIMESTAMP(timezone=True)`
+timestamps with `now()` server defaults. CASCADE deletes are declared
+at the DB layer; SQLModel relationships use `passive_deletes=True`.
 
 ```
 repos
@@ -547,25 +558,23 @@ sandboxes
 ├── started_at / stopped_at
 └── created_at / updated_at
 
-reposetupresult
-├── id                 uuid  PK
-├── repo_id            uuid  → repos.id  CASCADE
-├── user_id            str(128)           index
-├── status             SUCCEEDED|FAILED
-├── ok                 bool
-├── ecosystem          str(16)            ('node' | 'python' | 'rust' | 'go' | 'ruby' | 'mixed' | 'none')
-├── manager            str(128)?
-├── install_cmd        str(1024)?
-├── duration_s         float
-├── notes              text
-├── bootstrapped_tools text[]
-├── error_code         str(64)?
-├── error_message      text?
-├── llm_provider       str(32)?
-├── llm_model          str(128)?
-├── sandbox_id         str(128)?
-├── started_at / completed_at
-└── created_at / updated_at
+review
+├── user_id            str                 index
+├── repo_id            str  → repos.id    CASCADE
+├── pr_id              str  → pull_requests.id  CASCADE
+├── pr_number          int
+├── commit_id          str                 (head sha; no FK)
+├── base_sha           str?
+├── workflow_id        str  UNIQUE index  (deterministic run id)
+├── trigger            str?                ('opened' | 'comment')
+├── state              STARTING|RUNNING|SUCCESS|FAILED
+├── comment_count      int?
+├── github_review_id   str?
+├── error_name / error_message  str?
+├── error_context      json?
+├── sandbox_id         str?
+├── llm_provider / llm_client / llm_model / llm_base_url  str?
+└── started_at / completed_at + created_at / updated_at
 
 pull_requests
 ├── repo_id            uuid  → repos.id  CASCADE
@@ -581,7 +590,8 @@ pull_requests
 
 code_comments
 ├── pr_id              uuid  → pull_requests.id       CASCADE
-├── commit_id          uuid                             (no FK; commit_snapshots was dropped)
+├── review_id          str? → review.id  CASCADE
+├── commit_id          uuid                             (head sha; no FK)
 ├── github_comment_id  bigint?    (back-link to GitHub)
 ├── file_name          str(1024)
 ├── comment            text
@@ -595,16 +605,35 @@ code_comments
 
 review_summaries
 ├── pr_id              uuid  → pull_requests.id       CASCADE
+├── review_id          str? → review.id  CASCADE
 ├── commit_id          uuid                          UNIQUE
 ├── github_review_id   bigint?    (back-link to GitHub)
 ├── summary            text
 ├── verdict            APPROVE | COMMENT | REQUEST_CHANGES
 └── created_at
+
+review_usages
+├── user_id            str                 index
+├── pr_id              str  → pull_requests.id  CASCADE
+├── review_id          str? → review.id  CASCADE
+├── pr_number          int
+├── repo_id            str  → repos.id    CASCADE
+├── review_status      SUCCESS | FAILED
+├── input_tokens / output_tokens / total_tokens  int
+├── input_token_details  json?           (cache_read / cache_creation)
+├── llm_model_id / llm_provider / llm_base_url  str?
+└── created_at / updated_at
+
+llm_configs
+├── user_id            str                 index
+├── provider / model_id / base_url  str
+├── api_key            str                 (redacted at the router)
+└── created_at / updated_at
 ```
 
 Enums (Python and DB-checked): `PRStatus`, `CommentSeverity`,
 `CommentSide`, `CommentState`, `ReviewVerdict`, `SandboxState`,
-`SetupRunStatus`, `SetupErrorCode`.
+`ReviewRunStatus`, `ReviewState`.
 
 ---
 

@@ -40,7 +40,12 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
-from app.services.agent.middleware import buildAgentMiddleware
+from langchain.agents.middleware import (
+    ModelCallLimitMiddleware,
+    ModelRetryMiddleware,
+    ToolCallLimitMiddleware,
+)
+from langchain.agents.middleware.types import AgentMiddleware
 from app.services.github.pr.service import createPRCtx
 from app.services.github.pr.types import PRCommentDraft
 from app.services.llm.errors import LLMConfigError
@@ -63,11 +68,11 @@ from app.workflows.repair_and_publish.types import (
     RepairAndPublishWorkflowCtx,
     UnpublishedReview,
 )
-from app.workflows.review.errors import (
+from app.workflows.review_v2.errors import (
     SandboxConnectError,
     isLlmRetryError,
 )
-from app.workflows.review.steps._helpers import connectSandbox
+from app.workflows.review_v2.steps._helpers import connectSandbox
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +80,32 @@ _MAX_TOOL_CALLS = 200
 """Hard cap on ``publish_to_github`` tool calls per run (middleware)."""
 _MAX_MODEL_CALLS = 200
 """Hard cap on model calls per run (middleware)."""
+
+_MODEL_MAX_RETRIES = 3
+_MODEL_BACKOFF_FACTOR = 2.0
+_MODEL_INITIAL_DELAY = 1.0
+
+
+def _buildRepairMiddleware(
+    *,
+    modelCallRunLimit: int,
+    toolCallRunLimit: int,
+) -> list[AgentMiddleware[Any, None, Any]]:
+    """Build the repair agent's middleware stack (retry + call caps).
+
+    Order matters: the model retry wraps the call, the call-limit
+    guards sit outside it as graph-node hooks.
+    """
+    return [
+        ModelRetryMiddleware(
+            max_retries=_MODEL_MAX_RETRIES,
+            backoff_factor=_MODEL_BACKOFF_FACTOR,
+            initial_delay=_MODEL_INITIAL_DELAY,
+            on_failure="error",
+        ),
+        ModelCallLimitMiddleware(run_limit=modelCallRunLimit),
+        ToolCallLimitMiddleware(run_limit=toolCallRunLimit),
+    ]
 
 
 class PublishCommentsInput(BaseModel):
@@ -252,7 +283,7 @@ async def repairAndPublish(
             system_prompt=buildStoryPrompt(unpublished, diffDir),
             backend=sandbox,
             tools=[publish_tool],
-            middleware=buildAgentMiddleware(
+            middleware=_buildRepairMiddleware(
                 modelCallRunLimit=_MAX_MODEL_CALLS,
                 toolCallRunLimit=_MAX_TOOL_CALLS,
             ),

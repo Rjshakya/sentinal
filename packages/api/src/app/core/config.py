@@ -5,8 +5,6 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.core.llm import LLMConfig
-
 BASE_DIR = Path(__file__).resolve().parents[3]
 
 
@@ -110,8 +108,11 @@ class Settings(BaseSettings):
         description=(
             "E2B template name. The default is the E2B-hosted "
             "'code-interpreter-v1' template, which requires no "
-            "build. Set to a custom template slug to use a "
-            "pre-baked image."
+            "build. Set to the pre-baked template "
+            "('SENTINAL_CODE_SANDBOX_TEMP': code-interpreter-v1 "
+            "plus the sentinel-codegraph CLI, rebuilt by CI on "
+            "every push touching the template inputs) once it "
+            "has been built."
         ),
     )
     e2b_cpu_count: int = Field(
@@ -242,7 +243,7 @@ class Settings(BaseSettings):
         ),
     )
     llm_rate_limit_rps: float = Field(
-        default=0.5,
+        default=1.5,
         ge=0.0,
         description=(
             "Client-side requests-per-second rate limit applied via "
@@ -379,7 +380,7 @@ class Settings(BaseSettings):
 
     # --- Eval API token (gates ``POST /api/review``) ---
     # The eval harness calls ``POST /api/review`` to drive the production
-    # reviewWorkflow end-to-end. The route is unauthenticated (no sealed
+    # reviewWorkflowV2 end-to-end. The route is unauthenticated (no sealed
     # session cookie) — it relies on a static shared secret carried in the
     # ``X-Eval-Token`` request header, matched against this setting. Leave
     # empty to disable the route (503 on every call). Same secret is read
@@ -474,24 +475,6 @@ class Settings(BaseSettings):
         provider = model.split(":", 1)[0]
         env_key = _PROVIDER_ENV_KEY.get(provider, "")
         return bool(env_key) and bool(os.environ.get(env_key))
-
-    @property
-    def llm_config(self) -> LLMConfig:
-        """The :class:`LLMConfig` value object for the review agent.
-
-        Frozen, DBOS-serializable. A single value object replaces
-        the four scattered fields (provider / base_url / api_key /
-        model) that used to cross the webhook → workflow → step
-        boundary.
-        """
-        return LLMConfig(
-            model=self.llm_model,
-            api_key=self.llm_api_key or None,
-            base_url=self.llm_base_url or None,
-            headers=dict(self.llm_default_headers),
-            max_retries=self.llm_max_retries,
-            rate_limit_rps=self.llm_rate_limit_rps,
-        )
 
     @property
     def github_webhook_configured(self) -> bool:

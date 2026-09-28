@@ -7,9 +7,13 @@ Entry points:
   stored ``llm_configs`` row (fresh DB query; no borrowing from the
   :mod:`app.services.llm.config` sub-service).
 - :func:`createLLMModel` — build the LangChain chat model
-  (:class:`langchain_core.language_models.BaseChatModel`) for a ctx;
-  fresh implementation over ``langchain.chat_models.init_chat_model``
-  (no delegation to :mod:`app.core.llm`).
+   (:class:`langchain_core.language_models.BaseChatModel`) for a ctx;
+   implemented over ``langchain.chat_models.init_chat_model``.
+- :func:`acquireSharedLimiter` / :func:`releaseSharedLimiter` —
+  process-wide shared rate limiters, one per fan-out batch wave.
+  Steps reference them by key (serializable — the live limiter never
+  crosses a DBOS boundary); a lookup miss degrades to a fresh
+  per-call limiter.
 
 Error contract: **no function in this module raises.** Every expected
 failure is a returned value: the per-user creator returns
@@ -45,6 +49,38 @@ from app.services.llm.types import (
     LLMCtx,
     UserId,
 )
+
+_SHARED_LIMITERS: dict[str, InMemoryRateLimiter] = {}
+"""Process-wide shared rate limiters, keyed by an opaque string.
+
+A workflow acquires one limiter per fan-out batch wave and hands each
+step the *key* — never the live object, since DBOS step args must stay
+serializable. The step resolves the shared instance inside
+:func:`createLLMModel`. A lookup miss falls back to a fresh per-call
+limiter, so a DBOS replay on a worker without the registry degrades to
+the old behavior instead of failing. Pure in-memory advisory state:
+never persisted, never crosses a workflow boundary.
+"""
+
+
+def acquireSharedLimiter(*, key: str, requestsPerSecond: float) -> InMemoryRateLimiter:
+    """Return the shared limiter for ``key``, creating it on first use.
+
+    Pure sync, no I/O. Safe to call once per batch wave from the
+    workflow body; every step in the wave then resolves the same
+    instance via ``rateLimiterKey``.
+    """
+    existing = _SHARED_LIMITERS.get(key)
+    if existing is not None:
+        return existing
+    limiter = InMemoryRateLimiter(requests_per_second=requestsPerSecond)
+    _SHARED_LIMITERS[key] = limiter
+    return limiter
+
+
+def releaseSharedLimiter(*, key: str) -> None:
+    """Drop the shared limiter for ``key``. Best-effort, never raises."""
+    _SHARED_LIMITERS.pop(key, None)
 
 
 def createDefaultLLMContext(
@@ -118,17 +154,25 @@ async def createUserLLMContext(
     )
 
 
-def createLLMModel(ctx: LLMCtx) -> BaseChatModel | LLMConfigError:
+def createLLMModel(
+    ctx: LLMCtx, *, rateLimiterKey: str | None = None
+) -> BaseChatModel | LLMConfigError:
     """Build the LangChain chat model for a :class:`LLMCtx`.
 
-    Fresh implementation over ``langchain.chat_models.init_chat_model`` —
-    no delegation to :mod:`app.core.llm`. Applies the ctx's knobs
+    Implemented over ``langchain.chat_models.init_chat_model``.
+    Applies the ctx's knobs
     uniformly: ``maxRetries``, an :class:`InMemoryRateLimiter` when
     ``rateLimitRps`` is positive, ``baseUrl``, ``defaultHeaders``, and a
     :class:`SecretStr`-wrapped key. Provider extras are applied for
     behavior parity: OpenAI ``gpt-5.6`` models use the Responses API,
     DeepSeek models force ``json_object`` response format. Pure sync —
     no I/O.
+
+    When ``rateLimiterKey`` names a limiter acquired via
+    :func:`acquireSharedLimiter`, the shared instance is used so a whole
+    batch wave draws from one smoothed budget; otherwise (or on a
+    registry miss, e.g. a DBOS replay on a fresh worker) a fresh
+    per-call limiter is built as before.
 
     Returns:
         ``BaseChatModel`` on success; ``LLMConfigError`` when
@@ -143,8 +187,11 @@ def createLLMModel(ctx: LLMCtx) -> BaseChatModel | LLMConfigError:
 
     init_kwargs: dict[str, Any] = {"max_retries": ctx.maxRetries}
     if ctx.rateLimitRps is not None and ctx.rateLimitRps > 0:
-        init_kwargs["rate_limiter"] = InMemoryRateLimiter(
-            requests_per_second=ctx.rateLimitRps
+        shared = _SHARED_LIMITERS.get(rateLimiterKey) if rateLimiterKey else None
+        init_kwargs["rate_limiter"] = (
+            shared
+            if shared is not None
+            else InMemoryRateLimiter(requests_per_second=ctx.rateLimitRps)
         )
     if ctx.baseUrl:
         init_kwargs["base_url"] = ctx.baseUrl
@@ -152,7 +199,10 @@ def createLLMModel(ctx: LLMCtx) -> BaseChatModel | LLMConfigError:
         init_kwargs["default_headers"] = dict(ctx.defaultHeaders)
 
     extra: dict[str, Any] = {}
-    if provider == "openai" and model_id.startswith("gpt-5.6"):
+    if provider == "openai" and (
+        model_id.startswith("gpt-5.6")
+        or model_id.startswith("muse-spark-1.3-contributor")
+    ):
         extra = {"use_responses_api": True, "output_version": "responses/v1"}
     if model_id.startswith("deepseek"):
         extra["extra_body"] = {"response_format": {"type": "json_object"}}
@@ -168,4 +218,10 @@ def createLLMModel(ctx: LLMCtx) -> BaseChatModel | LLMConfigError:
         return LLMConfigError(str(exc))
 
 
-__all__ = ["createDefaultLLMContext", "createLLMModel", "createUserLLMContext"]
+__all__ = [
+    "acquireSharedLimiter",
+    "createDefaultLLMContext",
+    "createLLMModel",
+    "createUserLLMContext",
+    "releaseSharedLimiter",
+]

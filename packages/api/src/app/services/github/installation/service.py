@@ -4,6 +4,8 @@ Entry points (camelCase, matching the package convention):
 
 - :func:`createInstallationCtx` — ctx factory: mints the installation
   client and assembles the ctx (the I/O boundary).
+- :func:`signState` / :func:`verifyState` — sign and verify the
+  install-flow state token (HMAC-SHA256, stdlib only).
 - :func:`getInstallUrl` — signed install URL for the browser.
 - :func:`getInstallation` — installation details from the GitHub API.
 - :func:`listInstallations` — the user's local ``installations`` rows.
@@ -60,6 +62,57 @@ def signState(userId: str, secret: str) -> str:
     mac = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).digest()
     sig = base64.urlsafe_b64encode(mac).rstrip(b"=").decode("ascii")
     return f"{raw}.{sig}"
+
+
+def _b64url_decode(text: str) -> bytes:
+    padding = "=" * (-len(text) % 4)
+    return base64.urlsafe_b64decode(text + padding)
+
+
+def verifyState(token: str, secret: str) -> str | None:
+    """Return the ``user_id`` if ``token`` is valid and unexpired, else ``None``.
+
+    Constant-time HMAC comparison. Any malformed input, bad signature,
+    or expired token returns ``None`` — the caller treats that as a bad
+    state and aborts the install.
+    """
+    if not token or not isinstance(token, str) or not secret:
+        return None
+    if "." not in token:
+        return None
+
+    payload_b64, _, mac_b64 = token.partition(".")
+    if not payload_b64 or not mac_b64:
+        return None
+
+    try:
+        payload = _b64url_decode(payload_b64)
+        provided_mac = _b64url_decode(mac_b64)
+    except (ValueError, TypeError):
+        return None
+
+    expected_mac = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).digest()
+    if not hmac.compare_digest(provided_mac, expected_mac):
+        return None
+
+    try:
+        decoded = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+    user_id, _, exp_str = decoded.rpartition("|")
+    if not user_id or not exp_str:
+        return None
+
+    try:
+        exp = int(exp_str)
+    except ValueError:
+        return None
+
+    if exp < int(time.time()):
+        return None
+
+    return user_id
 
 
 def createInstallationCtx(
@@ -210,4 +263,6 @@ __all__ = [
     "getInstallUrl",
     "getInstallation",
     "listInstallations",
+    "signState",
+    "verifyState",
 ]

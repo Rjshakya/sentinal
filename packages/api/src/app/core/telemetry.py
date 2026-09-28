@@ -39,9 +39,9 @@ How the pieces fit together:
 - The webhook HTTP request itself gets a span from
   :func:`instrument_fastapi`. The durable review workflow runs
   fire-and-forget (``DBOS.start_workflow_async``), so the LLM spans
-  root at the ``review`` workflow span created by the
-  ``@traceloop.sdk.decorators.workflow(name="review")`` decorator on
-  :func:`app.workflows.review.workflow.reviewWorkflow`, not under the
+  root at the ``review_v2_workflow`` workflow span created by the
+  ``@traceloop.sdk.decorators.workflow(name="review_v2_workflow")`` decorator on
+  :func:`app.workflows.review_v2.workflow.reviewWorkflowV2`, not under the
   HTTP span; :func:`Traceloop.set_association_properties` tags both
   sides with the same repo / pr / head / user keys as the join.
 - Prompt / completion capture is controlled by the

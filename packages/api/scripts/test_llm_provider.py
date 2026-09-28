@@ -1,7 +1,8 @@
 """Manual smoke test for the LLM provider config used by the review workflow.
 
-Calls ``settings.llm_config`` (the canonical review LLM config), builds
-a chat model from it via :func:`app.core.llm.build_chat_model`, creates
+Builds the canonical review LLM ctx via
+:func:`app.services.llm.createDefaultLLMContext` and a chat model from
+it via :func:`app.services.llm.createLLMModel`, creates
 a vanilla E2B sandbox, wires both into a minimal ``create_deep_agent``
 with a Pydantic ``response_format`` schema and a single custom tool.
 If this script works but the real workflow fails, the problem is in
@@ -28,8 +29,15 @@ from langchain_e2b import AsyncE2BSandbox
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
-from app.core.llm import build_chat_model
-from app.core.sandbox.e2b import CODE_SANDBOX_TEMPLATE_NAME, build_e2b_template
+from app.services.llm import (
+    LLMConfigError,
+    createDefaultLLMContext,
+    createLLMModel,
+)
+from app.services.sandbox.e2b_template import (
+    CODE_SANDBOX_TEMPLATE_NAME,
+    build_e2b_template,
+)
 
 log = logging.getLogger(__name__)
 
@@ -62,15 +70,18 @@ def echo_word(word: str) -> str:
 async def main() -> int:
 
     build_e2b_template()
-    llm_config = settings.llm_config
+    llm_ctx = createDefaultLLMContext()
     log.info(
         "llm config: model=%s base_url=%s key=%s…",
-        llm_config.model,
-        llm_config.base_url,
-        (llm_config.api_key or "")[:6],
+        llm_ctx.model,
+        llm_ctx.baseUrl,
+        (llm_ctx.apiKey or "")[:6],
     )
 
-    chat = build_chat_model(config=llm_config)
+    chat_or_err = createLLMModel(llm_ctx)
+    if isinstance(chat_or_err, LLMConfigError):
+        raise chat_or_err
+    chat = chat_or_err
 
     log.info("creating e2b sandbox…")
     sandbox = await AsyncSandbox.create(
