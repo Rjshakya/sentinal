@@ -29,7 +29,6 @@ import json
 import logging
 from typing import Any
 
-from dbos import DBOS
 from deepagents import create_deep_agent
 from githubkit.exception import RequestFailed
 from githubkit_schemas.v2026_03_10.types import (
@@ -333,12 +332,6 @@ async def repairAndPublish(
     )
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=2,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def repairAndPublishToGithub(
     *,
     ctx: RepairAndPublishWorkflowCtx,

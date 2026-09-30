@@ -15,7 +15,6 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from dbos import DBOS
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
@@ -87,7 +86,6 @@ async def upsertPullRequest(
         )
 
 
-@DBOS.step()
 async def upsertPullRequestTx(
     *,
     repoId: RepoId,

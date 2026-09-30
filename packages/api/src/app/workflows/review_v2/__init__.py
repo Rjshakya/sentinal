@@ -13,11 +13,10 @@ Submodules:
   (:class:`ReviewStepFailure` / :class:`TransientReviewStepFailure`),
   the shared :func:`shouldRetry` predicate, and the transient-failure
   classifiers.
-- :mod:`.workflow`   — the :func:`reviewWorkflowV2` DBOS orchestrator,
-  its deterministic workflow-id helper, and the pure
-  :func:`buildReviewWorkflowInput` trigger helper.
 - :mod:`.steps`      — one file per I/O boundary (infra steps plus the
   v2 agent-phase steps) and the pure :mod:`.steps.combine` helpers.
+  (Legacy orchestration removed with DBOS; the durable handler in
+  :mod:`app.workflows.durable.review_handler` owns the run.)
 - :mod:`.scripts`    — in-sandbox files uploaded as bytes (never
   imported on the host): ``split_diff.py``.
 """
@@ -74,12 +73,6 @@ from app.workflows.review_v2.types import (
     TotalUsagesPerPR,
     emptyPrSize,
 )
-from app.workflows.review_v2.workflow import (
-    buildReviewWorkflowInput,
-    createReviewV2WorkflowId,
-    reviewWorkflowV2,
-)
-
 __all__ = [
     "AgentLane",
     "AgentLaneError",
@@ -122,12 +115,9 @@ __all__ = [
     "TransientReviewStepFailure",
     "UpsertPRError",
     "V2AgentsError",
-    "buildReviewWorkflowInput",
-    "createReviewV2WorkflowId",
     "emptyPrSize",
     "extractRetryAfterSeconds",
     "isLlmRetryError",
     "isRetryableStatusCode",
-    "reviewWorkflowV2",
     "shouldRetry",
 ]

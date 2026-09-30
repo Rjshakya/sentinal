@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 
-from dbos import DBOS
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
@@ -143,12 +142,6 @@ async def _listReviewCommentIds(
     return ids
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def postReviewStep(
     *,
     repo: RepoSnapshot,
@@ -283,7 +276,6 @@ async def updatePostBacklinks(
         )
 
 
-@DBOS.step()
 async def updatePostBacklinksTx(
     *,
     reviewRowId: ReviewRowId,

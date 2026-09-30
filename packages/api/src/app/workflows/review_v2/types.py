@@ -22,7 +22,7 @@ Design notes:
   :class:`ClassifyCommentResult`, :class:`LastReviewSnapshot`) — the
   typed payload view, the classification outcome, and the previous-run
   snapshot consumed by
-  :func:`app.workflows.triggers.comment.effectiveDiffBase`.
+  :func:`app.workflows.triggers.comment_payload.effectiveDiffBase`.
 - Result projections (:class:`RepoSnapshot`, :class:`ReviewRunResult`,
   :class:`PostReviewResult`) and the token-usage envelopes mirror the
   legacy shapes so the persistence layer translates them unchanged.
@@ -121,7 +121,7 @@ class CommentTriggerInput(BaseModel):
     """Flat, typed view of a verified ``issue_comment`` payload.
 
     Every field is required; the trigger adapter
-    (:func:`app.workflows.triggers.comment.validateCommentPayload`)
+    (:func:`app.workflows.triggers.comment_payload.validateCommentPayload`)
     returns ``None`` when the raw webhook does not satisfy the
     pydantic schema, which the caller folds into a
     ``malformed_payload`` skip.

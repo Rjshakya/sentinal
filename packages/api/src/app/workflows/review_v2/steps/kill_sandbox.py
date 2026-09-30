@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 from typing import Protocol, cast
 
-from dbos import DBOS
 
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.service import getProvider
@@ -33,7 +32,6 @@ class _KillableProvider(Protocol):
     async def kill(self) -> None | SandboxProviderError: ...
 
 
-@DBOS.step()
 async def killSandboxStep(
     *,
     sandboxCtx: SandboxCtx,

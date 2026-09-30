@@ -36,7 +36,6 @@ from __future__ import annotations
 import logging
 from typing import Literal, Protocol, cast
 
-from dbos import DBOS
 from deepagents.backends.protocol import ReadResult
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import UsageMetadata
@@ -108,12 +107,6 @@ def _plannerError(
     )
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def invokePlannerStep(
     *,
     sandboxCtx: SandboxCtx,
@@ -331,12 +324,6 @@ def parsePlanText(
         )
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def getPlanStep(
     *,
     sandboxCtx: SandboxCtx,

@@ -22,7 +22,6 @@ from __future__ import annotations
 import logging
 import shlex
 
-from dbos import DBOS
 from deepagents.backends.sandbox import BaseSandbox
 
 from app.services.sandbox.types import SandboxCtx
@@ -68,7 +67,6 @@ async def deleteRepo(
     return None
 
 
-@DBOS.step(name="repair_delete_repo_step")
 async def deleteRepoStep(
     *,
     sandboxCtx: SandboxCtx,

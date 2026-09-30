@@ -3,11 +3,11 @@
 Every step file follows the service conventions:
 
 - a **value-returning worker** (explicit inputs — ctxs, sessions,
-  handles — returning ``T | ErrorValue``; no logging, no DBOS, no
-  raising), and
-- a **DBOS edge** (``@DBOS.step`` / ``@dbos_datasource.transaction()``)
-  that logs, discriminates the error value with ``isinstance``, and
-  raises :class:`app.workflows.review_v2.errors.TransientReviewStepFailure`
+  handles — returning ``T | ErrorValue``; no logging, no raising), and
+- a **durable edge** (``@durable_step`` wrapper in
+  :mod:`app.workflows.durable`) that checkpoints the worker with the
+  SDK retry strategy and raises
+  :class:`app.workflows.review_v2.errors.TransientReviewStepFailure`
   (retryable) or :class:`app.workflows.review_v2.errors.ReviewStepFailure`
   (business outcome).
 

@@ -28,7 +28,6 @@ import re
 import shlex
 from typing import Protocol, cast
 
-from dbos import DBOS
 from deepagents.backends.protocol import ExecuteResponse, FileUploadResponse
 from deepagents.backends.sandbox import BaseSandbox
 
@@ -212,12 +211,6 @@ async def listChunkFiles(
     )
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def listChunkFilesStep(
     *,
     sandboxCtx: SandboxCtx,

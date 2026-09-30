@@ -22,7 +22,6 @@ import logging
 from collections.abc import Sequence
 from uuid import UUID
 
-from dbos import DBOS
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
@@ -233,7 +232,6 @@ async def persistReviewUsage(
         )
 
 
-@DBOS.step()
 async def persistReviewSummaryTx(
     *,
     prRowId: PrRowId,
@@ -260,7 +258,6 @@ async def persistReviewSummaryTx(
         return result
 
 
-@DBOS.step()
 async def persistCodeCommentsTx(
     *,
     prRowId: PrRowId,
@@ -287,7 +284,6 @@ async def persistCodeCommentsTx(
         return result
 
 
-@DBOS.step()
 async def persistReviewUsageTx(
     *,
     userId: UserId,

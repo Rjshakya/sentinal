@@ -15,16 +15,13 @@ Submodules:
   branded types from :mod:`app.utils.branded`.
 - :mod:`.errors`    — error values (BaseModel, ``retryable`` flag +
   branded identity) returned by the pure step functions, plus the
-  raised step-exception wrappers used by the DBOS step edges.
+  raised step-exception wrappers used by the durable step edges.
 - :mod:`.helpers`   — pure helpers: the repair-agent story / user
   prompts and the draft → GitHub-item conversion.
-- :mod:`.workflow`  — the :func:`repairAndPublishReviewWorkflow` DBOS
-  orchestrator and its deterministic id helper.
 - :mod:`.steps`     — one file per I/O boundary: check, delete-repo
   cleanup, repair-and-publish (deepagent harness), save back-links. The
-  sandbox create / clone / diff / split / kill steps are imported from
-  :mod:`app.workflows.review_v2.steps` for exact parity with the review
-  pipeline.
+  durable handler in :mod:`app.workflows.durable.repair_handler` owns
+  the run.
 """
 
 from __future__ import annotations
@@ -48,9 +45,6 @@ from app.workflows.repair_and_publish.types import (
     RepairAndPublishWorkflowInput,
     UnpublishedReview,
 )
-from app.workflows.repair_and_publish.workflow import (
-    repairAndPublishReviewWorkflow,
-)
 
 __all__ = [
     "CheckError",
@@ -67,6 +61,5 @@ __all__ = [
     "SaveError",
     "TransientRepairPublishStepFailure",
     "UnpublishedReview",
-    "repairAndPublishReviewWorkflow",
     "shouldRetry",
 ]

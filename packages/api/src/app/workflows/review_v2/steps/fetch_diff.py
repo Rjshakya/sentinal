@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 import shlex
 
-from dbos import DBOS
 from deepagents.backends.sandbox import BaseSandbox
 from pydantic import BaseModel
 
@@ -116,12 +115,6 @@ async def fetchDiff(
     return DiffResult(diffFile=diffFile, fetchFailed=fetch.exit_code != 0)
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def fetchDiffStep(
     *,
     sandboxCtx: SandboxCtx,

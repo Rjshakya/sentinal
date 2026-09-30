@@ -26,7 +26,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from dbos import DBOS
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import UsageMetadata
 
@@ -87,12 +86,6 @@ def _lastAiText(result: Any) -> str:
     return ""
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def invokeFileReviewStep(
     *,
     filePath: str,

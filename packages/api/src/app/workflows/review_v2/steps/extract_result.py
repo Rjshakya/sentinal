@@ -29,7 +29,6 @@ import json
 import logging
 from typing import TypeVar, cast
 
-from dbos import DBOS
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage, UsageMetadata
@@ -204,12 +203,6 @@ async def _runExtractor(
         ) from exc
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def extractSummaryStep(
     *,
     extractorLlmCtx: LLMCtx,
@@ -234,12 +227,6 @@ async def extractSummaryStep(
     return cast(SummaryResult, result), usage
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def extractCommentsStep(
     *,
     extractorLlmCtx: LLMCtx,

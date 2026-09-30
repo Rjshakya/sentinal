@@ -28,7 +28,6 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from dbos import DBOS
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
@@ -226,12 +225,6 @@ def buildErrorContext(exc: BaseException) -> dict[str, Any] | None:
     return None
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def markReviewRunningStep(
     *,
     userId: UserId,
@@ -291,12 +284,6 @@ async def markReviewRunningStep(
     return result
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def markReviewStoppedStep(
     *,
     reviewRowId: ReviewRowId,
@@ -337,12 +324,6 @@ async def markReviewStoppedStep(
     )
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def markReviewErroredStep(
     *,
     reviewRowId: ReviewRowId | None,

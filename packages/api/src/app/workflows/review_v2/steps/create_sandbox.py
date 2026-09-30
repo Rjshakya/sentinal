@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 
-from dbos import DBOS
 
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.service import getProvider
@@ -51,12 +50,6 @@ async def createSandbox(sandboxCtx: SandboxCtx) -> SandboxCtx | SandboxCreateErr
     return sandboxCtx
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def createSandboxStep(sandboxCtx: SandboxCtx) -> SandboxCtx:
     """Durable step: create a fresh ephemeral sandbox for this run.
 

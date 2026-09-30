@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from typing import cast
 
-from dbos import DBOS
 from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -192,7 +191,6 @@ async def loadUnpublishedReview(
     )
 
 
-@DBOS.step()
 async def checkUnpublishedReviewExist(*, commitId: str) -> UnpublishedReview | None:
     """Durable step: check for an unpublished review of a review run.
 

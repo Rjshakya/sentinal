@@ -20,7 +20,6 @@ step that runs before the repair step, not here.
 
 from __future__ import annotations
 
-from dbos import DBOS
 from sqlmodel import col
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -96,7 +95,6 @@ async def savePublishedReview(
         )
 
 
-@DBOS.step()
 async def savePublishedReviewStep(
     *,
     unpublished: UnpublishedReview,

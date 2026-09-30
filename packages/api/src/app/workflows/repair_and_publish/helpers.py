@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-from dbos import DBOS, SetWorkflowID
 from pydantic import BaseModel
 
 from app.services.github.pr.types import PRCommentDraft

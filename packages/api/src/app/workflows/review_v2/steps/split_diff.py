@@ -25,7 +25,6 @@ import logging
 import shlex
 from pathlib import Path
 
-from dbos import DBOS
 from deepagents.backends.sandbox import BaseSandbox
 
 from app.services.sandbox.types import SandboxCtx
@@ -168,12 +167,6 @@ async def splitDiff(
         )
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def splitDiffStep(
     *,
     sandboxCtx: SandboxCtx,

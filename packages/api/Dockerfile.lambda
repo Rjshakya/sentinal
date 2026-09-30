@@ -1,0 +1,14 @@
+# Lambda container image (deps exceed zip 250MB: langchain/e2b/deepagents).
+# Build: sam build --use-container. Runtime: python3.13 (durable SDK supported).
+FROM public.ecr.aws/lambda/python:3.13 AS base
+WORKDIR /app
+COPY pyproject.toml ./
+# uv workspace root lives one level up; copy minimal src for layer cache.
+COPY src/ ./src/
+COPY main.py alembic.ini ./
+COPY alembic/ ./alembic/
+RUN pip install --no-cache-dir -e . mangum aws-durable-execution-sdk-python boto3 aws-lambda-powertools
+# Cold-start: pre-compile bytecode for heavy imports.
+ENV UV_COMPILE_BYTECODE=1 PYTHONUNBUFFERED=1
+RUN python -m compileall -q src || true
+CMD ["main.handler"]

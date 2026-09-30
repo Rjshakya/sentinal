@@ -14,7 +14,6 @@ Two layers, following the new service conventions:
 
 from __future__ import annotations
 
-from dbos import DBOS
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
@@ -41,7 +40,6 @@ async def getRepo(
     )
 
 
-@DBOS.step()
 async def getRepoTx(*, ghRepoId: int) -> RepoSnapshot:
     """Durable DBOS transaction: find the local repo row by GitHub repo id.
 
