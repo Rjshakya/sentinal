@@ -1,28 +1,15 @@
 """Persist the review summary, code comments, and token-usage rows.
 
-One value-returning helper per table (plus the pure draft→row mapper
-and the usage aggregator), each paired with a **DBOS-wrapped**
-transaction edge that raises :class:`ReviewStepFailure` on failure.
-
-- :func:`mapDraftsToCommentRows` — pure; translates
-  :class:`CodeCommentDraft` objects into ORM rows (severity / side
-  strings coerced into the enums; a bad value raises ``ValueError`` —
-  a programmer error, not a pipeline failure mode).
-- :func:`sumTotalUsages` — pure; collapses the per-model usage
-  envelope into one row's worth of fields.
-- :func:`persistReviewSummary` / :func:`persistCodeComments` /
-  :func:`persistReviewUsage` — the value-returning workers.
-- :func:`persistReviewSummaryTx` / :func:`persistCodeCommentsTx` /
-  :func:`persistReviewUsageTx` — the durable transaction edges.
+One Tx function per table (each opens its own session and raises
+:class:`ReviewStepFailure` on failure), plus the pure draft→row
+mapper :func:`mapDraftsToCommentRows` and the usage aggregator
+:func:`sumTotalUsages`.
 """
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Sequence
 from uuid import UUID
-
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.models.code_comment import CodeComment
@@ -51,8 +38,6 @@ from app.utils.severity_badge import withSeverityBadge
 from app.utils.util import uuidToStr
 from app.workflows.review_v2.errors import PersistError, ReviewStepFailure
 from app.workflows.review_v2.types import InputTokenDetails, TotalUsagesPerPR
-
-log = logging.getLogger(__name__)
 
 
 def mapDraftsToCommentRows(
@@ -125,111 +110,21 @@ def sumTotalUsages(
     )
 
 
-async def persistReviewSummary(
-    session: AsyncSession,
+def persistError(
+    message: str,
     *,
-    prRowId: PrRowId,
-    reviewRowId: ReviewRowId | None,
-    commitId: CommitId,
-    review: ReviewResult,
-) -> UUID | PersistError:
-    """Insert a single :class:`ReviewSummary` row; returns its id."""
-    try:
-        summary = ReviewSummary(
-            pr_id=prRowId,
-            review_id=reviewRowId,
-            commit_id=commitId,
-            summary=review.summary,
-            verdict=ReviewVerdict(review.verdict),
-        )
-        repo = ReviewSummaryRepository(session=session)
-        await repo.add(summary)
-        await session.commit()
-        await session.refresh(summary)
-        return summary.id
-    except Exception as exc:
-        return PersistError(
-            message=f"failed to persist review summary: {type(exc).__name__}: {exc}"
-        )
-
-
-async def persistCodeComments(
-    session: AsyncSession,
-    *,
-    prRowId: PrRowId,
-    reviewRowId: ReviewRowId | None,
-    commitId: CommitId,
-    comments: Sequence[CodeCommentDraft],
-) -> list[str] | PersistError:
-    """Insert one :class:`CodeComment` row per draft; returns row ids."""
-    try:
-        rows = mapDraftsToCommentRows(
-            prRowId=prRowId,
-            reviewRowId=reviewRowId,
-            commitId=commitId,
-            comments=comments,
-        )
-        if not rows:
-            return []
-        repo = CodeCommentRepository(session=session)
-        for row in rows:
-            await repo.add(row)
-        await session.flush()
-        await session.commit()
-        return [row.id for row in rows]
-    except Exception as exc:
-        return PersistError(
-            message=f"failed to persist code comments: {type(exc).__name__}: {exc}"
-        )
-
-
-async def persistReviewUsage(
-    session: AsyncSession,
-    *,
-    userId: UserId,
-    prRowId: PrRowId,
-    prNumber: PRNumber,
-    repoId: RepoId,
-    reviewRowId: ReviewRowId | None,
-    reviewSummaryId: UUID | None,
-    inputTokens: int,
-    outputTokens: int,
-    totalTokens: int,
-    inputTokenDetails: dict[str, int | None] | None,
-    llmModelId: str | None,
-    llmProvider: str | None,
-    llmBaseUrl: str | None,
-) -> str | PersistError:
-    """Insert a single :class:`ReviewUsage` row; returns its id."""
-    try:
-        row = ReviewUsage(
-            pr_id=prRowId,
-            review_id=reviewRowId,
-            user_id=userId,
-            pr_number=prNumber,
-            repo_id=repoId,
-            review_summary_id=reviewSummaryId,
-            review_status=ReviewRunStatus.SUCCESS,
-            input_tokens=inputTokens,
-            output_tokens=outputTokens,
-            total_tokens=totalTokens,
-            input_token_details=inputTokenDetails,
-            llm_model_id=llmModelId,
-            llm_provider=llmProvider,
-            llm_base_url=llmBaseUrl,
-        )
-        repo = ReviewUsageRepository(session=session)
-        await repo.add(row)
-        await session.flush()
-        await session.commit()
-        return row.id
-    except Exception as exc:
-        return PersistError(
-            message=f"failed to persist review usage: {type(exc).__name__}: {exc}",
+    userId: UserId | None = None,
+    repoId: RepoId | None = None,
+    prNumber: PRNumber | None = None,
+) -> ReviewStepFailure:
+    return ReviewStepFailure(
+        PersistError(
+            message=message,
             userId=userId,
             repoId=repoId,
             prNumber=prNumber,
         )
+    )
 
 
 async def persistReviewSummaryTx(
@@ -239,23 +134,29 @@ async def persistReviewSummaryTx(
     commitId: CommitId,
     review: ReviewResult,
 ) -> UUID:
-    """Durable DBOS transaction: persist the review summary row.
+    """Persist the review summary row; returns its id.
 
     Raises:
-        ReviewStepFailure: the row could not be written (wrapping a
-            :class:`PersistError`).
+        ReviewStepFailure: the row could not be written.
     """
-    async with async_session_maker() as session:
-        result = await persistReviewSummary(
-            session,
-            prRowId=prRowId,
-            reviewRowId=reviewRowId,
-            commitId=commitId,
-            review=review,
-        )
-        if isinstance(result, PersistError):
-            raise ReviewStepFailure(result)
-        return result
+    try:
+        async with async_session_maker() as session:
+            summary = ReviewSummary(
+                pr_id=prRowId,
+                review_id=reviewRowId,
+                commit_id=commitId,
+                summary=review.summary,
+                verdict=ReviewVerdict(review.verdict),
+            )
+            repo = ReviewSummaryRepository(session=session)
+            await repo.add(summary)
+            await session.commit()
+            await session.refresh(summary)
+            return summary.id
+    except Exception as exc:
+        raise persistError(
+            f"failed to persist review summary: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 async def persistCodeCommentsTx(
@@ -265,23 +166,31 @@ async def persistCodeCommentsTx(
     commitId: CommitId,
     comments: Sequence[CodeCommentDraft],
 ) -> list[str]:
-    """Durable DBOS transaction: persist the code-comment rows.
+    """Persist the code-comment rows; returns the row ids.
 
     Raises:
-        ReviewStepFailure: a row could not be written (wrapping a
-            :class:`PersistError`).
+        ReviewStepFailure: a row could not be written.
     """
-    async with async_session_maker() as session:
-        result = await persistCodeComments(
-            session,
-            prRowId=prRowId,
-            reviewRowId=reviewRowId,
-            commitId=commitId,
-            comments=comments,
-        )
-        if isinstance(result, PersistError):
-            raise ReviewStepFailure(result)
-        return result
+    try:
+        async with async_session_maker() as session:
+            rows = mapDraftsToCommentRows(
+                prRowId=prRowId,
+                reviewRowId=reviewRowId,
+                commitId=commitId,
+                comments=comments,
+            )
+            if not rows:
+                return []
+            repo = CodeCommentRepository(session=session)
+            for row in rows:
+                await repo.add(row)
+            await session.flush()
+            await session.commit()
+            return [row.id for row in rows]
+    except Exception as exc:
+        raise persistError(
+            f"failed to persist code comments: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 async def persistReviewUsageTx(
@@ -300,41 +209,48 @@ async def persistReviewUsageTx(
     llmProvider: str | None,
     llmBaseUrl: str | None,
 ) -> str:
-    """Durable DBOS transaction: persist the review-usage row.
+    """Persist the review-usage row; returns its id.
 
     Raises:
-        ReviewStepFailure: the row could not be written (wrapping a
-            :class:`PersistError`).
+        ReviewStepFailure: the row could not be written.
     """
-    async with async_session_maker() as session:
-        result = await persistReviewUsage(
-            session,
+    try:
+        async with async_session_maker() as session:
+            row = ReviewUsage(
+                pr_id=prRowId,
+                review_id=reviewRowId,
+                user_id=userId,
+                pr_number=prNumber,
+                repo_id=repoId,
+                review_summary_id=reviewSummaryId,
+                review_status=ReviewRunStatus.SUCCESS,
+                input_tokens=inputTokens,
+                output_tokens=outputTokens,
+                total_tokens=totalTokens,
+                input_token_details=inputTokenDetails,
+                llm_model_id=llmModelId,
+                llm_provider=llmProvider,
+                llm_base_url=llmBaseUrl,
+            )
+            repo = ReviewUsageRepository(session=session)
+            await repo.add(row)
+            await session.flush()
+            await session.commit()
+            return row.id
+    except Exception as exc:
+        raise persistError(
+            f"failed to persist review usage: {type(exc).__name__}: {exc}",
             userId=userId,
-            prRowId=prRowId,
-            prNumber=prNumber,
             repoId=repoId,
-            reviewRowId=reviewRowId,
-            reviewSummaryId=reviewSummaryId,
-            inputTokens=inputTokens,
-            outputTokens=outputTokens,
-            totalTokens=totalTokens,
-            inputTokenDetails=inputTokenDetails,
-            llmModelId=llmModelId,
-            llmProvider=llmProvider,
-            llmBaseUrl=llmBaseUrl,
-        )
-        if isinstance(result, PersistError):
-            raise ReviewStepFailure(result)
-        return result
+            prNumber=prNumber,
+        ) from exc
 
 
 __all__ = [
     "mapDraftsToCommentRows",
-    "persistCodeComments",
     "persistCodeCommentsTx",
-    "persistReviewSummary",
+    "persistError",
     "persistReviewSummaryTx",
-    "persistReviewUsage",
     "persistReviewUsageTx",
     "sumTotalUsages",
 ]

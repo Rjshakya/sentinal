@@ -12,7 +12,7 @@ Two families:
   — the local-DB bookkeeping for events the install-flow setup callback
   does not cover.
 - **Delegation handlers** (``pull_request`` / ``issue_comment``)
-  — forward the domain events to the DBOS dispatch adapters.
+  — forward the domain events to the durable invocations.
   ``pull_request`` ``opened`` and ``issue_comment`` ``created`` run the
   refactored review workflow via
   :mod:`app.workflows.triggers.invoke`. The adapter imports are

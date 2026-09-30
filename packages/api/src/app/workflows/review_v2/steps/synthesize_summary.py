@@ -1,19 +1,18 @@
-"""DBOS durable step that synthesizes the v2 review summary.
+"""Walkthrough-summary worker.
 
 :func:`synthesizeSummaryStep` turns already-validated run data — the
 PR metadata, the host-side chunk inventory, the :class:`PlannerContext`
 (enrichment), and the extracted :class:`ReviewComments` — into the
-three-section walkthrough (info, ASCII flow tree, important file
-changes) via one cheap structured-output LLM call
+walkthrough via one cheap structured-output LLM call
 (:class:`SummaryResult`).
 
 No sandbox access, no diff reads: every claim the synthesizer may
 emit must already be present in its user message. A transient LLM
 failure (429 / 5xx / timeout) raises
-:class:`TransientReviewStepFailure` (DBOS retries the step); a final
-failure (model-build error, schema mismatch) raises
-:class:`ReviewStepFailure` wrapping a :class:`SummaryStepError` — the
-workflow degrades to an empty summary instead of failing the run.
+:class:`TransientReviewStepFailure`; a final failure (model-build
+error, schema mismatch) raises :class:`ReviewStepFailure` wrapping a
+:class:`SummaryStepError` — the pipeline degrades to an empty summary
+instead of failing the run.
 """
 
 from __future__ import annotations
@@ -37,7 +36,6 @@ from app.workflows.review_v2.errors import (
     SummaryStepError,
     TransientReviewStepFailure,
     isLlmRetryError,
-    shouldRetry,
 )
 from app.workflows.review_v2.steps.extract_result import buildExtractorLlmCtx
 from app.workflows.review_v2.types import RepoSnapshot, ReviewWorkflowInput
@@ -45,7 +43,7 @@ from app.workflows.review_v2.types import RepoSnapshot, ReviewWorkflowInput
 log = logging.getLogger(__name__)
 
 
-def _summaryError(
+def summaryError(
     *,
     message: str,
     input: ReviewWorkflowInput,
@@ -79,14 +77,14 @@ async def synthesizeSummaryStep(
     :class:`SummaryResult` via ``with_structured_output``.
 
     Raises:
-        TransientReviewStepFailure: transient LLM failure — DBOS retries.
+        TransientReviewStepFailure: transient LLM failure — the SDK retries the step.
         ReviewStepFailure: model-build failure or schema mismatch —
             business outcome, the workflow degrades to an empty summary.
     """
     chat = createLLMModel(buildExtractorLlmCtx())
     if isinstance(chat, LLMConfigError):
         raise ReviewStepFailure(
-            _summaryError(
+            summaryError(
                 message=f"failed to build summary model: {chat}",
                 input=input,
                 repoId=repo.id,
@@ -128,7 +126,7 @@ async def synthesizeSummaryStep(
         )
         if retryable:
             raise TransientReviewStepFailure(
-                _summaryError(
+                summaryError(
                     message=f"summary {type(exc).__name__}: {exc}",
                     input=input,
                     repoId=repo.id,
@@ -136,7 +134,7 @@ async def synthesizeSummaryStep(
                 )
             ) from exc
         raise ReviewStepFailure(
-            _summaryError(
+            summaryError(
                 message=f"summary {type(exc).__name__}: {exc}",
                 input=input,
                 repoId=repo.id,
@@ -147,7 +145,7 @@ async def synthesizeSummaryStep(
         result = SummaryResult.model_validate(response)
     except Exception as exc:
         raise ReviewStepFailure(
-            _summaryError(
+            summaryError(
                 message=f"summary schema mismatch {type(exc).__name__}: {exc}",
                 input=input,
                 repoId=repo.id,
@@ -162,4 +160,4 @@ async def synthesizeSummaryStep(
     return result, usage
 
 
-__all__ = ["synthesizeSummaryStep"]
+__all__ = ["summaryError", "synthesizeSummaryStep"]

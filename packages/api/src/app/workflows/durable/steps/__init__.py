@@ -29,6 +29,13 @@ from app.workflows.durable.steps.persist import (
     updateGithubBacklinks,
     upsertPrRow,
 )
+from app.workflows.durable.steps.repair import (
+    deleteClonedRepo,
+    dispatchRepairFollowUp,
+    loadUnpublishedReview,
+    runRepairAgent,
+    savePublishOutcome,
+)
 from app.workflows.durable.steps.resolve import (
     buildSandboxCtxForRun,
     getRepoByGithubId,
@@ -49,7 +56,9 @@ __all__ = [
     "buildSandboxCtxForRun",
     "clonePrHead",
     "createEphemeralSandbox",
+    "deleteClonedRepo",
     "destroySandbox",
+    "dispatchRepairFollowUp",
     "extractReviewComments",
     "fetchLivePrState",
     "fetchPrDiff",
@@ -58,6 +67,7 @@ __all__ = [
     "indexCodegraph",
     "listDiffChunks",
     "loadLastSuccessfulReview",
+    "loadUnpublishedReview",
     "markReviewFailed",
     "markReviewRunning",
     "markReviewSucceeded",
@@ -71,6 +81,8 @@ __all__ = [
     "resolveActiveLlmCtx",
     "runFileBatch",
     "runPlanner",
+    "runRepairAgent",
+    "savePublishOutcome",
     "splitPrDiff",
     "synthesizeWalkthrough",
     "updateGithubBacklinks",

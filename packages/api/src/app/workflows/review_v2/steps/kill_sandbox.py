@@ -1,4 +1,4 @@
-"""DBOS durable step: best-effort sandbox kill.
+"""Best-effort sandbox kill.
 
 The stateless review pipeline creates a fresh ephemeral sandbox per run
 and the workflow's ``finally`` destroys it with this step, so no paused

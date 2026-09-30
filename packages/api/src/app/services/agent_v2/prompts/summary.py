@@ -127,7 +127,7 @@ def createSummaryUserPrompt(
     the host-side inventory (capped), the planner context (per-field
     truncated), and the extracted findings (P1 first, capped). Takes
     narrow scalars plus validated structures — never a live ctx — so
-    the builder stays unit-testable and DBOS-safe.
+    the builder stays unit-testable and durable-safe.
     """
     header = (
         f"Repo: {repoName}\n"

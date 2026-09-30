@@ -11,7 +11,7 @@ for a ctx's `providerId`. The provider owns the lifecycle
   `Providers` map (`{"e2b": E2BService}`), `getDefaulSandboxName`.
   `getDefaulProvider` is currently unused (callers pass the
   settings value directly).
-- `types.py` — `SandboxCtx` (pure data, crosses DBOS),
+- `types.py` — `SandboxCtx` (pure data, crosses the durable boundary),
   `ProviderId` (`"e2b" | "daytona"`), `ProviderMap`,
   `BaseSandboxService`.
 - `errors.py` — `SandboxProviderError`.

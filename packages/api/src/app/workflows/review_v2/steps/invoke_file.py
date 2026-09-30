@@ -1,4 +1,4 @@
-"""DBOS durable step that runs one per-file review agent.
+"""Per-file review agent worker.
 
 :func:`invokeFileReviewStep` is parameterized by the file under
 review: it builds the run's chat model from the :class:`LLMCtx`,
@@ -9,22 +9,17 @@ slice + the shared concerns), capturing token usage. Returns
 ``(raw_text, usage)``.
 
 A transient failure (LLM 429 / 5xx / timeout, sandbox blip) raises
-:class:`TransientReviewStepFailure` (DBOS retries **that file
-alone**); a final failure raises :class:`ReviewStepFailure` wrapping
-a :class:`FileLaneError`. With ``return_exceptions=True`` the raised
-exceptions land in the batch-gather results, so
-:func:`app.workflows.review_v2.steps.combine.combineFileOutcomes` can
-degrade failed files to nothing.
+:class:`TransientReviewStepFailure`; a final failure raises
+:class:`ReviewStepFailure` wrapping a :class:`FileLaneError`. The
+durable batch wrapper degrades failed files to nothing.
 
 A ``NO_FINDINGS`` text is a success (the combine step skips it
-before extraction). The step never stops the sandbox — the
-workflow's ``finally`` owns the stop.
+before extraction).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import UsageMetadata
@@ -47,7 +42,6 @@ from app.workflows.review_v2.errors import (
     ReviewStepFailure,
     TransientReviewStepFailure,
     isLlmRetryError,
-    shouldRetry,
 )
 from app.workflows.review_v2.types import (
     RepoSnapshot,
@@ -62,10 +56,8 @@ FileStepOutcome = tuple[str, dict[str, UsageMetadata]] | BaseException
 wrapped :class:`FileLaneError`."""
 
 
-def _lastAiText(result: Any) -> str:
+def lastAiText(result: dict) -> str:
     """Return the text content of the last AI message in the run result."""
-    if not isinstance(result, dict):
-        return ""
     messages = result.get("messages")
     if not isinstance(messages, list):
         return ""
@@ -77,7 +69,7 @@ def _lastAiText(result: Any) -> str:
             return content
         if isinstance(content, list):
             parts = [
-                block.get("text", "")
+                str(block.get("text", ""))
                 for block in content
                 if isinstance(block, dict) and block.get("type") == "text"
             ]
@@ -104,11 +96,11 @@ async def invokeFileReviewStep(
     :func:`app.services.llm.service.acquireSharedLimiter`, the step's
     chat model shares that limiter with the rest of its batch wave;
     ``None`` keeps the legacy per-step limiter. Only the serializable
-    key crosses the DBOS boundary — never the live limiter.
+    key crosses the durable boundary — never the live limiter.
 
     Raises:
         TransientReviewStepFailure: transient LLM / sandbox failure —
-            DBOS retries this file.
+            the SDK retries this file.
         ReviewStepFailure: agent construction failed, or the agent
             produced no text. Final for the file.
     """
@@ -182,11 +174,12 @@ async def invokeFileReviewStep(
     )
     promptPayload = {"messages": [{"role": "user", "content": prompt}]}
 
-    result: Any = None
     try:
         with get_usage_metadata_callback() as usage_cb:
             result = await agent.ainvoke(promptPayload)
             usage = usage_cb.usage_metadata
+            if not isinstance(result, dict):
+                result = {"messages": []}
     except Exception as exc:
         retryable = isLlmRetryError(exc)
         log.warning(
@@ -219,7 +212,7 @@ async def invokeFileReviewStep(
             )
         ) from exc
 
-    text = _lastAiText(result)
+    text = lastAiText(result)
     if not text.strip():
         raise ReviewStepFailure(
             FileLaneError(
@@ -242,4 +235,4 @@ async def invokeFileReviewStep(
     return text, usage
 
 
-__all__ = ["FileStepOutcome", "invokeFileReviewStep"]
+__all__ = ["FileStepOutcome", "invokeFileReviewStep", "lastAiText"]

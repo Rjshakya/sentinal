@@ -1,20 +1,9 @@
 """Fetch the unified PR diff into the sandbox.
 
 The diff is written to ``/home/user/tmp/{pr_number}/{head_sha}/file.diff``
-as the split step's input; the agents never read it. The split step
-turns it into the per-file annotated chunks.
-
-Layers:
-
-- :func:`fetchDiff` — the value-returning worker: takes the connected
-  sandbox handle and the diff range, returns the diff file path (or a
-  :class:`DiffResult` carrying a best-effort fetch failure) or a
-  :class:`DiffUnavailableError` value.
-- :func:`fetchDiffStep` — the DBOS step edge: connects the sandbox,
-  runs :func:`fetchDiff`, and raises for retryable / final failures.
-
-``diffBaseSha`` narrows the range for an incremental re-review; when
-set, ``git diff {diffBaseSha}...{headSha}`` is produced instead of
+as the split step's input; the agents never read it. ``diffBaseSha``
+narrows the range for an incremental re-review; when set,
+``git diff {diffBaseSha}...{headSha}`` is produced instead of
 ``git diff {baseSha}...{headSha}``.
 """
 
@@ -23,7 +12,6 @@ from __future__ import annotations
 import logging
 import shlex
 
-from deepagents.backends.sandbox import BaseSandbox
 from pydantic import BaseModel
 
 from app.services.sandbox.types import SandboxCtx
@@ -33,7 +21,6 @@ from app.workflows.review_v2.errors import (
     ReviewStepFailure,
     SandboxConnectError,
     TransientReviewStepFailure,
-    shouldRetry,
 )
 from app.workflows.review_v2.steps._helpers import (
     asAsyncSandbox,
@@ -51,68 +38,23 @@ _DIFF_TIMEOUT_S = 120
 
 
 class DiffResult(BaseModel):
-    """Outcome of :func:`fetchDiff`: the diff was written, possibly
-    without a successful ``git fetch origin`` (best-effort catch-all
-    for unreachable PR heads)."""
+    """The diff was written, possibly without a successful ``git fetch``."""
 
     diffFile: str
     fetchFailed: bool = False
 
 
-async def fetchDiff(
-    sandbox: BaseSandbox,
-    *,
-    repoId: RepoId,
-    repoName: str,
-    prNumber: PRNumber,
-    headSha: CommitId,
-    baseSha: str,
-    diffBaseSha: CommitId | None,
-) -> DiffResult | DiffUnavailableError:
-    """Fetch the unified diff and write it to the sandbox.
-
-    Returns the sandbox path of the saved ``file.diff``; the diff body
-    itself is not returned to the workflow — the agents re-read it via
-    the deepagents backend's ``read_file`` tool.
-    """
-    repoPath = getRepoPath(repoName)
-    diffDir = getReviewDiffDirPath(prNumber, headSha)
-    diffFile = f"{diffDir}/file.diff"
-    backend = asAsyncSandbox(sandbox)
-
-    mkdir = await backend.aexecute(
-        f"mkdir -p {shlex.quote(diffDir)}",
-        timeout=_MKDIR_TIMEOUT_S,
-    )
-    if mkdir.exit_code != 0:
-        return DiffUnavailableError(
-            message=f"mkdir -p failed: {truncateOutput(mkdir.output)}",
+def diffUnavailable(
+    message: str, *, repoId: RepoId, prNumber: PRNumber, headSha: CommitId
+) -> ReviewStepFailure:
+    return ReviewStepFailure(
+        DiffUnavailableError(
+            message=message,
             repoId=repoId,
             prNumber=prNumber,
             headSha=headSha,
         )
-
-    fetch = await backend.aexecute(
-        f"cd {shlex.quote(repoPath)} && git fetch origin",
-        timeout=_FETCH_TIMEOUT_S,
     )
-
-    effectiveBase = diffBaseSha or baseSha
-    diff = await backend.aexecute(
-        f"cd {shlex.quote(repoPath)} && "
-        f"git diff {effectiveBase}...{headSha} > {diffFile}",
-        timeout=_DIFF_TIMEOUT_S,
-    )
-    if diff.exit_code != 0:
-        tail = truncateOutput(diff.output)
-        return DiffUnavailableError(
-            message=f"git diff exited {diff.exit_code}: {tail}",
-            repoId=repoId,
-            prNumber=prNumber,
-            headSha=headSha,
-        )
-
-    return DiffResult(diffFile=diffFile, fetchFailed=fetch.exit_code != 0)
 
 
 async def fetchDiffStep(
@@ -125,29 +67,53 @@ async def fetchDiffStep(
     baseSha: str,
     diffBaseSha: CommitId | None,
 ) -> DiffResult:
-    """Durable step: reconnect to the sandbox and fetch the unified diff.
+    """Reconnect to the sandbox and fetch the unified diff.
 
     Raises:
         TransientReviewStepFailure: sandbox reconnect failed.
         ReviewStepFailure: ``git diff`` (or ``mkdir``) returned a
-            non-zero exit code. Business outcome — not retried.
+            non-zero exit code.
     """
     sandbox = await connectSandbox(sandboxCtx)
     if isinstance(sandbox, SandboxConnectError):
         raise TransientReviewStepFailure(sandbox)
+    backend = asAsyncSandbox(sandbox)
 
-    result = await fetchDiff(
-        sandbox,
-        repoId=repoId,
-        repoName=repoName,
-        prNumber=prNumber,
-        headSha=headSha,
-        baseSha=baseSha,
-        diffBaseSha=diffBaseSha,
+    repoPath = getRepoPath(repoName)
+    diffDir = getReviewDiffDirPath(prNumber, headSha)
+    diffFile = f"{diffDir}/file.diff"
+
+    mkdir = await backend.aexecute(
+        f"mkdir -p {shlex.quote(diffDir)}",
+        timeout=_MKDIR_TIMEOUT_S,
     )
-    if isinstance(result, DiffUnavailableError):
-        raise ReviewStepFailure(result)
+    if mkdir.exit_code != 0:
+        raise diffUnavailable(
+            f"mkdir -p failed: {truncateOutput(mkdir.output)}",
+            repoId=repoId,
+            prNumber=prNumber,
+            headSha=headSha,
+        )
 
+    fetch = await backend.aexecute(
+        f"cd {shlex.quote(repoPath)} && git fetch origin",
+        timeout=_FETCH_TIMEOUT_S,
+    )
+
+    diff = await backend.aexecute(
+        f"cd {shlex.quote(repoPath)} && "
+        f"git diff {diffBaseSha or baseSha}...{headSha} > {diffFile}",
+        timeout=_DIFF_TIMEOUT_S,
+    )
+    if diff.exit_code != 0:
+        raise diffUnavailable(
+            f"git diff exited {diff.exit_code}: {truncateOutput(diff.output)}",
+            repoId=repoId,
+            prNumber=prNumber,
+            headSha=headSha,
+        )
+
+    result = DiffResult(diffFile=diffFile, fetchFailed=fetch.exit_code != 0)
     if result.fetchFailed:
         log.warning(
             "fetch_diff_step: git fetch origin failed (continuing): "
@@ -163,4 +129,4 @@ async def fetchDiffStep(
     return result
 
 
-__all__ = ["DiffResult", "fetchDiff", "fetchDiffStep"]
+__all__ = ["DiffResult", "fetchDiffStep"]

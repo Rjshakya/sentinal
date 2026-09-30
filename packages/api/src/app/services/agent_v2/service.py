@@ -100,7 +100,7 @@ def createAgentV2Ctx(
     factory is the I/O boundary ("edge"). Identity is validated
     upstream (webhook receiver / workflow input), so no checks happen
     here. The result is **not serializable**: it carries live
-    dependencies and never crosses a DBOS boundary; callers build it
+    dependencies and never crosses a durable boundary; callers build it
     per run inside their steps.
     """
     return AgentV2Ctx(

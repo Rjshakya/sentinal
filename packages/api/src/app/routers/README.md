@@ -2,8 +2,8 @@
 
 One module per route family, all mounted under the `/api` prefix in
 `main.py::create_app`. Routers never do durable work inline: they
-validate, resolve the session/DB rows, and dispatch to a DBOS
-workflow (202 + workflow id) or answer from the local mirror.
+validate, resolve the session/DB rows, and dispatch to a durable
+execution (202 + execution name) or answer from the local mirror.
 `__init__.py` is an empty marker; `main.py` imports each submodule
 directly.
 

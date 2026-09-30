@@ -1,36 +1,22 @@
-"""Structured-extractor steps: turn the research agents' free-form
-output into validated review payloads.
+"""Structured extractor: turn the file agents' findings report into
+validated review comments.
 
-The v2 research agents (the planner and the per-file reviewers) end
-their runs with free-form text — the file agents write findings
-reports. None produces a structured payload.
-
-These steps re-invoke a small structured-output-capable OpenAI model
-(:data:`_EXTRACTOR_MODEL`) with the agent's text and the target schema
-bound via ``with_structured_output``:
-
-- :func:`extractSummaryStep` — verbatim wrap: the walkthrough text
-  becomes the ``summary`` field unchanged.
-- :func:`extractCommentsStep` — transcribes the findings report's
-  blocks into :class:`CodeCommentDraft` entries (exact anchors;
-  findings without usable anchors are dropped) and reformats each
-  comment body to the shared comment-body contract.
-
-Both are durable steps: transient LLM failures (classified by
-:func:`app.workflows.review_v2.errors.isLlmRetryError`) raise
-:class:`TransientReviewStepFailure`; a schema mismatch is a business
-outcome (:class:`ExtractionError` with ``retryable=False``) that the
-workflow's combine step degrades instead of failing the whole review.
+Re-invokes a small structured-output-capable OpenAI model with the
+report text and the :class:`ReviewComments` schema bound via
+``with_structured_output``: transcribes each finding block into a
+:class:`CodeCommentDraft` (exact anchors; anchor-less findings are
+dropped) and reformats each body to the comment-body contract.
+Transient LLM failures raise :class:`TransientReviewStepFailure`; a
+schema mismatch is a business outcome (:class:`ExtractionError`) that
+degrades instead of failing the review.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import TypeVar, cast
 
 from langchain_core.callbacks import get_usage_metadata_callback
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage, UsageMetadata
 
 from app.core.config import settings
@@ -38,15 +24,12 @@ from app.services.agent_v2.prompts.shared import COMMENT_BODY_FORMAT
 from app.services.llm.service import createLLMModel
 from app.services.llm.types import LLMCtx
 from app.utils.branded import ApiKey
-from app.utils.schema import ReviewComments, SummaryResult
+from app.utils.schema import ReviewComments
 from app.workflows.review_v2.errors import (
-    AgentLane,
     ExtractionError,
     ReviewStepFailure,
     TransientReviewStepFailure,
-    extractRetryAfterSeconds,
     isLlmRetryError,
-    shouldRetry,
 )
 
 log = logging.getLogger(__name__)
@@ -58,13 +41,6 @@ Small, cheap, and reliable at forced-tool structured output — the
 research agents are free to end with any text, and this model turns it
 into the validated schema payload.
 """
-
-_OutputModel = TypeVar("_OutputModel", SummaryResult, ReviewComments)
-
-
-def _render_schema(model_cls: type[_OutputModel]) -> str:
-    """Render the Pydantic JSON schema of a response model as a compact block."""
-    return json.dumps(model_cls.model_json_schema(), indent=2)
 
 
 def buildExtractorLlmCtx() -> LLMCtx:
@@ -79,17 +55,6 @@ def buildExtractorLlmCtx() -> LLMCtx:
         apiKey=ApiKey(settings.openai_api_key) if settings.openai_api_key else None,
     )
 
-
-SUMMARY_EXTRACTION_SYSTEM_PROMPT: str = (
-    "You are a strict JSON formatter for a PR-review pipeline.\n\n"
-    "The user message is a PR review summary written by a research agent. "
-    'Put that text VERBATIM into the "summary" field: do not rewrite, '
-    "paraphrase, truncate, summarise, or add anything. Preserve all "
-    "markdown exactly as written.\n\n"
-    "OUTPUT SCHEMA — respond with exactly one JSON object of this shape:\n"
-    + _render_schema(SummaryResult)
-)
-"""System prompt for the summary extractor (verbatim wrap)."""
 
 COMMENTS_EXTRACTION_SYSTEM_PROMPT: str = (
     "You are the scribe for a PR-review pipeline. The user message is a "
@@ -113,118 +78,15 @@ COMMENTS_EXTRACTION_SYSTEM_PROMPT: str = (
     "- Return the entries ordered by severity, P1 first.\n\n"
     + COMMENT_BODY_FORMAT
     + "\n\nOUTPUT SCHEMA — respond with exactly one JSON object of this shape:\n"
-    + _render_schema(ReviewComments)
+    + json.dumps(ReviewComments.model_json_schema(), indent=2)
 )
 """System prompt for the comments extractor (transcription + contract formatting)."""
 
 
-async def _extractStructured(
-    chat: BaseChatModel,
-    *,
-    sourceText: str,
-    model_cls: type[SummaryResult] | type[ReviewComments],
-    systemPrompt: str,
-) -> tuple[SummaryResult | ReviewComments, dict[str, UsageMetadata]]:
-    """Run one structured-output call against ``sourceText``.
-
-    Binds ``model_cls`` via ``with_structured_output`` (forced tool
-    choice) and validates the returned payload. Token usage is captured
-    so the extractor's tokens land in the per-PR usage envelope.
-    """
-    structured = chat.with_structured_output(model_cls)
-
-    with get_usage_metadata_callback() as usage_cb:
-        response = await structured.ainvoke(
-            [
-                SystemMessage(content=systemPrompt),
-                HumanMessage(content=sourceText),
-            ]
-        )
-        usage = usage_cb.usage_metadata
-
-    return model_cls.model_validate(response), usage
-
-
-async def _runExtractor(
-    *,
-    extractorLlmCtx: LLMCtx,
-    sourceText: str,
-    lane: AgentLane,
-    model_cls: type[SummaryResult] | type[ReviewComments],
-    systemPrompt: str,
-) -> tuple[SummaryResult | ReviewComments, dict[str, UsageMetadata]]:
-    """Run :func:`_extractStructured` with the lane's error semantics.
-
-    Raises:
-        TransientReviewStepFailure: transient LLM failure (429 / 5xx /
-            timeout) — the step's ``should_retry`` retries it.
-        ReviewStepFailure: empty input or a schema mismatch — the
-            lane's non-transient extraction error.
-    """
-    if not sourceText.strip():
-        raise ReviewStepFailure(
-            ExtractionError(
-                message=f"research agent produced no text output for lane={lane}",
-                lane=lane,
-            )
-        )
-
-    chat = createLLMModel(extractorLlmCtx)
-    if isinstance(chat, ValueError):
-        raise ReviewStepFailure(
-            ExtractionError(
-                message=f"failed to build extractor model: {chat}",
-                lane=lane,
-            )
-        )
-
-    try:
-        return await _extractStructured(
-            chat,
-            sourceText=sourceText,
-            model_cls=model_cls,
-            systemPrompt=systemPrompt,
-        )
-    except Exception as exc:
-        if isLlmRetryError(exc):
-            retryAfter = extractRetryAfterSeconds(exc)
-            raise TransientReviewStepFailure(
-                ExtractionError(
-                    message=f"extractor lane={lane} {type(exc).__name__}: {exc}",
-                    lane=lane,
-                    retryable=True,
-                )
-            ) from exc
-        raise ReviewStepFailure(
-            ExtractionError(
-                message=f"extractor lane={lane} {type(exc).__name__}: {exc}",
-                lane=lane,
-            )
-        ) from exc
-
-
-async def extractSummaryStep(
-    *,
-    extractorLlmCtx: LLMCtx,
-    rawText: str,
-) -> tuple[SummaryResult, dict[str, UsageMetadata]]:
-    """Durable step: wrap the summarizer's walkthrough into a
-    :class:`SummaryResult` (verbatim).
-
-    Raises:
-        TransientReviewStepFailure: transient LLM failure — retried.
-        ReviewStepFailure: extraction failed or returned a payload that
-            does not validate. Business outcome — the lane degrades.
-    """
-    result, usage = await _runExtractor(
-        extractorLlmCtx=extractorLlmCtx,
-        sourceText=rawText,
-        lane="summarizer",
-        model_cls=SummaryResult,
-        systemPrompt=SUMMARY_EXTRACTION_SYSTEM_PROMPT,
+def extractionError(message: str, *, retryable: bool = False) -> Exception:
+    return (TransientReviewStepFailure if retryable else ReviewStepFailure)(
+        ExtractionError(message=message, lane="comments", retryable=retryable)
     )
-    log.info("extracting summary result: input_chars=%d", len(rawText))
-    return cast(SummaryResult, result), usage
 
 
 async def extractCommentsStep(
@@ -232,29 +94,43 @@ async def extractCommentsStep(
     extractorLlmCtx: LLMCtx,
     rawText: str,
 ) -> tuple[ReviewComments, dict[str, UsageMetadata]]:
-    """Durable step: transcribe the comments agent's findings report into
-    a :class:`ReviewComments`.
+    """Transcribe the findings report into :class:`ReviewComments`.
 
     Raises:
-        TransientReviewStepFailure: transient LLM failure — retried.
-        ReviewStepFailure: extraction failed or returned a payload that
-            does not validate. Business outcome — the lane degrades.
+        TransientReviewStepFailure: transient LLM failure.
+        ReviewStepFailure: empty input or schema mismatch.
     """
-    result, usage = await _runExtractor(
-        extractorLlmCtx=extractorLlmCtx,
-        sourceText=rawText,
-        lane="comments",
-        model_cls=ReviewComments,
-        systemPrompt=COMMENTS_EXTRACTION_SYSTEM_PROMPT,
-    )
+    if not rawText.strip():
+        raise extractionError("research agent produced no text output")
+
+    chat = createLLMModel(extractorLlmCtx)
+    if isinstance(chat, ValueError):
+        raise extractionError(f"failed to build extractor model: {chat}")
+
+    try:
+        structured = chat.with_structured_output(ReviewComments)
+        with get_usage_metadata_callback() as usage_cb:
+            response = await structured.ainvoke(
+                [
+                    SystemMessage(content=COMMENTS_EXTRACTION_SYSTEM_PROMPT),
+                    HumanMessage(content=rawText),
+                ]
+            )
+            usage = usage_cb.usage_metadata
+        result = ReviewComments.model_validate(response)
+    except Exception as exc:
+        if isinstance(exc, (TransientReviewStepFailure, ReviewStepFailure)):
+            raise
+        raise extractionError(
+            f"extractor {type(exc).__name__}: {exc}",
+            retryable=isLlmRetryError(exc),
+        ) from exc
     log.info("extracting comments result: input_chars=%d", len(rawText))
-    return cast(ReviewComments, result), usage
+    return result, usage
 
 
 __all__ = [
     "COMMENTS_EXTRACTION_SYSTEM_PROMPT",
-    "SUMMARY_EXTRACTION_SYSTEM_PROMPT",
     "buildExtractorLlmCtx",
     "extractCommentsStep",
-    "extractSummaryStep",
 ]

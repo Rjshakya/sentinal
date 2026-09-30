@@ -8,6 +8,7 @@ from app.workflows.triggers.invoke import (
     handlePullRequestOpened,
 )
 from app.workflows.triggers.opened_payload import extractOpenedPrPayload
+from app.workflows.triggers.repair import triggerRepairAfterReview
 from app.workflows.triggers.types import ReviewTriggerAck
 
 __all__ = [
@@ -16,5 +17,6 @@ __all__ = [
     "extractOpenedPrPayload",
     "handleIssueCommentCreated",
     "handlePullRequestOpened",
+    "triggerRepairAfterReview",
     "validateCommentPayload",
 ]

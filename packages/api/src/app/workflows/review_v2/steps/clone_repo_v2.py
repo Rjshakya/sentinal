@@ -25,19 +25,8 @@ command — no files are uploaded. Every interpolated command part is
 
 Exit-code contract: ``0`` success (stdout is the summary JSON parsed
 by :func:`parseCloneV2Result`), ``124`` (timeout) / ``-1`` (runner
-dropout) transient — DBOS retries — and ``>0`` script failure
-(business outcome — the repo cannot be cloned).
-
-Layers per step file:
-
-- :func:`parseCloneV2Result` — the pure stdout parser.
-- :func:`cloneRepoV2` — the value-returning worker: takes the token
-  and sandbox handle as explicit inputs, returns
-  :class:`CloneV2Result` or a typed error value.
-- :func:`cloneRepoV2Step` — the DBOS step edge: mints the
-  installation token, connects the sandbox, runs :func:`cloneRepoV2`,
-  and raises for retryable / final failures. Returns the result so
-  the workflow can record the checked-out head.
+dropout) transient, and ``>0`` script failure (business outcome — the
+repo cannot be cloned).
 """
 
 from __future__ import annotations
@@ -45,19 +34,13 @@ from __future__ import annotations
 import json
 import logging
 import shlex
-from typing import Protocol, cast
 
-from deepagents.backends.protocol import ExecuteResponse, FileUploadResponse
-from deepagents.backends.sandbox import BaseSandbox
 from pydantic import BaseModel
 
 from app.services.github.repo.errors import GitHubRepoError
 from app.services.github.repo.service import createRepoCtx, mintAccessToken
-from app.services.sandbox.errors import SandboxProviderError
-from app.services.sandbox.service import getProvider
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import (
-    AccessToken,
     CommitId,
     InstallationId,
     PRNumber,
@@ -69,13 +52,16 @@ from app.utils.branded import (
 from app.utils.util import repo_path, workspace_path
 from app.workflows.review_v2.errors import (
     CheckoutError,
-    CheckoutTransientError,
     CloneV2Error,
     CloneV2TransientError,
     ReviewStepFailure,
     SandboxConnectError,
     TransientReviewStepFailure,
-    shouldRetry,
+)
+from app.workflows.review_v2.steps._helpers import (
+    asAsyncSandbox,
+    connectSandbox,
+    truncateOutput,
 )
 
 log = logging.getLogger(__name__)
@@ -110,7 +96,7 @@ command string, and git redacts credentials in its own output.
 Sequence (single invocation — the tree is never observed half-built):
 
 1. ``git clone`` the default branch (removes any stale dest first,
-   so the step stays idempotent across a DBOS retry),
+   so the step stays idempotent across a durable retry),
 2. best-effort ``fetch`` of ``refs/pull/{pr}/head`` (uniform for
    same-repo and fork PRs),
 3. ``checkout --detach {head_sha}`` — attempted only when the SHA
@@ -302,70 +288,63 @@ class CloneV2Result(BaseModel):
     checkoutError: str | None = None
 
 
-class _AsyncSandboxBackend(Protocol):
-    """The async sandbox surface the v2 clone worker runs on."""
-
-    async def aexecute(
-        self,
-        command: str,
-        *,
-        timeout: int | None = None,
-    ) -> ExecuteResponse: ...
-
-    async def aupload_files(
-        self,
-        files: list[tuple[str, bytes]],
-    ) -> list[FileUploadResponse]: ...
-
-
-def _truncateOutput(raw: str, *, maxChars: int = 500) -> str:
-    """Trim a command's output tail for inclusion in an error."""
-    return (raw or "").strip()[:maxChars]
-
-
-async def _connectV2Sandbox(sandboxCtx: SandboxCtx):
-    """Reconnect to the run's sandbox by id (or create when unset).
-
-    Local mirror of the v1 reconnect helper (kept local so v2 never
-    imports the v1 package-private ``_helpers`` module).
-    """
-    provider = getProvider(sandboxCtx.providerId)
-    sandbox = await provider(ctx=sandboxCtx).create()
-    if isinstance(sandbox, SandboxProviderError):
-        return SandboxConnectError(
-            message=sandbox.message,
-            userId=sandbox.userId,
-            repoId=sandbox.repoId,
-        )
-    return sandbox
-
-
-async def cloneRepoV2(
-    sandbox: BaseSandbox,
+async def cloneRepoV2Step(
     *,
-    token: AccessToken,
+    sandboxCtx: SandboxCtx,
     userId: UserId,
     repoId: RepoId,
     repoOwner: RepoOwner,
     repoName: RepoName,
     prNumber: PRNumber,
     headSha: CommitId,
-) -> CloneV2Result | CloneV2Error | CloneV2TransientError | CheckoutError | CheckoutTransientError:
+    githubInstallationId: InstallationId,
+) -> CloneV2Result:
     """Clone the repo and check out the PR head, atomically.
 
-    Runs the in-sandbox script source inline (``python3 -c``) with the
-    installation token as an inline ``GITHUB_TOKEN=...`` env
-    assignment — no files are uploaded. The script removes any stale
-    clone directory (keeps the worker idempotent across a DBOS
-    retry), ``git clone``s the default branch, fetches
-    ``refs/pull/{pr}/head`` (uniform for same-repo and fork PRs —
-    the head branch name is never trusted), checks out the head SHA
-    detached, and verifies ``HEAD``.
+    Mints the installation token, reconnects the sandbox, and runs the
+    in-sandbox script source inline (``python3 -c``) with the token as
+    an inline ``GITHUB_TOKEN=...`` env assignment — no files are
+    uploaded. The script removes any stale clone directory, ``git
+    clone``s the default branch, fetches ``refs/pull/{pr}/head``,
+    checks out the head SHA detached, and verifies ``HEAD``.
 
-    Fail-closed: any checkout-stage refusal folds into a final
-    :class:`CheckoutError` — v2 never reviews a half-built tree.
+    Fail-closed: any checkout-stage refusal fails the run — v2 never
+    reviews a half-built tree.
+
+    Raises:
+        TransientReviewStepFailure: token mint / sandbox reconnect /
+            runner dropout failed.
+        ReviewStepFailure: the clone failed, or the PR-head checkout
+            (or its verify gate) refused.
     """
-    backend = cast(_AsyncSandboxBackend, sandbox)
+    repoCtx = createRepoCtx(
+        userId=userId,
+        installationId=githubInstallationId,
+        owner=repoOwner,
+        repo=repoName,
+    )
+    token = await mintAccessToken(repoCtx)
+    if isinstance(token, GitHubRepoError):
+        log.warning(
+            "clone_repo_v2_step: token mint failed (will retry): "
+            "installation_id=%s repo_id=%s cause=%s",
+            githubInstallationId,
+            repoId,
+            token.message,
+        )
+        raise TransientReviewStepFailure(
+            CloneV2TransientError(
+                message=f"installation token mint failed: {token.message}",
+                userId=userId,
+                repoId=repoId,
+            )
+        )
+
+    sandbox = await connectSandbox(sandboxCtx)
+    if isinstance(sandbox, SandboxConnectError):
+        raise TransientReviewStepFailure(sandbox)
+
+    backend = asAsyncSandbox(sandbox)
     dest = repo_path(str(repoName))
     workspace = workspace_path()
     command = (
@@ -382,143 +361,80 @@ async def cloneRepoV2(
     try:
         result = await backend.aexecute(command, timeout=_RUN_TIMEOUT_S)
     except Exception as exc:
-        return CloneV2TransientError(
-            message=f"failed to run clone script: {type(exc).__name__}: {exc}",
-            userId=userId,
-            repoId=repoId,
-        )
+        raise TransientReviewStepFailure(
+            CloneV2TransientError(
+                message=f"failed to run clone script: {type(exc).__name__}: {exc}",
+                userId=userId,
+                repoId=repoId,
+            )
+        ) from exc
 
     if result.exit_code in (-1, 124):
-        return CloneV2TransientError(
-            message=(
-                "sandbox command runner failure: "
-                f"{_truncateOutput(result.output) or 'no output'}"
-            ),
-            userId=userId,
-            repoId=repoId,
+        raise TransientReviewStepFailure(
+            CloneV2TransientError(
+                message=(
+                    "sandbox command runner failure: "
+                    f"{truncateOutput(result.output) or 'no output'}"
+                ),
+                userId=userId,
+                repoId=repoId,
+            )
         )
     if result.exit_code != 0:
-        tail = _truncateOutput(result.output)
-        return CloneV2Error(
-            message=f"clone script exited {result.exit_code}: {tail}",
-            userId=userId,
-            repoId=repoId,
-            exitCode=result.exit_code,
-            outputTail=tail,
+        tail = truncateOutput(result.output)
+        raise ReviewStepFailure(
+            CloneV2Error(
+                message=f"clone script exited {result.exit_code}: {tail}",
+                userId=userId,
+                repoId=repoId,
+                exitCode=result.exit_code,
+                outputTail=tail,
+            )
         )
 
     try:
         summary = parseCloneV2Result(result.output.strip())
     except ValueError as exc:
-        return CloneV2Error(
-            message=f"clone summary unparseable: {exc}",
-            userId=userId,
-            repoId=repoId,
-        )
+        raise ReviewStepFailure(
+            CloneV2Error(
+                message=f"clone summary unparseable: {exc}",
+                userId=userId,
+                repoId=repoId,
+            )
+        ) from exc
 
     if summary.checkoutFailed:
         cause = summary.checkoutError or "checkout stage refused"
-        return CheckoutError(
-            message=f"pr-head checkout failed: {cause}",
-            userId=userId,
-            repoId=repoId,
-            prNumber=prNumber,
-            headSha=headSha,
-            cause=cause,
+        raise ReviewStepFailure(
+            CheckoutError(
+                message=f"pr-head checkout failed: {cause}",
+                userId=userId,
+                repoId=repoId,
+                prNumber=prNumber,
+                headSha=headSha,
+                cause=cause,
+            )
         )
 
-    return summary
-
-
-async def cloneRepoV2Step(
-    *,
-    sandboxCtx: SandboxCtx,
-    userId: UserId,
-    repoId: RepoId,
-    repoOwner: RepoOwner,
-    repoName: RepoName,
-    prNumber: PRNumber,
-    headSha: CommitId,
-    githubInstallationId: InstallationId,
-) -> CloneV2Result:
-    """Durable step: clone the repo and check out the PR head.
-
-    The installation token is minted at the edge via
-    :func:`app.services.github.repo.mintAccessToken` (a value-returning
-    service call), then passed to the sandbox as an inline env
-    assignment in the clone command. Returns the clone result
-    (carrying the verified checked-out head) so the workflow can
-    record it.
-
-    Raises:
-        TransientReviewStepFailure: token mint / sandbox reconnect /
-            runner dropout failed. DBOS retries.
-        ReviewStepFailure: the clone failed, or the PR-head checkout
-            (or its verify gate) refused. Final — the run fails
-            instead of reviewing a half-built tree.
-    """
-    repoCtx = createRepoCtx(
-        userId=userId,
-        installationId=githubInstallationId,
-        owner=repoOwner,
-        repo=repoName,
-    )
-    token = await mintAccessToken(repoCtx)
-    if isinstance(token, GitHubRepoError):
-        err = CloneV2TransientError(
-            message=f"installation token mint failed: {token.message}",
-            userId=userId,
-            repoId=repoId,
-        )
-        log.warning(
-            "clone_repo_v2_step: token mint failed (will retry): "
-            "installation_id=%s repo_id=%s cause=%s",
-            githubInstallationId,
-            repoId,
-            token.message,
-        )
-        raise TransientReviewStepFailure(err)
-
-    sandbox = await _connectV2Sandbox(sandboxCtx)
-    if isinstance(sandbox, SandboxConnectError):
-        raise TransientReviewStepFailure(sandbox)
-
-    result = await cloneRepoV2(
-        sandbox,
-        token=token,
-        userId=userId,
-        repoId=repoId,
-        repoOwner=repoOwner,
-        repoName=repoName,
-        prNumber=prNumber,
-        headSha=headSha,
-    )
-    if isinstance(result, (CloneV2TransientError, CheckoutTransientError)):
-        raise TransientReviewStepFailure(result)
-    if isinstance(result, (CloneV2Error, CheckoutError)):
-        raise ReviewStepFailure(result)
-
-    if result.prRefFetchFailed:
+    if summary.prRefFetchFailed:
         log.warning(
             "clone_repo_v2_step: pr ref fetch failed (continuing): "
             "pr_number=%s repo_id=%s",
             prNumber,
             repoId,
         )
-
     log.info(
         "clone_repo_v2_step: ok repo_id=%s repo_name=%s sandbox_id=%s checked_out_head=%s",
         repoId,
         repoName,
         sandboxCtx.sandboxId,
-        result.checkedOutHead,
+        summary.checkedOutHead,
     )
-    return result
+    return summary
 
 
 __all__ = [
     "CloneV2Result",
-    "cloneRepoV2",
     "cloneRepoV2Step",
     "parseCloneV2Result",
 ]

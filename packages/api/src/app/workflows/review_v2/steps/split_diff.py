@@ -8,14 +8,9 @@ and prints one compact JSON line to stdout — the tiny split summary
 parsed by :func:`parseSplitSummary`.
 
 Exit-code contract: ``0`` success (stdout is the summary JSON), ``124``
-(timeout) / ``-1`` (runner dropout) transient — DBOS retries — and
-``>0`` script failure (business outcome — the diff cannot be split).
-
-Layers:
-
-- :func:`parseSplitSummary` — pure stdout parser (shared with tests).
-- :func:`splitDiff` — the value-returning worker.
-- :func:`splitDiffStep` — the DBOS step edge.
+(timeout) / ``-1`` (runner dropout) transient, and ``>0`` script
+failure (business outcome — the diff cannot be split).
+:func:`parseSplitSummary` is the pure stdout parser.
 """
 
 from __future__ import annotations
@@ -25,8 +20,6 @@ import logging
 import shlex
 from pathlib import Path
 
-from deepagents.backends.sandbox import BaseSandbox
-
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import CommitId, PRNumber, RepoId
 from app.workflows.review_v2.errors import (
@@ -35,7 +28,6 @@ from app.workflows.review_v2.errors import (
     ReviewStepFailure,
     SandboxConnectError,
     TransientReviewStepFailure,
-    shouldRetry,
 )
 from app.workflows.review_v2.steps._helpers import (
     asAsyncSandbox,
@@ -92,79 +84,17 @@ def parseSplitSummary(stdout: str) -> SplitDiffResult:
     )
 
 
-async def splitDiff(
-    sandbox: BaseSandbox,
-    *,
-    repoId: RepoId,
-    prNumber: PRNumber,
-    headSha: CommitId,
-) -> SplitDiffResult | DiffSplitSetupError | DiffSplitError:
-    """Upload the split script and run it against ``file.diff``."""
-    diffDir = getReviewDiffDirPath(prNumber, headSha)
-    diffFile = f"{diffDir}/file.diff"
-    backend = asAsyncSandbox(sandbox)
-
-    script_src = _SCRIPTS_DIR / "split_diff.py"
-    try:
-        uploads = await backend.aupload_files(
-            [(_SCRIPT_REMOTE_PATH, script_src.read_bytes())]
-        )
-        upload_error = next((u.error for u in uploads if u.error is not None), None)
-        if upload_error is not None:
-            return DiffSplitSetupError(
-                message=f"failed to upload split script: {upload_error}",
-                repoId=repoId,
-                prNumber=prNumber,
-                headSha=headSha,
-            )
-    except Exception as exc:
-        return DiffSplitSetupError(
-            message=f"failed to upload split script: {type(exc).__name__}: {exc}",
+def splitSetupError(
+    message: str, *, repoId: RepoId, prNumber: PRNumber, headSha: CommitId
+) -> TransientReviewStepFailure:
+    return TransientReviewStepFailure(
+        DiffSplitSetupError(
+            message=message,
             repoId=repoId,
             prNumber=prNumber,
             headSha=headSha,
         )
-
-    try:
-        result = await backend.aexecute(
-            f"python3 {shlex.quote(_SCRIPT_REMOTE_PATH)} "
-            f"{shlex.quote(diffFile)} {shlex.quote(diffDir)} "
-            f"--pr {prNumber} --commit {headSha}",
-            timeout=_RUN_TIMEOUT_S,
-        )
-    except Exception as exc:
-        return DiffSplitSetupError(
-            message=f"failed to run split script: {type(exc).__name__}: {exc}",
-            repoId=repoId,
-            prNumber=prNumber,
-            headSha=headSha,
-        )
-
-    if result.exit_code in (-1, 124):
-        return DiffSplitSetupError(
-            message=f"runner dropped the split script (exit {result.exit_code})",
-            repoId=repoId,
-            prNumber=prNumber,
-            headSha=headSha,
-        )
-    if result.exit_code != 0:
-        tail = truncateOutput(result.output)
-        return DiffSplitError(
-            message=f"split script exited {result.exit_code}: {tail}",
-            repoId=repoId,
-            prNumber=prNumber,
-            headSha=headSha,
-        )
-
-    try:
-        return parseSplitSummary(result.output.strip())
-    except ValueError as exc:
-        return DiffSplitError(
-            message=f"split summary unparseable: {exc}",
-            repoId=repoId,
-            prNumber=prNumber,
-            headSha=headSha,
-        )
+    )
 
 
 async def splitDiffStep(
@@ -174,7 +104,7 @@ async def splitDiffStep(
     prNumber: PRNumber,
     headSha: CommitId,
 ) -> SplitDiffResult:
-    """Durable step: split ``file.diff`` into per-file chunks.
+    """Split ``file.diff`` into per-file chunks.
 
     On success the sandbox holds ``overview.md`` and the
     ``splitted_diffs/`` chunks; the returned :class:`SplitDiffResult`
@@ -182,32 +112,93 @@ async def splitDiffStep(
 
     Raises:
         TransientReviewStepFailure: sandbox reconnect / script upload /
-            runner dropout failed. DBOS retries.
+            runner dropout failed.
         ReviewStepFailure: the script exited non-zero or printed no
-            parseable summary. Business outcome — not retried.
+            parseable summary.
     """
     sandbox = await connectSandbox(sandboxCtx)
     if isinstance(sandbox, SandboxConnectError):
         raise TransientReviewStepFailure(sandbox)
+    backend = asAsyncSandbox(sandbox)
 
-    result = await splitDiff(
-        sandbox,
-        repoId=repoId,
-        prNumber=prNumber,
-        headSha=headSha,
-    )
-    if isinstance(result, DiffSplitSetupError):
-        raise TransientReviewStepFailure(result)
-    if isinstance(result, DiffSplitError):
-        raise ReviewStepFailure(result)
+    diffDir = getReviewDiffDirPath(prNumber, headSha)
+    diffFile = f"{diffDir}/file.diff"
+
+    script_src = _SCRIPTS_DIR / "split_diff.py"
+    try:
+        uploads = await backend.aupload_files(
+            [(_SCRIPT_REMOTE_PATH, script_src.read_bytes())]
+        )
+        upload_error = next((u.error for u in uploads if u.error is not None), None)
+        if upload_error is not None:
+            raise splitSetupError(
+                f"failed to upload split script: {upload_error}",
+                repoId=repoId,
+                prNumber=prNumber,
+                headSha=headSha,
+            )
+    except TransientReviewStepFailure:
+        raise
+    except Exception as exc:
+        raise splitSetupError(
+            f"failed to upload split script: {type(exc).__name__}: {exc}",
+            repoId=repoId,
+            prNumber=prNumber,
+            headSha=headSha,
+        ) from exc
+
+    try:
+        result = await backend.aexecute(
+            f"python3 {shlex.quote(_SCRIPT_REMOTE_PATH)} "
+            f"{shlex.quote(diffFile)} {shlex.quote(diffDir)} "
+            f"--pr {prNumber} --commit {headSha}",
+            timeout=_RUN_TIMEOUT_S,
+        )
+    except Exception as exc:
+        raise splitSetupError(
+            f"failed to run split script: {type(exc).__name__}: {exc}",
+            repoId=repoId,
+            prNumber=prNumber,
+            headSha=headSha,
+        ) from exc
+
+    if result.exit_code in (-1, 124):
+        raise splitSetupError(
+            f"runner dropped the split script (exit {result.exit_code})",
+            repoId=repoId,
+            prNumber=prNumber,
+            headSha=headSha,
+        )
+    if result.exit_code != 0:
+        tail = truncateOutput(result.output)
+        raise ReviewStepFailure(
+            DiffSplitError(
+                message=f"split script exited {result.exit_code}: {tail}",
+                repoId=repoId,
+                prNumber=prNumber,
+                headSha=headSha,
+            )
+        )
+
+    try:
+        summary = parseSplitSummary(result.output.strip())
+    except ValueError as exc:
+        raise ReviewStepFailure(
+            DiffSplitError(
+                message=f"split summary unparseable: {exc}",
+                repoId=repoId,
+                prNumber=prNumber,
+                headSha=headSha,
+            )
+        ) from exc
 
     log.info(
         "split_diff_step: ok pr_number=%s files_changed=%d skipped=%d",
         prNumber,
-        result["files_changed"],
-        len(result["skipped"]),
+        summary["files_changed"],
+        len(summary["skipped"]),
     )
-    return result
+    return summary
 
 
-__all__ = ["parseSplitSummary", "splitDiff", "splitDiffStep"]
+__all__ = ["parseSplitSummary", "splitDiffStep"]

@@ -1,7 +1,9 @@
 """Shared agent phase: sandbox -> clone -> agents -> persist -> post.
 
 Called by both durable handlers after they resolve their inputs. Linear
-``ctx.step`` calls only — no closures, no _kill/_fail wrappers. On
+``ctx.step`` calls only — no closures, no _kill/_fail wrappers. When the
+inline post returns ``posted=False`` with comments to show, the pipeline
+dispatches the repair durable best-effort before marking SUCCESS. On
 exception the except block issues two plain steps (mark failed + destroy)
 and returns ``ReviewFailed``. Imports on top.
 """
@@ -25,6 +27,7 @@ from app.workflows.durable.steps import (
     clonePrHead,
     createEphemeralSandbox,
     destroySandbox,
+    dispatchRepairFollowUp,
     extractReviewComments,
     fetchPrDiff,
     indexCodegraph,
@@ -347,6 +350,18 @@ def runAgentPhase(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
             config=RETRY_3,
         )
         posted = bool(postOut.get("posted"))
+        if not posted and commentsList:
+            ctx.step(
+                dispatchRepairFollowUp(
+                    input={
+                        "prNumber": prNumber,
+                        "commitId": headSha,
+                        "delivery": input.delivery,
+                    }
+                ),
+                name="dispatch-repair",
+                config=RETRY_1,
+            )
         if posted and postOut.get("githubReviewId") is not None:
             githubReviewId = int(postOut["githubReviewId"])
             ctx.step(

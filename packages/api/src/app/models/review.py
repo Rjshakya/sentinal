@@ -1,14 +1,14 @@
-"""``review`` table — durable per-run record of one review workflow run.
+"""``review`` table — durable per-run record of one review run.
 
-One row per DBOS invocation of ``review_workflow_v2``, keyed by the
-deterministic workflow id (``review-v2:{repo_id}:{pr_number}:{head_sha[:7]}``).
-Mirrors the workflow lifecycle so the dashboard and analytics can query
-review runs — including failures, which currently leave no record beyond
-DBOS's own workflow table — without depending on DBOS state.
+One row per durable execution of the review pipeline, keyed by the
+deterministic execution name (``review-v2:{repo_id}:{pr_number}:{head_sha[:7]}``).
+Mirrors the run lifecycle so the dashboard and analytics can query
+review runs — including failures — without depending on the durable
+execution's own state.
 
 State machine: ``STARTING`` → ``RUNNING`` → (``SUCCESS`` | ``FAILED``).
-Every transition is best-effort: a DB blip never breaks the workflow
-itself. The DBOS workflow's own state is the source of truth; this table
+Every transition is best-effort: a DB blip never breaks the run
+itself. The durable execution's own state is the source of truth; this table
 is the user-facing mirror.
 
 The LLM columns snapshot the resolved
@@ -17,11 +17,7 @@ LLM identity even though no usage/summary rows exist. ``llm_provider``
 records the config source (``"system"`` for the settings default,
 ``"user"`` for the user's stored ``llm_configs`` row); ``llm_client``
 records the actual provider from the ``"provider:model"`` string (e.g.
-``"openai"``, ``"anthropic"``). ``error_context``
-carries the JSON payload built by
-:func:`app.workflows.review_v2.steps.review_lifecycle.buildErrorContext`
-(error name, cause, failed/succeeded files) when the workflow
-errored.
+``"openai"``, ``"anthropic"``).
 """
 
 from __future__ import annotations

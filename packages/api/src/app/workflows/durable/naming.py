@@ -19,8 +19,14 @@ def createDurableRepairExecutionName(
     return f"repair:{pr_number}:{commit_id[:7]}:{delivery}"
 
 
+def createRepairExecutionName(*, prNumber: int, commitId: str) -> str:
+    """Deterministic repair name: one repair per review commit."""
+    return f"repair:{prNumber}:{commitId[:7]}"
+
+
 __all__ = [
     "createCommentExecutionName",
     "createDurableRepairExecutionName",
     "createOpenedExecutionName",
+    "createRepairExecutionName",
 ]
