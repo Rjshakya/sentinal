@@ -11,12 +11,12 @@ camelCase island in the codebase. Identifiers that are also identifiers
 
 Design notes:
 
-- :class:`SandboxCtx` is a plain Pydantic model (DBOS-serializable) so it
+- :class:`SandboxCtx` is a plain Pydantic model (durable-serializable) so it
   can cross workflow boundaries (the review pipeline will embed it in its
   run context). It carries every datum a run needs — user, repo, provider,
   key, sandbox id, name, root path — and nothing else.
 - Ids and keys are **branded types** (``NewType`` over ``str``): they
-  erase to ``str`` at runtime (Pydantic validation and DBOS serialization
+  erase to ``str`` at runtime (Pydantic validation and durable serialization
   are unaffected) but pyright enforces the branding statically, so a bare
   ``str`` cannot accidentally flow into a ctx.
 - Sandbox instances are never part of the contract: the provider map

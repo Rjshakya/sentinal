@@ -2,7 +2,7 @@
 
 The entire API lives here: HTTP edge, persistence, GitHub/LLM/sandbox
 services, and the durable review pipelines. Async end-to-end; Postgres
-is the only persistence tier (DBOS shares it).
+is the only persistence tier.
 
 ## Layout
 
@@ -13,12 +13,12 @@ is the only persistence tier (DBOS shares it).
 - `repositories/` — generic `BaseRepository[T]` plus one thin subclass
   per table. Callers that touch the DB take an `AsyncSession`.
 - `routers/` — HTTP edge. Validation + dispatch only; durable work is
-  handed to DBOS workflows, never done inline.
+  handed to durable executions, never done inline.
 - `services/` — domain services behind the §9 contract: ctx objects,
   errors as values, no logging. (`agent_v2`, `github`, `llm`,
   `sandbox`.)
-- `workflows/` — DBOS durable pipelines (`review_v2`,
-  `repair_and_publish`) plus the webhook `triggers/` adapters.
+- `workflows/` — durable pipelines (`durable/` handlers + steps,
+  `review_v2/` worker library) plus the webhook `triggers/` adapters.
 - `utils/` — shared value types (`branded`), sandbox path layout
   (`util`), agent output schemas (`schema`), misc helpers.
 
@@ -26,7 +26,7 @@ is the only persistence tier (DBOS shares it).
 
 ```
 router (validate + dispatch) → trigger adapter (resolve user/repo)
-  → DBOS workflow (checkpointed steps) → service (pure call + value error)
+  → durable execution (checkpointed steps) → service (pure call + value error)
   → repository (AsyncSession) → Postgres
 ```
 

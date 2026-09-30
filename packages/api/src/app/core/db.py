@@ -1,7 +1,3 @@
-import asyncio
-import selectors
-
-from dbos import AsyncSQLAlchemyDatasource
 from sqlalchemy import NullPool
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
@@ -14,6 +10,12 @@ engine = create_async_engine(
     echo=False,
     future=True,
     pool_pre_ping=True,
+    # Lambda + Neon (PgBouncer): no client-side pooling. Each invocation
+    # opens short sessions and closes them; Neon pools centrally. This
+    # avoids connection exhaustion under burst concurrency (default
+    # QueuePool 5+10 × N envs) and is also safe for local/docker.
+    poolclass=NullPool,
+    connect_args={"statement_cache_size": 0},
 )
 
 async_session_maker = async_sessionmaker(
@@ -21,10 +23,6 @@ async_session_maker = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
 )
-
-
-def _selector_loop_factory() -> asyncio.AbstractEventLoop:
-    return asyncio.SelectorEventLoop(selectors.SelectSelector())
 
 
 async def get_session():

@@ -14,7 +14,7 @@ outside the review workflow package needs these:
 - :func:`truncateOutput` — trims a command's output tail for inclusion
   in an error message.
 
-No logging, no DBOS, no raising: every function returns a value.
+No logging, no durable runtime, no raising: every function returns a value.
 """
 
 from __future__ import annotations

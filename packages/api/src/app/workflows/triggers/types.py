@@ -56,7 +56,7 @@ class CommentTriggerInput(BaseModel):
     """Flat, typed view of a verified ``issue_comment`` payload.
 
     Every field is required; the trigger adapter
-    (:func:`app.workflows.triggers.comment.validateCommentPayload`)
+    (:func:`app.workflows.triggers.comment_payload.validateCommentPayload`)
     returns ``None`` when the raw webhook does not satisfy the
     pydantic schema, which the caller folds into a
     ``malformed_payload`` skip.

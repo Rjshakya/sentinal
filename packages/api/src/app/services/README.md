@@ -20,13 +20,13 @@ marker; each subpackage owns its public surface.
 - **Ctx carries the dependency.** Identity + the injected client
   (e.g. the installation-scoped githubkit client) live on the ctx.
   The ctx factory (`createRepoCtx`, `createInstallationCtx`, …) is
-  the I/O boundary. Live-client ctxs never cross DBOS; serializable
-  ctxs (`SandboxCtx`, `LLMCtx`) do.
+   the I/O boundary. Live-client ctxs never cross the durable
+   boundary; serializable ctxs (`SandboxCtx`, `LLMCtx`) do.
 - **Errors are values.** Expected failures return typed error
   models (`GitHubRepoError`, `LLMConfigError`, …); callers
   discriminate with `isinstance`. Raising is reserved for
   programmer/config errors.
 - **No logging, no retries inside.** Those belong to the edge
-  (routers, webhook receivers, DBOS steps).
+  (routers, webhook receivers, durable steps).
 - **camelCase entry points** (`listInstallationRepos`,
   `createLLMModel`) — the deliberate convention island.

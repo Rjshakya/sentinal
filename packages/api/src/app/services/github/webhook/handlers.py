@@ -12,10 +12,10 @@ Two families:
   — the local-DB bookkeeping for events the install-flow setup callback
   does not cover.
 - **Delegation handlers** (``pull_request`` / ``issue_comment``)
-  — forward the domain events to the DBOS dispatch adapters.
+  — forward the domain events to the durable invocations.
   ``pull_request`` ``opened`` and ``issue_comment`` ``created`` run the
   refactored review workflow via
-  :mod:`app.workflows.triggers.review`. The adapter imports are
+  :mod:`app.workflows.triggers.invoke`. The adapter imports are
   **deferred to call time**: the adapters pull in the review
   pipeline, which in turn imports :mod:`app.services.github` — a
   module-level import here would cycle through the partially
@@ -215,7 +215,7 @@ async def handleInstallationReposRemoved(ctx: WebhookCtx, session: AsyncSession)
 
 async def handlePullRequestOpened(ctx: WebhookCtx, session: AsyncSession):
     """Forward a ``pull_request`` ``opened`` delivery to the review trigger."""
-    from app.workflows.triggers.review import handlePullRequestOpened as trigger
+    from app.workflows.triggers.invoke import handlePullRequestOpened as trigger
 
     ack = await trigger(
         payload=ctx.payload,
@@ -229,7 +229,7 @@ async def handlePullRequestOpened(ctx: WebhookCtx, session: AsyncSession):
 
 async def handleIssueCommentCreated(ctx: WebhookCtx, session: AsyncSession):
     """Forward an ``issue_comment`` ``created`` delivery to the review trigger."""
-    from app.workflows.triggers.review import handleIssueCommentCreated as trigger
+    from app.workflows.triggers.invoke import handleIssueCommentCreated as trigger
 
     ack = await trigger(ctx.payload, ctx.delivery, session)
     ctx.accepted = ack.accepted

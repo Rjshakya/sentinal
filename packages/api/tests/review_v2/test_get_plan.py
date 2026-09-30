@@ -2,9 +2,9 @@
 
 Covers :func:`app.workflows.review_v2.steps.invoke_planner.readPlanText`
 and :func:`app.workflows.review_v2.steps.invoke_planner.parsePlanText`
-— the value-returning workers behind the ``getPlanStep`` DBOS edge
-(mirroring ``test_list_chunk_files.py``, which tests ``listChunkFiles``
-rather than its DBOS step).
+— the pure helpers behind ``getPlanStep`` (mirroring
+``test_list_chunk_files.py``, which tests ``listChunkFiles`` rather
+than its durable step).
 
 Two tiers:
 
@@ -14,7 +14,7 @@ Two tiers:
   against one real sandbox built the production way —
   :func:`app.services.sandbox.service.createSandboxCtx` →
   :func:`app.services.sandbox.service.getProvider` → ``create()`` —
-  seeded via the backend's own ``aupload_files``. No fakes, no DBOS.
+  seeded via the backend's own ``aupload_files``. No fakes, no durable runtime.
   The sandbox is shared across the whole file (module-scoped fixture,
   one lifetime, killed once at teardown); tests stay isolated through
   unique per-test subdirs.

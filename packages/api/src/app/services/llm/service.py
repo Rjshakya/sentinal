@@ -12,7 +12,7 @@ Entry points:
 - :func:`acquireSharedLimiter` / :func:`releaseSharedLimiter` —
   process-wide shared rate limiters, one per fan-out batch wave.
   Steps reference them by key (serializable — the live limiter never
-  crosses a DBOS boundary); a lookup miss degrades to a fresh
+  crosses a durable boundary); a lookup miss degrades to a fresh
   per-call limiter.
 
 Error contract: **no function in this module raises.** Every expected
@@ -54,10 +54,10 @@ _SHARED_LIMITERS: dict[str, InMemoryRateLimiter] = {}
 """Process-wide shared rate limiters, keyed by an opaque string.
 
 A workflow acquires one limiter per fan-out batch wave and hands each
-step the *key* — never the live object, since DBOS step args must stay
+step the *key* — never the live object, since durable step args must stay
 serializable. The step resolves the shared instance inside
 :func:`createLLMModel`. A lookup miss falls back to a fresh per-call
-limiter, so a DBOS replay on a worker without the registry degrades to
+limiter, so a durable replay on a worker without the registry degrades to
 the old behavior instead of failing. Pure in-memory advisory state:
 never persisted, never crosses a workflow boundary.
 """
@@ -171,7 +171,7 @@ def createLLMModel(
     When ``rateLimiterKey`` names a limiter acquired via
     :func:`acquireSharedLimiter`, the shared instance is used so a whole
     batch wave draws from one smoothed budget; otherwise (or on a
-    registry miss, e.g. a DBOS replay on a fresh worker) a fresh
+    registry miss, e.g. a durable replay on a fresh worker) a fresh
     per-call limiter is built as before.
 
     Returns:

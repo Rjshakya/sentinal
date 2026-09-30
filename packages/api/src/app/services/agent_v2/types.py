@@ -17,7 +17,7 @@ Design notes:
   the sandbox handle), assembled by the ctx factory
   (:func:`app.services.agent_v2.service.createAgentV2Ctx`) at the
   edge. **Not serializable** — it carries a :class:`BaseChatModel`,
-  so it never crosses a DBOS workflow boundary; callers build it per
+  so it never crosses a durable boundary; callers build it per
   run inside their steps.
 - :class:`PlannerContext` is the structured planner output, validated
   by the plan-extractor step via ``with_structured_output``. It is
@@ -106,7 +106,7 @@ class AgentV2Ctx(BaseModel):
 class FileContext(BaseModel):
     """Planner-provided enrichment for one changed file.
 
-    Pure data (DBOS-serializable). Every field is advisory context for
+    Pure data (durable-serializable). Every field is advisory context for
     the file agent — never a review gate. ``file`` keys the join
     against the host-side chunk inventory by exact match.
     """
@@ -171,7 +171,7 @@ class PlannerContext(BaseModel):
 class ChunkRef(BaseModel):
     """One observed chunk: the real code path plus its on-disk diff file.
 
-    Pure data (DBOS-serializable). Both fields are observed in the
+    Pure data (durable-serializable). Both fields are observed in the
     sandbox by the list-chunks step — never recomputed — so dotted-name
     collisions (``a/b.c`` vs ``a.b/c``) and odd paths (spaces, unicode)
     cannot silently point two jobs at one chunk.

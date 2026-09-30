@@ -8,15 +8,15 @@ disabled everywhere — no subagents in v2.
 ## Layout
 
 - `service.py` — entry points: `createAgentV2Ctx` (live model +
-  sandbox deps, never crosses DBOS), `createPlanningAgent` /
-  `createFileReviewAgent`, plus the `submit_plan` tool mechanics
-  (`buildSubmitPlanTool`, closed over the ctx) and `planFilePath`.
-  Owns no prompt wording.
+  sandbox deps, never crosses the durable boundary),
+  `createPlanningAgent` / `createFileReviewAgent`, plus the
+  `submit_plan` tool mechanics (`buildSubmitPlanTool`, closed over
+  the ctx) and `planFilePath`. Owns no prompt wording.
 - `types.py` — the contract: `AgentV2Ctx` (live, edge-only) plus
   the serializable `PlannerContext` / `FileContext` /
   `ChunkInventory` / `FileReviewJob` that cross step boundaries.
-- `errors.py` — `AgentV2BuildError`, returned as a value; DBOS
-  steps translate it into step failures.
+- `errors.py` — `AgentV2BuildError`, returned as a value; workers
+  translate it into step failures.
 - `prompts/` — one function per prompt (`shared`, `planning`,
   `file_review`, `summary`). See its README.
 - `_middleware.py` — private: `NoDelegationMiddleware` strips the

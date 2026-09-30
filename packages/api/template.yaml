@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Sentinel API + durable review
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures: [x86_64]
+    MemorySize: 1024
+    Timeout: 29
+    Environment:
+      Variables:
+        DATABASE_URL: !Sub '{{resolve:secretsmanager:${DbSecret}:SecretString:DATABASE_URL}}'
+        USE_DURABLE: 'true'
+
+Resources:
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile.lambda
+      DockerContext: .
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["main.handler"]
+      Timeout: 29
+      MemorySize: 1024
+      Environment:
+        Variables:
+          REVIEW_OPENED_FUNCTION_NAME: !Ref ReviewOpenedFunction
+          REVIEW_COMMENT_FUNCTION_NAME: !Ref ReviewCommentFunction
+          REPAIR_DURABLE_FUNCTION_NAME: !Ref RepairDurableFunction
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ReviewOpenedFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ReviewCommentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref RepairDurableFunction
+        - SecretsManagerReadWrite
+      Events:
+        Proxy:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+
+  ReviewOpenedFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile.lambda
+      DockerContext: .
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.workflows.durable.opened_handler.reviewOpenedHandler"]
+      Timeout: 900
+      MemorySize: 2048
+      DurableConfig:
+        ExecutionTimeout:
+          Hours: 3
+        RetentionPeriodInDays: 1
+      Policies:
+        - SecretsManagerReadWrite
+        - AWSLambdaBasicDurableExecutionRole
+
+  ReviewCommentFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile.lambda
+      DockerContext: .
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.workflows.durable.comment_handler.reviewCommentHandler"]
+      Timeout: 900
+      MemorySize: 2048
+      DurableConfig:
+        ExecutionTimeout:
+          Hours: 3
+        RetentionPeriodInDays: 1
+      Policies:
+        - SecretsManagerReadWrite
+        - AWSLambdaBasicDurableExecutionRole
+
+  RepairDurableFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile.lambda
+      DockerContext: .
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.workflows.durable.repair_handler.repair_durable_handler"]
+      Timeout: 900
+      MemorySize: 2048
+      DurableConfig:
+        ExecutionTimeout:
+          Hours: 3
+        RetentionPeriodInDays: 1
+      Policies:
+        - SecretsManagerReadWrite
+        - AWSLambdaBasicDurableExecutionRole

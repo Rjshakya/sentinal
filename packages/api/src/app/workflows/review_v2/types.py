@@ -1,43 +1,20 @@
-"""Serializable contract of the review workflow: ctx, input, results.
+"""Serializable contract of the review workflow: input, snapshots, results.
 
-This module owns the models that cross the DBOS boundary, so they are
-plain Pydantic ``BaseModel`` subclasses (``frozen=True``) carrying only
+Plain Pydantic ``BaseModel`` subclasses (``frozen=True``) carrying only
 JSON-serializable data. Ids are **branded types** from
 :mod:`app.utils.branded` (erase at runtime; enforced statically by
-pyright).
-
-Design notes:
-
-- :class:`ReviewWorkflowCtx` — the resolved run environment, built at
-  the edge (the webhook adapter) and passed to
-  :func:`app.workflows.review_v2.workflow.reviewWorkflowV2` next to the
-  input. It carries the per-user :class:`LLMCtx` (from
-  :mod:`app.services.llm`) and the :class:`SandboxCtx` (from
-  :mod:`app.services.sandbox`) — both serializable, so the ctx crosses
-  the workflow boundary as pure data.
-- :class:`ReviewWorkflowInput` — the PR-specific trigger data (ids,
-  SHAs, PR metadata, size stats). The trigger-specific knobs
-  (``postToGithub``, ``diffBaseSha``) live here, not on the ctx.
-- The comment-trigger contract (:class:`CommentTriggerInput`,
-  :class:`ClassifyCommentResult`, :class:`LastReviewSnapshot`) — the
-  typed payload view, the classification outcome, and the previous-run
-  snapshot consumed by
-  :func:`app.workflows.triggers.comment.effectiveDiffBase`.
-- Result projections (:class:`RepoSnapshot`, :class:`ReviewRunResult`,
-  :class:`PostReviewResult`) and the token-usage envelopes mirror the
-  legacy shapes so the persistence layer translates them unchanged.
+pyright). The trigger contract (``CommentTriggerInput`` /
+``ClassifyCommentResult`` / ``LastReviewSnapshot``) lives in
+:mod:`app.workflows.triggers.types` — this module does not duplicate it.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import PRStatus
-from app.services.llm.types import LLMCtx
-from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import (
     CommitId,
     InstallationId,
@@ -49,27 +26,6 @@ from app.utils.branded import (
     UserId,
 )
 from app.utils.schema import ReviewResult
-
-
-class ReviewWorkflowCtx(BaseModel):
-    """Resolved run environment: LLM + sandbox configuration.
-
-    Serialized across the DBOS boundary with :class:`ReviewWorkflowInput`.
-    Assembled at the edge by the webhook adapter from the user's stored
-    ``llm_configs`` row (or settings) and the settings-driven sandbox
-    defaults. Frozen because the workflow never reassigns it — the
-    mutable :class:`SandboxCtx` handle travels as a step return value
-    after the create step fills ``sandboxId``.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    llmCtx: LLMCtx
-    """The run's chat-model configuration (per-user or settings fallback)."""
-
-    sandboxCtx: SandboxCtx
-    """The run's sandbox configuration; ``sandboxId`` is filled by the
-    create-sandbox step and threaded back through the workflow."""
 
 
 class PRSizeStats(TypedDict):
@@ -117,63 +73,6 @@ class ReviewWorkflowInput(BaseModel):
     """
 
 
-class CommentTriggerInput(BaseModel):
-    """Flat, typed view of a verified ``issue_comment`` payload.
-
-    Every field is required; the trigger adapter
-    (:func:`app.workflows.triggers.comment.validateCommentPayload`)
-    returns ``None`` when the raw webhook does not satisfy the
-    pydantic schema, which the caller folds into a
-    ``malformed_payload`` skip.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    delivery: str
-    installationId: InstallationId
-    repoOwner: RepoOwner
-    repoName: RepoName
-    ghRepoId: int
-    defaultBranch: str | None = None
-    prNumber: PRNumber
-    prAuthorLogin: str
-    commenterLogin: str
-    authorAssociation: str
-    commentId: int
-    commentBody: str
-
-
-class ClassifyCommentResult(BaseModel):
-    """Outcome of the pure classification helper.
-
-    ``shouldProceed`` is ``True`` iff every check (action / is_pr /
-    is_self / has_mention / is_authorized) passed. The first failing
-    check sets ``skipReason`` to a stable string the edge can log.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    shouldProceed: bool
-    skipReason: str | None = None
-
-
-class LastReviewSnapshot(BaseModel):
-    """Serializable subset of the latest successful :class:`Review` row.
-
-    Lets the comment trigger decide the git-diff base for an
-    incremental re-review: ``commitId`` is the head SHA the previous
-    run reviewed; ``baseSha`` is the PR base that run started from
-    (kept for observability). Both are the values recorded on the
-    ``review`` lifecycle row, never re-fetched from GitHub.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    commitId: CommitId
-    baseSha: str | None = None
-    createdAt: datetime
-
-
 class RepoSnapshot(BaseModel):
     """Serializable subset of :class:`app.models.repo.Repo`."""
 
@@ -188,7 +87,7 @@ class RepoSnapshot(BaseModel):
 class ReviewLimits(BaseModel):
     """Per-run model/tool call limits for the review agents.
 
-    A Pydantic model (not a dataclass) so it survives DBOS
+    A Pydantic model (not a dataclass) so it survives durable
     serialization across the step boundary.
     """
 
@@ -272,16 +171,12 @@ class TotalUsagesPerPR(TypedDict):
 
 
 __all__ = [
-    "ClassifyCommentResult",
-    "CommentTriggerInput",
     "InputTokenDetails",
-    "LastReviewSnapshot",
     "PRSizeStats",
     "PostReviewResult",
     "RepoSnapshot",
     "ReviewLimits",
     "ReviewRunResult",
-    "ReviewWorkflowCtx",
     "ReviewWorkflowInput",
     "SplitDiffResult",
     "TotalUsages",
