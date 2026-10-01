@@ -13,7 +13,7 @@ resume instead of re-running.
   `comment_handler.py`, `repair_handler.py`), the shared
   `pipeline.py` / `repair_pipeline.py` agent phases, and flat
   `steps/` (one cohesive file per phase). Ids
-  `review-v2:{ghRepo}:{pr}:{sha7}` and `repair:{pr}:{sha7}`.
+  `review-v2-{ghRepo}-{pr}-{sha7}` and `repair-{pr}-{sha7}`.
 - `review_v2/` — the PR review worker library: sandbox/LLM/agent
   workers consumed by `durable/steps/`, plus the workflow input/result
   types and the error hierarchy.

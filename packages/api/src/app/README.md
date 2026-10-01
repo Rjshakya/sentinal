@@ -35,5 +35,5 @@ router (validate + dispatch) → trigger adapter (resolve user/repo)
 - Auth is opt-in per route group: `core/middleware.py::PROTECTED_PREFIXES`.
   The only anonymous I/O surface is the HMAC-verified webhook receiver.
 - Workflow ids are deterministic and encode the domain
-  (`review-v2:{repo_id}:{pr}:{head_sha[:7]}`), so duplicate deliveries
+   (`review-v2-{repo_id}-{pr}-{head_sha[:7]}`), so duplicate deliveries
   dedupe and restarts are safe.

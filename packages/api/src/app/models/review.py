@@ -1,7 +1,7 @@
 """``review`` table — durable per-run record of one review run.
 
 One row per durable execution of the review pipeline, keyed by the
-deterministic execution name (``review-v2:{repo_id}:{pr_number}:{head_sha[:7]}``).
+deterministic execution name (``review-v2-{repo_id}-{pr_number}-{head_sha[:7]}``).
 Mirrors the run lifecycle so the dashboard and analytics can query
 review runs — including failures — without depending on the durable
 execution's own state.

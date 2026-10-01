@@ -15,9 +15,10 @@ checkpointed steps inside the durable handlers.
   `PRPayload` (`None` when malformed).
 - `comment_payload.py` — pure comment gates: `validateCommentPayload`,
   `classifyComment` (`shouldReviewComment`, author/association
-  checks), and `effectiveDiffBase` — the incremental re-review
+  checks), `effectiveDiffBase` — the incremental re-review
   base (last reviewed head) when the head moved since the latest
-  successful run.
+  successful run — and `isHeadAlreadyPosted` — the same-head skip
+  when that run already posted (same head + `githubReviewId` set).
 - `repair.py` — `triggerRepairAfterReview`: follow-up dispatch of
   the repair durable when the review post returns `posted=False`.
 - `types.py` — `PRPayload`, `CommentTriggerInput`,

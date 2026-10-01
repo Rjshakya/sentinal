@@ -153,12 +153,32 @@ def effectiveDiffBase(
     return lastReview.commitId
 
 
+def isHeadAlreadyPosted(
+    *,
+    apiHeadSha: str,
+    lastReview: LastReviewSnapshot | None,
+) -> bool:
+    """True when the last successful run reviewed this head AND posted it.
+
+    Same-head equality alone is not enough: a run can succeed in analysis
+    yet never land on GitHub (terminal post failure + exhausted repair),
+    and a repeat mention is the manual retry lever for that case. The
+    ``githubReviewId`` back-link distinguishes posted from merely reviewed.
+    """
+    return (
+        lastReview is not None
+        and lastReview.commitId == apiHeadSha
+        and lastReview.githubReviewId is not None
+    )
+
+
 __all__ = [
     "REVIEW_MENTION_RE",
     "WRITE_ASSOCIATIONS",
     "classifyComment",
     "commenterIsAuthorized",
     "effectiveDiffBase",
+    "isHeadAlreadyPosted",
     "isPrComment",
     "isSelfComment",
     "shouldReviewComment",

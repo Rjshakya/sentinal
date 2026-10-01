@@ -151,8 +151,8 @@ class EvalReviewResponse(BaseModel):
     """What ``POST /review`` returns on success.
 
     ``workflow_id`` is the deterministic
-    ``review-v2:{repo_id}:{pr_number}:{head_sha[:7]}`` id (plus the eval
-    route's ``:{rand6}`` suffix so repeated eval POSTs re-run instead of
+    ``review-v2-{repo_id}-{pr_number}-{head_sha[:7]}`` id (plus the eval
+    route's ``-{rand6}`` suffix so repeated eval POSTs re-run instead of
     deduping). ``comments`` are the extractor output over the concatenated
     per-file reports, merged by the v2 combine step; ``summary`` is currently
     empty (the v2 base build is comments-only).
@@ -258,7 +258,7 @@ async def trigger_review(
     Validates installation + repo rows (400 when missing), builds a
     synthetic ``opened`` payload the durable parses with the same
     ``extractPrPayload`` path as webhooks, Invokes with a
-    ``:{rand6}``-suffixed execution name so repeated eval POSTs re-run
+    ``-{rand6}``-suffixed execution name so repeated eval POSTs re-run
     instead of deduping, and returns ``202`` immediately. The durable
     flips the ``review`` lifecycle row to SUCCESS/FAILED; fetch it via
     ``GET /review/by-workflow/{workflow_id}``.
@@ -284,7 +284,7 @@ async def trigger_review(
         prNumber=body.pr_number,
         headSha=body.head_sha,
     )
-    execution_name = f"{base_name}:{uuid4().hex[:6]}"
+    execution_name = f"{base_name}-{uuid4().hex[:6]}"
     result = await invokeOpenedDurable(
         function_name=settings.review_opened_function_name
         or settings.review_durable_function_name,

@@ -2,7 +2,7 @@
 
 Webhook → ephemeral sandbox → clone at head → index graph →
 planner + file agents → persist + post inline. One run = one PR
-head SHA; the id `review-v2:{repo}:{pr}:{sha7}` dedupes duplicate
+head SHA; the id `review-v2-{repo}-{pr}-{sha7}` dedupes duplicate
 deliveries to the same durable execution.
 
 ## Mental model

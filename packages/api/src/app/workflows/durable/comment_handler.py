@@ -1,8 +1,9 @@
 """Durable entry point for issue_comment review mentions (linear).
 
-Validates the event once, resolves ctx with early returns, computes the
-incremental diff base, then runs the shared agent phase. No opened
-logic lives here.
+Validates the event once, resolves ctx with early returns, skips when
+the head was already reviewed and posted, computes the incremental diff
+base otherwise, then runs the shared agent phase. No opened logic lives
+here.
 """
 
 from __future__ import annotations
@@ -30,7 +31,10 @@ from app.workflows.durable.steps import (
 )
 from app.workflows.durable.types import CommentDurableEvent, ReviewSkipped
 from app.workflows.review_v2.types import ReviewWorkflowInput
-from app.workflows.triggers.comment_payload import effectiveDiffBase
+from app.workflows.triggers.comment_payload import (
+    effectiveDiffBase,
+    isHeadAlreadyPosted,
+)
 from app.workflows.triggers.types import CommentTriggerInput, LastReviewSnapshot
 
 log = logging.getLogger(__name__)
@@ -117,6 +121,17 @@ def reviewCommentHandler(event: dict, ctx: DurableContext) -> dict:
         config=RETRY_3,
     )
     lastReview = LastReviewSnapshot.model_validate(lastDict) if lastDict else None
+    if isHeadAlreadyPosted(apiHeadSha=headSha, lastReview=lastReview):
+        log.info(
+            "comment: head already posted delivery=%s repo=%s pr=%s head=%s",
+            request.delivery,
+            repo.get("id"),
+            prNumber,
+            headSha[:7],
+        )
+        return ReviewSkipped(
+            delivery=request.delivery, skip_reason="head_already_posted"
+        ).model_dump(mode="json")
     diffBase = effectiveDiffBase(
         apiBaseSha=baseSha, apiHeadSha=headSha, lastReview=lastReview
     )

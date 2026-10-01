@@ -127,6 +127,7 @@ def loadLastSuccessfulReview(_ctx: StepContext, *, input: dict) -> dict | None:
                 commitId=CommitId(row.commit_id),
                 baseSha=row.base_sha,
                 createdAt=row.created_at,
+                githubReviewId=row.github_review_id,
             ).model_dump(mode="json")
 
     return asyncio.run(run())
