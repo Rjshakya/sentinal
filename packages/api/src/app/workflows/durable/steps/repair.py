@@ -444,7 +444,6 @@ def savePublishOutcome(_ctx: StepContext, *, input: dict) -> dict:
                 )
                 for row in rows:
                     row.github_review_id = githubId
-                    await comments.add(row)
             if published.leftComments:
                 await comments.delete(
                     col(CodeComment.id).in_(

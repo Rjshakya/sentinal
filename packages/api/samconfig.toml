@@ -1,0 +1,14 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "sentinel-dev"
+resolve_s3 = true
+s3_prefix = "sentinel-dev"
+profile = "dev"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "AppSecretStore=\"sentinel-dev/app\" DomainName=\"api.reviewpr.app\" AcmCertificateArn=\"arn:aws:acm:us-east-1:331262815962:certificate/39bb9ee0-e5a7-4b3e-bad1-b77af0e7148a\""
+image_repositories = ["ApiFunction=331262815962.dkr.ecr.us-east-1.amazonaws.com/sentineldev1e9ac2a0/apifunction51503098repo", "ReviewOpenedFunction=331262815962.dkr.ecr.us-east-1.amazonaws.com/sentineldev1e9ac2a0/reviewopenedfunction1d36acd5repo", "ReviewCommentFunction=331262815962.dkr.ecr.us-east-1.amazonaws.com/sentineldev1e9ac2a0/reviewcommentfunction8257c160repo", "RepairDurableFunction=331262815962.dkr.ecr.us-east-1.amazonaws.com/sentineldev1e9ac2a0/repairdurablefunction63e5c8f5repo"]
+
+[default.global.parameters]
+region = "us-east-1"

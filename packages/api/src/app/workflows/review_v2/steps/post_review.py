@@ -247,7 +247,6 @@ async def updatePostBacklinksTx(
                 rows = await comments.find_by_ids(commentRowIds)
                 for row in rows:
                     row.github_review_id = str(githubReviewId)
-                    await comments.add(row)
 
             await session.commit()
     except Exception as exc:

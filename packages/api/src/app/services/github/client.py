@@ -16,6 +16,7 @@ from githubkit import GitHub
 from githubkit.auth import AppAuthStrategy
 
 from app.core.config import settings
+from app.core.secrets import app_secrets
 
 github_app: GitHub[AppAuthStrategy] | None = None
 
@@ -24,10 +25,15 @@ def getGithubAppPrivateKey() -> str:
     """Return the App private key PEM.
 
     ``GITHUB_APP_PRIVATE_KEY`` carries the PEM, either base64-encoded
-    or raw with literal ``\\n`` sequences.
+    or raw with literal ``\\n`` sequences. Settings win (local ``.env``
+    runs); on Lambda the env var is absent (4KB env limit) and the key
+    falls back to the ``APP_SECRET_STORE`` JSON secret.
     """
-    raw = settings.github_app_private_key
-    if raw is None:
+    raw: str = settings.github_app_private_key
+    if not raw:
+        fallback = app_secrets().get("GITHUB_APP_PRIVATE_KEY", "")
+        raw = fallback if isinstance(fallback, str) else ""
+    if not raw:
         raise ValueError("No github_app_private_key")
 
     try:

@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[3]
@@ -161,17 +161,21 @@ class Settings(BaseSettings):
 
     aws_access_key_id: str = Field(
         default="",
-        alias="AWS_ACCESS_KEY_ID",
+        validation_alias=AliasChoices(
+            "INDEX_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"
+        ),
         description="AWS access key id (forwarded into the indexing sandbox).",
     )
     aws_secret_access_key: str = Field(
         default="",
-        alias="AWS_SECRET_ACCESS_KEY",
+        validation_alias=AliasChoices(
+            "INDEX_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"
+        ),
         description="AWS secret access key (forwarded into the indexing sandbox).",
     )
     aws_region: str = Field(
         default="",
-        alias="AWS_REGION",
+        validation_alias=AliasChoices("INDEX_AWS_REGION", "AWS_REGION"),
         description="AWS region (forwarded into the indexing sandbox).",
     )
     aws_endpoint_url: str = Field(

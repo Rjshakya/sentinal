@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from uuid import UUID
 
+from sqlmodel import col
+
 from app.core.db import async_session_maker
 from app.models.code_comment import CodeComment
 from app.models.enums import (
@@ -141,18 +143,25 @@ async def persistReviewSummaryTx(
     """
     try:
         async with async_session_maker() as session:
-            summary = ReviewSummary(
-                pr_id=prRowId,
-                review_id=reviewRowId,
-                commit_id=commitId,
-                summary=review.summary,
-                verdict=ReviewVerdict(review.verdict),
-            )
             repo = ReviewSummaryRepository(session=session)
-            await repo.add(summary)
+            # Idempotent retry: a same-run re-insert matches the
+            # (review_id) arbiter and refreshes summary/verdict in
+            # place. Cross-run same-commit conflicts are deliberately
+            # unhandled — production cannot produce them (comment
+            # re-runs skip, opened runs dedupe by execution name).
+            row = await repo.upsert(
+                ReviewSummary(
+                    pr_id=prRowId,
+                    review_id=reviewRowId,
+                    commit_id=commitId,
+                    summary=review.summary,
+                    verdict=ReviewVerdict(review.verdict),
+                ),
+                conflict_on=[col(ReviewSummary.review_id)],
+            )
             await session.commit()
-            await session.refresh(summary)
-            return summary.id
+            await session.refresh(row)
+            return row.id
     except Exception as exc:
         raise persistError(
             f"failed to persist review summary: {type(exc).__name__}: {exc}"
@@ -173,6 +182,13 @@ async def persistCodeCommentsTx(
     """
     try:
         async with async_session_maker() as session:
+            repo = CodeCommentRepository(session=session)
+            if reviewRowId is not None:
+                # Idempotency: a step retry replays to an identical row
+                # set instead of duplicating. Guarded — an unguarded
+                # `review_id == None` would compile to IS NULL and wipe
+                # unrelated null-review rows.
+                await repo.delete(col(CodeComment.review_id) == reviewRowId)
             rows = mapDraftsToCommentRows(
                 prRowId=prRowId,
                 reviewRowId=reviewRowId,
@@ -180,10 +196,9 @@ async def persistCodeCommentsTx(
                 comments=comments,
             )
             if not rows:
+                await session.commit()
                 return []
-            repo = CodeCommentRepository(session=session)
-            for row in rows:
-                await repo.add(row)
+            await repo.add_all(rows)
             await session.flush()
             await session.commit()
             return [row.id for row in rows]
@@ -216,6 +231,11 @@ async def persistReviewUsageTx(
     """
     try:
         async with async_session_maker() as session:
+            repo = ReviewUsageRepository(session=session)
+            if reviewRowId is not None:
+                # Same idempotency rationale as comments: retries must
+                # not double-count token metrics.
+                await repo.delete(col(ReviewUsage.review_id) == reviewRowId)
             row = ReviewUsage(
                 pr_id=prRowId,
                 review_id=reviewRowId,
@@ -232,7 +252,6 @@ async def persistReviewUsageTx(
                 llm_provider=llmProvider,
                 llm_base_url=llmBaseUrl,
             )
-            repo = ReviewUsageRepository(session=session)
             await repo.add(row)
             await session.flush()
             await session.commit()

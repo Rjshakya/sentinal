@@ -71,33 +71,42 @@ async def getUserIdByInstallationId(
     return row.user_id if row is not None else None
 
 
-async def _upsertRepo(
-    session: AsyncSession, *, user_id: str, repoPayload: dict[str, Any]
-) -> str:
-    """Insert-or-fetch a Repo row for one GitHub repo object. Returns repo.id."""
-    github_repo_id = repoPayload["id"]
-    full_name = repoPayload["full_name"]
+def _buildRepoRow(*, user_id: str, repoPayload: dict[str, Any]) -> Repo | None:
+    """Build a transient :class:`Repo` row; ``None`` when the payload is malformed."""
+    github_repo_id = repoPayload.get("id")
+    if not isinstance(github_repo_id, int):
+        return None
+    full_name = repoPayload.get("full_name")
+    if not isinstance(full_name, str) or "/" not in full_name:
+        return None
     owner, _, name = full_name.partition("/")
+    if not owner or not name:
+        return None
 
-    repo = RepoRepository(session=session)
-    existing = await repo.find_by_github_repo_id(github_repo_id)
-    if existing is not None:
-        return existing.id
+    clone_raw = repoPayload.get("clone_url")
+    clone_url: str = (
+        clone_raw
+        if isinstance(clone_raw, str) and clone_raw
+        else f"https://github.com/{full_name}.git"
+    )
+    url_raw = repoPayload.get("html_url")
+    url: str | None = url_raw if isinstance(url_raw, str) else None
+    private_raw = repoPayload.get("private", False)
+    private: bool = private_raw if isinstance(private_raw, bool) else False
+    branch_raw = repoPayload.get("default_branch")
+    default_branch: str | None = branch_raw if isinstance(branch_raw, str) else None
 
-    row = Repo(
+    return Repo(
         id=uuidToStr(),
         user_id=user_id,
         github_repo_id=github_repo_id,
         repo_name=name,
         repo_owner=owner,
-        clone_url=repoPayload.get("clone_url") or f"https://github.com/{full_name}.git",
-        url=repoPayload.get("html_url"),
-        private=repoPayload.get("private", False),
-        default_branch=repoPayload.get("default_branch"),
+        clone_url=clone_url,
+        url=url,
+        private=private,
+        default_branch=default_branch,
     )
-    await repo.add(row)
-    await session.flush()
-    return row.id
 
 
 # --------------------------------------------------------------------------- #
@@ -181,8 +190,28 @@ async def handleInstallationReposAdded(ctx: WebhookCtx, session: AsyncSession):
         ctx.skipReason = "unowned_installation"
         return None
 
+    payload_by_id: dict[int, dict[str, Any]] = {}
     for repoPayload in repositories:
-        await _upsertRepo(session, user_id=user_id, repoPayload=repoPayload)
+        gid = repoPayload.get("id")
+        if isinstance(gid, int) and gid not in payload_by_id:
+            payload_by_id[gid] = repoPayload
+    if not payload_by_id:
+        ctx.accepted = True
+        return None
+
+    repo = RepoRepository(session=session)
+    existing = await repo.find(col(Repo.github_repo_id).in_(list(payload_by_id)))
+    seen: set[int] = {row.github_repo_id for row in existing}
+
+    missing: list[Repo] = []
+    for gid, repoPayload in payload_by_id.items():
+        if gid in seen:
+            continue
+        row = _buildRepoRow(user_id=user_id, repoPayload=repoPayload)
+        if row is not None:
+            missing.append(row)
+    if missing:
+        await repo.add_all(missing)
     await session.commit()
     ctx.accepted = True
     return None
