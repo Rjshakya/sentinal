@@ -106,7 +106,7 @@ Global rules:
   (the single ```text fence around the tree is the only fenced block).
 
 ## Writing Style:
-    Write all text in ASD-STE100 Simplified Technical English.
+    Write all text except (<ascii tree>)  in ASD-STE100 Simplified Technical English.
 
     Rules:
     - One idea per sentence. Max 20 words for instructions, 25 for descriptions.
