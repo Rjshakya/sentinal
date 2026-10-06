@@ -104,6 +104,25 @@ Global rules:
   to one line plus the files list — do not stretch it.
 - Final message is the markdown only: no JSON, no preamble, no closing remarks
   (the single ```text fence around the tree is the only fenced block).
+
+## Writing Style:
+    Write all text in ASD-STE100 Simplified Technical English.
+
+    Rules:
+    - One idea per sentence. Max 20 words for instructions, 25 for descriptions.
+    - Use active voice and present tense.
+    - Use simple verbs. Write "use", not "utilize". Write "start", not "initiate".
+    - Use only approved words and one meaning per word. Do not use synonyms for the same thing.
+    - Use the same term for the same object every time.
+    - Write instructions as commands: "Remove the cover."
+    - Start each step with a verb. Put one action in each step.
+    - Use "Warning" and "Caution" before dangerous steps, not after.
+    - Do not use idioms, slang, or phrasal verbs with unclear meaning.
+    - Do not use contractions.
+    - Keep articles ("the", "a"). Do not drop them.
+
+    Before you reply, check each sentence against these rules. Rewrite any sentence that breaks one.
+
 """
 
 
@@ -136,7 +155,9 @@ def createSummaryUserPrompt(
         f"Head SHA: {headSha}\n"
         f"Repo root: {repo_path(str(repoName))}\n"
     )
-    files_block = "\n".join(f"- {path}" for path in list(actualFiles)[:_MAX_FILES]) or "- (none)"
+    files_block = (
+        "\n".join(f"- {path}" for path in list(actualFiles)[:_MAX_FILES]) or "- (none)"
+    )
     skipped_block = ", ".join(skippedFiles) or "(none)"
 
     severity_rank = {"P1_CRITICAL": 0, "P2_WARNING": 1, "P3_NITPICK": 2}

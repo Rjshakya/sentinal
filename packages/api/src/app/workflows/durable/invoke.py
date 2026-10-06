@@ -29,6 +29,7 @@ def invokeEventSync(*, functionName: str, executionName: str, payload: dict) -> 
     client = boto3.client("lambda")
     client.invoke(
         FunctionName=functionName,
+        Qualifier="$LATEST",
         InvocationType="Event",
         Payload=json.dumps(payload).encode("utf-8"),
         DurableExecutionName=executionName,
