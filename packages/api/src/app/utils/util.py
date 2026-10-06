@@ -1,11 +1,8 @@
 """Single source of truth for the in-sandbox layout.
 
-Both the host-side orchestrator (``app.services.indexing`` /
-``app.services.retrieval``) and the in-sandbox scripts import this
-module. The host copy is uploaded to the sandbox at
-``<sandbox_home>/<workspace_name>/context/utils.py`` by
-:meth:`app.services.indexing.upload_scripts`, so the same constants are
-valid on both sides.
+Both the host-side orchestrator (``app.workflows.review_v2``) and the
+in-sandbox scripts import this module, so the same constants are valid
+on both sides.
 
 Layout::
 

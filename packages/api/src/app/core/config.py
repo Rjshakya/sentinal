@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[3]
@@ -145,49 +145,6 @@ class Settings(BaseSettings):
         "Forwarded into the sandbox via the step's ``envs=`` kwarg — "
         "it never has to live in the API process env. Leave empty to "
         "disable indexing-dependent routes.",
-    )
-
-    # --- Indexing pipeline ---
-    index_s3_bucket: str = Field(
-        default="",
-        description="S3 bucket holding the LanceDB vector datasets "
-        "(``s3://<bucket>/<prefix>/<owner>/<repo>``). Required for "
-        ":attr:`indexing_configured`.",
-    )
-    index_s3_prefix: str = Field(
-        default="sentinel/lance",
-        description="Key prefix under the S3 bucket for LanceDB datasets.",
-    )
-
-    aws_access_key_id: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "INDEX_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"
-        ),
-        description="AWS access key id (forwarded into the indexing sandbox).",
-    )
-    aws_secret_access_key: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "INDEX_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"
-        ),
-        description="AWS secret access key (forwarded into the indexing sandbox).",
-    )
-    aws_region: str = Field(
-        default="",
-        validation_alias=AliasChoices("INDEX_AWS_REGION", "AWS_REGION"),
-        description="AWS region (forwarded into the indexing sandbox).",
-    )
-    aws_endpoint_url: str = Field(
-        default="",
-        alias="AWS_ENDPOINT_URL",
-        description="AWS endpoint URL for non-AWS S3 (MinIO, R2, etc.); "
-        "forwarded into the indexing sandbox.",
-    )
-    aws_session_token: str = Field(
-        default="",
-        alias="AWS_SESSION_TOKEN",
-        description="Optional AWS session token for temporary credentials.",
     )
 
     # --- LLM (review agent) ---
@@ -353,31 +310,6 @@ class Settings(BaseSettings):
             self.workos_api_key
             and self.workos_client_id
             and self.workos_cookie_password
-        )
-
-    @property
-    def indexing_configured(self) -> bool:
-        """True when the indexing pipeline can run end-to-end.
-
-        Requires:
-
-        - An OpenAI key (for the in-sandbox embedding function).
-        - A configured sandbox provider (clone + chunking).
-        - An S3 bucket (``INDEX_S3_BUCKET``) with full AWS credentials
-          (``AWS_ACCESS_KEY_ID`` + ``AWS_SECRET_ACCESS_KEY`` +
-          ``AWS_REGION`` + ``AWS_ENDPOINT_URL``) so
-          :func:`app.services.indexing.steps.run_index.resolve_index_env`
-          can forward them into the in-sandbox ingestion script. Missing
-          any of those raises ``IndexingConfigError`` at step time.
-        """
-        return bool(
-            self.openai_api_key
-            and self.sandbox_configured
-            and self.index_s3_bucket
-            and self.aws_access_key_id
-            and self.aws_secret_access_key
-            and self.aws_region
-            and self.aws_endpoint_url
         )
 
     @property

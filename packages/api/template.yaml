@@ -14,6 +14,10 @@ Parameters:
     Type: String
     Default: arn:aws:acm:us-east-1:331262815962:certificate/39bb9ee0-e5a7-4b3e-bad1-b77af0e7148a
     Description: ACM certificate ARN in us-east-1 covering DomainName.
+  SecretStoreRegion:
+    Type: String
+    Default: us-east-1
+    Description: AWS region of the APP_SECRET_STORE secret (read at run time by app.core.secrets).
 
 Globals:
   Function:
@@ -35,6 +39,7 @@ Globals:
         # (e.g. GITHUB_APP_PRIVATE_KEY) are fetched at run time via
         # app.core.secrets to stay under Lambda's 4KB env limit.
         APP_SECRET_STORE: !Ref AppSecretStore
+        SECRET_STORE_REGION: !Ref SecretStoreRegion
         # --- WorkOS auth ---
         WORKOS_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:WORKOS_API_KEY}}'
         WORKOS_CLIENT_ID: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:WORKOS_CLIENT_ID}}'
@@ -58,13 +63,8 @@ Globals:
         E2B_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:E2B_API_KEY}}'
         E2B_TEMPLATE: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:E2B_TEMPLATE}}'
         DAYTONA_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:DAYTONA_API_KEY}}'
-        # --- embeddings / indexing ---
+        # --- embeddings (keys used by the in-sandbox codegraph pipeline) ---
         OPENAI_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:OPENAI_API_KEY}}'
-        INDEX_S3_BUCKET: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:INDEX_S3_BUCKET}}'
-        INDEX_AWS_ACCESS_KEY_ID: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:AWS_ACCESS_KEY_ID}}'
-        INDEX_AWS_SECRET_ACCESS_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:AWS_SECRET_ACCESS_KEY}}'
-        INDEX_AWS_REGION: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:AWS_REGION}}'
-        AWS_ENDPOINT_URL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:AWS_ENDPOINT_URL}}'
         # --- observability (no-op until the new instrument lands; kept for parity) ---
         TRACELOOP_BASE_URL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_BASE_URL}}'
         TRACELOOP_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_API_KEY}}'
