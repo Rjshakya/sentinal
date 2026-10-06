@@ -9,8 +9,8 @@ reverse.
 - `config.py` — `Settings(BaseSettings)` loaded from the monorepo-root
   `.env`, plus the `settings` singleton. Groups: server, WorkOS,
   sandbox, LLM (`llm_model` as a `"provider:model"` string),
-  GitHub App, DBOS, webhook secret, telemetry. `*_configured`
-  properties are the 503 gates for routes.
+  GitHub App, durable function names, webhook secret, telemetry.
+  `*_configured` properties are the 503 gates for routes.
 - `db.py` — async engine + `async_session_maker`, the `get_session`
   FastAPI dependency, and `create_db_and_tables` (greenfield-dev
   convenience; Alembic owns real schema changes).

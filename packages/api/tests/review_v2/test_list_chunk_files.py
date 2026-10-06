@@ -2,7 +2,7 @@
 
 Calls :func:`app.workflows.review_v2.steps.list_chunks.listChunkFiles`
 against a real E2B sandbox seeded with real ``splitted_diffs/`` chunk
-files — no mocks, no DBOS, no repo checkout. One sandbox is shared
+files — no mocks, no durable runtime, no repo checkout. One sandbox is shared
 across the whole file (module-scoped fixture, killed once at teardown);
 cases stay isolated through unique ``(pr_number, head_sha)`` dirs.
 

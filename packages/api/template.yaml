@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Sentinel API + durable review
+
+Parameters:
+  AppSecretStore:
+    Type: String
+    Description: Name or ARN of the SecretsManager secret holding the app JSON (DATABASE_URL, GITHUB_*, LLM_*, E2B_*, OPENAI_API_KEY, ...)
+  DomainName:
+    Type: String
+    Default: api.reviewpr.app
+    Description: Custom domain served by the regional HTTP API in front of ApiFunction.
+  AcmCertificateArn:
+    Type: String
+    Default: arn:aws:acm:us-east-1:331262815962:certificate/39bb9ee0-e5a7-4b3e-bad1-b77af0e7148a
+    Description: ACM certificate ARN in us-east-1 covering DomainName.
+  SecretStoreRegion:
+    Type: String
+    Default: us-east-1
+    Description: AWS region of the APP_SECRET_STORE secret (read at run time by app.core.secrets).
+
+Globals:
+  Function:
+    # Runtime: python3.13
+    # Architectures: [x86_64]
+    MemorySize: 1024
+    Timeout: 29
+    Environment:
+      Variables:
+        # --- server ---
+        PORT: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:PORT}}'
+        APP_ENV: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:APP_ENV}}'
+        APP_NAME: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:APP_NAME}}'
+        DATABASE_URL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:DATABASE_URL}}'
+        CORS_ORIGINS: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:CORS_ORIGINS}}'
+        API_PREFIX: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:API_PREFIX}}'
+        USE_DURABLE: 'true'
+        # Name of the Secrets Manager JSON secret. Large values
+        # (e.g. GITHUB_APP_PRIVATE_KEY) are fetched at run time via
+        # app.core.secrets to stay under Lambda's 4KB env limit.
+        APP_SECRET_STORE: !Ref AppSecretStore
+        SECRET_STORE_REGION: !Ref SecretStoreRegion
+        # --- WorkOS auth ---
+        WORKOS_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:WORKOS_API_KEY}}'
+        WORKOS_CLIENT_ID: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:WORKOS_CLIENT_ID}}'
+        WORKOS_REDIRECT_URI: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:WORKOS_REDIRECT_URI}}'
+        WORKOS_COOKIE_PASSWORD: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:WORKOS_COOKIE_PASSWORD}}'
+        FRONTEND_URL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:FRONTEND_URL}}'
+        # --- GitHub App ---
+        GITHUB_APP_ID: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:GITHUB_APP_ID}}'
+        GITHUB_APP_CLIENT_ID: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:GITHUB_APP_CLIENT_ID}}'
+        GITHUB_APP_CLIENT_SECRET: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:GITHUB_APP_CLIENT_SECRET}}'
+        GITHUB_APP_SLUG: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:GITHUB_APP_SLUG}}'
+        GITHUB_WEBHOOK_SECRET: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:GITHUB_WEBHOOK_SECRET}}'
+        GITHUB_INSTALL_STATE_SECRET: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:GITHUB_INSTALL_STATE_SECRET}}'
+        # --- LLM ---
+        LLM_MODEL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:LLM_MODEL}}'
+        LLM_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:LLM_API_KEY}}'
+        LLM_BASE_URL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:LLM_BASE_URL}}'
+        LLM_DEFAULT_HEADERS: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:LLM_DEFAULT_HEADERS}}'
+        # --- sandbox ---
+        SANDBOX_PROVIDER: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:SANDBOX_PROVIDER}}'
+        E2B_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:E2B_API_KEY}}'
+        E2B_TEMPLATE: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:E2B_TEMPLATE}}'
+        DAYTONA_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:DAYTONA_API_KEY}}'
+        # --- embeddings (keys used by the in-sandbox codegraph pipeline) ---
+        OPENAI_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:OPENAI_API_KEY}}'
+        # --- observability (no-op until the new instrument lands; kept for parity) ---
+        TRACELOOP_BASE_URL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_BASE_URL}}'
+        TRACELOOP_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_API_KEY}}'
+        TRACELOOP_TRACE_CONTENT: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_TRACE_CONTENT}}'
+        TRACELOOP_DISABLE_BATCH: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_DISABLE_BATCH}}'
+
+Resources:
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile.lambda
+      DockerContext: .
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["main.handler"]
+      Timeout: 29
+      MemorySize: 1024
+      Environment:
+        Variables:
+          REVIEW_OPENED_FUNCTION_NAME: !Ref ReviewOpenedFunction
+          REVIEW_COMMENT_FUNCTION_NAME: !Ref ReviewCommentFunction
+          REPAIR_DURABLE_FUNCTION_NAME: !Ref RepairDurableFunction
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ReviewOpenedFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ReviewCommentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref RepairDurableFunction
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+      FunctionUrlConfig:
+        AuthType: NONE
+      Events:
+        Proxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ApiHttpApi
+            Path: /{proxy+}
+            Method: ANY
+
+  ReviewOpenedFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile.lambda
+      DockerContext: .
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.workflows.durable.opened_handler.reviewOpenedHandler"]
+      Timeout: 900
+      MemorySize: 2048
+      DurableConfig:
+        ExecutionTimeout: 10800
+        RetentionPeriodInDays: 1
+      Policies:
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicDurableExecutionRolePolicy
+
+  # Regional HTTP API in front of ApiFunction. REGIONAL endpoints do
+  # not use CloudFront, and API Gateway routes by Host instead of
+  # rejecting foreign Host headers (unlike Lambda Function URLs).
+  ApiHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Description: Sentinel API gateway for api.reviewpr.app
+
+  # Explicit domain resources (instead of SAM's Domain shorthand) so
+  # the regional target name is available as a stack output for the
+  # Cloudflare CNAME.
+  ApiDomainName:
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: !Ref DomainName
+      DomainNameConfigurations:
+        - EndpointType: REGIONAL
+          CertificateArn: !Ref AcmCertificateArn
+  ApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Properties:
+      DomainName: !Ref ApiDomainName
+      ApiId: !Ref ApiHttpApi
+      Stage: $default
+
+  ReviewCommentFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile.lambda
+      DockerContext: .
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.workflows.durable.comment_handler.reviewCommentHandler"]
+      Timeout: 900
+      MemorySize: 2048
+      DurableConfig:
+        ExecutionTimeout: 10800
+        RetentionPeriodInDays: 1
+      Policies:
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicDurableExecutionRolePolicy
+
+  RepairDurableFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile.lambda
+      DockerContext: .
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.workflows.durable.repair_handler.repair_durable_handler"]
+      Timeout: 900
+      MemorySize: 2048
+      DurableConfig:
+        ExecutionTimeout: 10800
+        RetentionPeriodInDays: 1
+      Policies:
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicDurableExecutionRolePolicy
+
+Outputs:
+  ApiFunctionUrl:
+    Description: Direct Lambda Function URL (origin; prefer the custom domain).
+    Value: !GetAtt [ApiFunctionUrl, FunctionUrl]
+  ApiRegionalTarget:
+    Description: Regional API Gateway target for the api CNAME in Cloudflare (DNS-only, grey cloud).
+    Value: !GetAtt ApiDomainName.RegionalDomainName
+  ApiCustomUrl:
+    Description: Public API base URL once the api CNAME is live.
+    Value: !Sub 'https://${DomainName}'

@@ -10,12 +10,12 @@ identifiers — the same convention as :mod:`app.services.sandbox`.
 
 Design notes:
 
-- :class:`LLMCtx` is a plain Pydantic model (DBOS-serializable) so it
+- :class:`LLMCtx` is a plain Pydantic model (durable-serializable) so it
   can cross workflow boundaries. It carries every knob the chat-model
   factory needs — model, key, base URL, headers, retries, rate limit —
   and nothing else.
 - Ids and keys are **branded types** (``NewType`` over ``str``): they
-  erase to ``str`` at runtime (Pydantic validation and DBOS
+  erase to ``str`` at runtime (Pydantic validation and durable
   serialization are unaffected) but pyright enforces the branding
   statically, so a bare ``str`` cannot accidentally flow into a ctx.
 - :class:`LLMContextError` is the error variant of the

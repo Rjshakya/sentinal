@@ -1,21 +1,14 @@
 """Post the review to GitHub and update the DB back-links.
 
-This supersedes the legacy ``app.services.github.workflow``
-(``post_review_to_github_workflow``, removed) with two pieces inside
-the main workflow:
-
-- :func:`postReviewStep` — the **DBOS step edge**: converts the
-  :class:`ReviewResult` into the GitHub body, posts it via the
-  refactored :mod:`app.services.github.pr` sub-service
+- :func:`postReviewStep` — converts the :class:`ReviewResult` into the
+  GitHub body, posts it via :mod:`app.services.github.pr`
   (:func:`createPRCtx` + :func:`postReview`), and fetches the posted
   comment ids. Retryable failures (429 / 5xx) raise
-  :class:`TransientReviewStepFailure` so DBOS retries the step; a
-  final failure (4xx) **returns** a ``posted=False`` result — the
-  local review still completes, so the workflow does not fail over
-  it.
-- :func:`updatePostBacklinksTx` — the **DBOS transaction edge**: writes
-  ``review.github_review_id`` and the per-comment
-  ``code_comments.github_comment_id`` back-links.
+  :class:`TransientReviewStepFailure`; a final failure (4xx)
+  **returns** a ``posted=False`` result — the local review still
+  completes, so the workflow does not fail over it.
+- :func:`updatePostBacklinksTx` — writes ``review.github_review_id``
+  and the per-comment back-links.
 
 Posting is best-effort and never fails the review; the post retries
 happen inside the step without re-running the LLM.
@@ -24,9 +17,6 @@ happen inside the step without re-running the LLM.
 from __future__ import annotations
 
 import logging
-
-from dbos import DBOS
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.repositories.code_comment import CodeCommentRepository
@@ -44,7 +34,6 @@ from app.workflows.review_v2.errors import (
     ReviewStepFailure,
     TransientReviewStepFailure,
     isRetryableStatusCode,
-    shouldRetry,
 )
 from app.workflows.review_v2.types import (
     PostReviewResult,
@@ -101,7 +90,7 @@ def buildPostReviewDraft(
     )
 
 
-async def _listReviewCommentIds(
+async def listReviewCommentIds(
     prCtx: PRCtx,
     *,
     repoOwner: str,
@@ -143,24 +132,17 @@ async def _listReviewCommentIds(
     return ids
 
 
-@DBOS.step(
-    retries_allowed=True,
-    max_attempts=3,
-    should_retry=shouldRetry,
-    backoff_rate=2,
-)
 async def postReviewStep(
     *,
     repo: RepoSnapshot,
     input: ReviewWorkflowInput,
     review: ReviewResult,
 ) -> PostReviewResult:
-    """Durable step: post the review (verdict + summary + comments) to
-    GitHub.
+    """Post the review (verdict + summary + comments) to GitHub.
 
     Raises:
-        TransientReviewStepFailure: GitHub returned 429 / 5xx — DBOS
-            retries the step without re-running the LLM.
+        TransientReviewStepFailure: GitHub returned 429 / 5xx — the
+            SDK retries the step without re-running the LLM.
     Returns:
         ``posted=True`` with the GitHub ids, or ``posted=False`` with
         the error for terminal (4xx) failures — the local review
@@ -211,7 +193,7 @@ async def postReviewStep(
         return PostReviewResult(posted=False, error=result.message)
 
     githubReviewId = result.id
-    commentIds = await _listReviewCommentIds(
+    commentIds = await listReviewCommentIds(
         prCtx,
         repoOwner=repo.repoOwner,
         repoName=repo.repoName,
@@ -232,58 +214,6 @@ async def postReviewStep(
     )
 
 
-async def updatePostBacklinks(
-    session: AsyncSession,
-    *,
-    reviewRowId: ReviewRowId,
-    reviewSummaryId: str,
-    commentRowIds: list[str],
-    githubReviewId: int,
-    repoId: RepoId,
-    prNumber: PRNumber,
-) -> None | PersistError:
-    """Write the GitHub back-links onto the local rows.
-
-    ``review.github_review_id`` records the posted review; the
-    persisted comment rows (in insertion order) get
-    ``code_comments.github_comment_id`` from the posted comment ids
-    (GitHub returns them in posted order).
-    """
-    try:
-        reviews = ReviewRepository(session=session)
-        review = await reviews.get(reviewRowId)
-
-        if review is not None:
-            review.github_review_id = str(githubReviewId)
-            await reviews.add(review)
-
-        summaries = ReviewSummaryRepository(session=session)
-        reviewSummary = await summaries.get(reviewSummaryId)
-
-        if reviewSummary is not None:
-            reviewSummary.github_review_id = str(githubReviewId)
-            await summaries.add(reviewSummary)
-
-        if commentRowIds:
-            comments = CodeCommentRepository(session=session)
-            rows = await comments.find_by_ids(commentRowIds)
-
-            for row in rows:
-                row.github_review_id = str(githubReviewId)
-                await comments.add(row)
-
-        await session.commit()
-        return None
-
-    except Exception as exc:
-        return PersistError(
-            message=f"failed to update post back-links: {type(exc).__name__}: {exc}",
-            repoId=repoId,
-            prNumber=prNumber,
-        )
-
-
-@DBOS.step()
 async def updatePostBacklinksTx(
     *,
     reviewRowId: ReviewRowId,
@@ -293,32 +223,46 @@ async def updatePostBacklinksTx(
     repoId: RepoId,
     prNumber: PRNumber,
 ) -> None:
-    """Durable DBOS transaction: persist the GitHub back-links.
+    """Write the GitHub review id back onto the local rows.
 
     Raises:
-        ReviewStepFailure: the back-link rows could not be written
-            (wrapping a :class:`PersistError`).
+        ReviewStepFailure: the back-link rows could not be written.
     """
-    async with async_session_maker() as session:
+    try:
+        async with async_session_maker() as session:
+            reviews = ReviewRepository(session=session)
+            review = await reviews.get(reviewRowId)
+            if review is not None:
+                review.github_review_id = str(githubReviewId)
+                await reviews.add(review)
 
-        result = await updatePostBacklinks(
-            session,
-            reviewRowId=reviewRowId,
-            reviewSummaryId=reviewSummaryId,
-            commentRowIds=commentRowIds,
-            githubReviewId=githubReviewId,
-            repoId=repoId,
-            prNumber=prNumber,
-        )
+            summaries = ReviewSummaryRepository(session=session)
+            reviewSummary = await summaries.get(reviewSummaryId)
+            if reviewSummary is not None:
+                reviewSummary.github_review_id = str(githubReviewId)
+                await summaries.add(reviewSummary)
 
-        if result is not None:
-            raise ReviewStepFailure(result)
+            if commentRowIds:
+                comments = CodeCommentRepository(session=session)
+                rows = await comments.find_by_ids(commentRowIds)
+                for row in rows:
+                    row.github_review_id = str(githubReviewId)
+
+            await session.commit()
+    except Exception as exc:
+        raise ReviewStepFailure(
+            PersistError(
+                message=f"failed to update post back-links: {type(exc).__name__}: {exc}",
+                repoId=repoId,
+                prNumber=prNumber,
+            )
+        ) from exc
 
 
 __all__ = [
     "buildPostReviewDraft",
     "convertToGithubComments",
+    "listReviewCommentIds",
     "postReviewStep",
-    "updatePostBacklinks",
     "updatePostBacklinksTx",
 ]

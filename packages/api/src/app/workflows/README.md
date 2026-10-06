@@ -1,25 +1,28 @@
-# workflows — DBOS durable pipelines + webhook adapters
+# workflows — durable pipelines + webhook adapters
 
-Every long-running unit of work is a DBOS workflow: each I/O step
+Every long-running unit of work is a durable execution: each I/O step
 is checkpointed, transient failures retry per-step, and restarts
-resume instead of re-running. `__init__.py` documents the
-types/errors/workflow/steps layout shared by all pipelines.
+resume instead of re-running.
 
 ## Layout
 
-- `triggers/` — webhook-edge adapters. Validate the delivery,
-  resolve user/repo, and dispatch a workflow under a deterministic
-  id. See its README.
-- `review_v2/` — the PR review pipeline: ephemeral sandbox →
-  clone → codegraph index → planner + per-file agents → persist +
-  inline GitHub post. Id `review-v2:{repo_id}:{pr}:{head_sha[:7]}`.
-- `repair_and_publish/` — follow-up pipeline that repairs an
-  unpublished review draft and publishes it. Id
-  `repair:{pr}:{commit}:{rand7}:publish`.
+- `triggers/` — webhook-edge adapters. Pure payload extraction plus one
+  best-effort Invoke per delivery (`invoke.py` for review, `repair.py`
+  for the repair follow-up). See its README.
+- `durable/` — the durable handlers (`opened_handler.py`,
+  `comment_handler.py`, `repair_handler.py`), the shared
+  `pipeline.py` / `repair_pipeline.py` agent phases, and flat
+  `steps/` (one cohesive file per phase). Ids
+  `review-v2-{ghRepo}-{pr}-{sha7}` and `repair-{pr}-{sha7}`.
+- `review_v2/` — the PR review worker library: sandbox/LLM/agent
+  workers consumed by `durable/steps/`, plus the workflow input/result
+  types and the error hierarchy.
 
 ## Notes
 
 - Routers only validate + dispatch; triggers only adapt + dispatch.
   All domain logic lives in the workflow steps and services.
 - Deterministic ids dedupe duplicate deliveries (same head SHA =
-  same workflow).
+  same review execution; same commit = same repair execution).
+- When the review post returns `posted=False` with comments to show,
+  the pipeline dispatches the repair durable best-effort.

@@ -32,4 +32,4 @@ caller-owned `AsyncSession`.
 ## Notes
 
 - Every method takes `session` explicitly; transactions and commits
-  belong to the caller (router / DBOS step), never the repository.
+  belong to the caller (router / durable step), never the repository.

@@ -3,58 +3,17 @@
 Two layers:
 
 **Error values** (subclasses of :class:`ReviewStepError`) — plain
-Pydantic models *returned* (never raised) by the pure step functions.
-Each carries a ``retryable`` flag plus the branded run identity so
-the DBOS step edge can decide what to do without re-reading anything.
+Pydantic models carrying a ``retryable`` flag plus the branded run
+identity. Workers raise them wrapped in a step exception; the durable
+step retries transient failures per its ``StepConfig``.
 
 **Raised step exceptions** (:class:`ReviewStepFailure` /
-:class:`TransientReviewStepFailure`) — the only exceptions the DBOS
-step edges raise. They wrap the error value (:attr:`ReviewStepFailure.error`)
-so ``should_retry`` predicates discriminate on
-:class:`TransientReviewStepFailure` and the workflow's error-context
-builder can unwrap the underlying value.
+:class:`TransientReviewStepFailure`) — the only exceptions workers
+raise. They wrap the error value (:attr:`ReviewStepFailure.error`).
 
 The module also owns :func:`isLlmRetryError` (the provider-agnostic
 LLM transient-failure classifier) and :func:`isRetryableStatusCode`
 (GitHub/HTTP transient-status classifier), both pure.
-
-V2-specific values:
-
-- :class:`ChunkListError` — the chunk inventory (``ls`` + header
-  parse over ``splitted_diffs/``) failed. Transient: the sandbox
-  reconnect or the runner dropped the command.
-- :class:`PlannerStepError` — the planning agent (research) or the
-  plan extractor failed. ``phase`` records which half. A research
-  failure on transient LLM/sandbox causes is retryable; an
-  extraction schema mismatch is a business outcome — the workflow
-  degrades the planner to an empty :class:`PlannerContext` instead
-  of failing the run.
-- :class:`FileLaneError` — one per-file review agent failed.
-  ``file`` names the failing file (paths, not a fixed lane enum —
-  the fan-out is N-wide); ``retryable`` mirrors whether the
-  underlying failure was transient so the step edge can retry that
-  file alone.
-- :class:`CloneV2Error` — the v2 clone script failed (workspace prep
-  or ``git clone`` non-zero). Business outcome — the repo cannot be
-  cloned, the run fails.
-- :class:`CloneV2TransientError` — token mint / sandbox reconnect /
-  runner dropout around the clone. Transient — DBOS retries.
-- :class:`CheckoutError` — the PR-head checkout (or its verify gate)
-  failed. **Final, never degraded**: a review is only produced from
-  a fully-known state (PR tree + PR diff), so the workflow fails
-  instead of reviewing a half-built tree.
-- :class:`CheckoutTransientError` — runner dropout / timeout during
-  the checkout script. Transient — DBOS retries.
-- :class:`V2AgentsError` — no usable agent output at all (planner
-  degraded AND every file lane failed, or the file fan-out was
-  empty-handed). Raised by the workflow body (wrapped in
-  :class:`ReviewStepFailure`) after each lane exhausted its own step
-  retries.
-- :class:`SummaryStepError` — the summary synthesizer (the cheap
-  structured-output call over planner context + findings) failed.
-  Transient LLM failures carry ``retryable=True``; a schema mismatch
-  or model-build failure is a business outcome — the workflow
-  degrades to an empty summary instead of failing the run.
 """
 
 from __future__ import annotations
@@ -85,8 +44,8 @@ AgentLane = Literal["summarizer", "comments"]
 class ReviewStepError(BaseModel):
     """Base error value returned by pure step functions.
 
-    ``retryable=True`` means the DBOS step edge should raise
-    :class:`TransientReviewStepFailure` so DBOS retries the step;
+    ``retryable=True`` means the durable step should raise
+    :class:`TransientReviewStepFailure` so the SDK retries the step;
     ``retryable=False`` means a business outcome that propagates as a
     :class:`ReviewStepFailure` (or is handled by the workflow).
     """
@@ -117,22 +76,6 @@ class SandboxCreateError(ReviewStepError):
 
 class SandboxConnectError(ReviewStepError):
     """Reconnect to the run's sandbox by id failed. Transient."""
-
-    retryable: bool = True
-
-
-class CloneError(ReviewStepError):
-    """``git clone`` (or the PR-head ref fetch) failed.
-
-    Business outcome: bad token, missing repo, transport error.
-    """
-
-    exitCode: int | None = None
-    outputTail: str | None = None
-
-
-class CloneTransientError(CloneError):
-    """Token mint / sandbox reconnect / runner dropout. Transient."""
 
     retryable: bool = True
 
@@ -201,7 +144,7 @@ class PostReviewError(ReviewStepError):
 class ChunkListError(ReviewStepError):
     """The ``splitted_diffs/`` inventory could not be listed or parsed.
 
-    Transient: sandbox reconnect / runner dropout — DBOS retries.
+    Transient: sandbox reconnect / runner dropout — the SDK retries the step.
     """
 
     retryable: bool = True
@@ -262,12 +205,6 @@ class CheckoutError(ReviewStepError):
     cause: str | None = None
 
 
-class CheckoutTransientError(CheckoutError):
-    """Runner dropout / timeout during the checkout script. Transient."""
-
-    retryable: bool = True
-
-
 class CodeGraphInstallError(ReviewStepError):
     """``pip install sentinel-codegraph`` failed in the review sandbox.
 
@@ -305,29 +242,16 @@ class SummaryStepError(ReviewStepError):
     """
 
 
-class V2AgentsError(ReviewStepError):
-    """No usable agent output for the run.
-
-    Raised by the workflow body after every lane exhausted its own
-    step retries: the planner degraded (or was skipped) and every
-    file lane failed. Carries the per-file failures and the files
-    that succeeded (empty here by construction).
-    """
-
-    failedFiles: list[FileLaneError]
-    succeededFiles: list[str]
-
-
 # --------------------------------------------------------------------------- #
-# Raised step exceptions (the DBOS edge)                                       #
+# Raised step exceptions                                                        #
 # --------------------------------------------------------------------------- #
 
 
 class ReviewStepFailure(Exception):
-    """Raised by a DBOS step edge for a final (business) error value.
+    """Raised by a worker for a final (business) error value.
 
-    Carries the underlying :class:`ReviewStepError` so the workflow's
-    ``except`` block and error-context builder can unwrap it.
+    Carries the underlying :class:`ReviewStepError` so the pipeline's
+    ``except`` block can record it.
     """
 
     def __init__(self, error: ReviewStepError) -> None:
@@ -336,16 +260,15 @@ class ReviewStepFailure(Exception):
 
 
 class TransientReviewStepFailure(ReviewStepFailure):
-    """Raised by a DBOS step edge for a retryable error value.
+    """Raised by a worker for a retryable error value.
 
-    ``should_retry`` predicates check this type, so DBOS retries the
-    step (``max_attempts`` times with backoff) before the exception
-    propagates to the workflow.
+    The durable step retries the step (``max_attempts`` times with
+    backoff) before the exception propagates to the pipeline.
     """
 
 
 def shouldRetry(exc: BaseException) -> bool:
-    """Shared ``should_retry`` predicate for durable steps."""
+    """True iff the failure is transient (durable step should retry)."""
     return isinstance(exc, TransientReviewStepFailure)
 
 
@@ -481,10 +404,7 @@ __all__ = [
     "AgentLane",
     "AgentLaneError",
     "CheckoutError",
-    "CheckoutTransientError",
     "ChunkListError",
-    "CloneError",
-    "CloneTransientError",
     "CloneV2Error",
     "CloneV2TransientError",
     "DiffSplitError",
@@ -504,7 +424,6 @@ __all__ = [
     "SummaryStepError",
     "TransientReviewStepFailure",
     "UpsertPRError",
-    "V2AgentsError",
     "extractRetryAfterSeconds",
     "isLlmRetryError",
     "isRetryableStatusCode",

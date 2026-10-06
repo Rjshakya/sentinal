@@ -130,6 +130,15 @@ class BaseRepository(Generic[T]):
         self.session.add(obj)
         return obj
 
+    async def add_all(self, objs: Sequence[T]) -> list[T]:
+        """Stage every object in ``objs`` on the session; the caller commits.
+
+        Bulk equivalent of :meth:`add` — one call stages the whole
+        collection instead of looping ``await repo.add(row)`` per row.
+        """
+        self.session.add_all(objs)
+        return list(objs)
+
     async def update(
         self,
         *conditions: ColumnElement[bool],

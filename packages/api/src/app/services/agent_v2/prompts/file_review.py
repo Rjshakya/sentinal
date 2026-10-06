@@ -206,6 +206,26 @@ Severity discipline:
   - Never invent features, motivations, side effects, or security findings.
   - Missing tests are not findings. Your job is to judge whether the code is correct and well written. At most, a low-key P3 suggestion for a critical security path — never P2, never a blocker.
 
+## Writing Style:
+
+  Write all your comments in ASD-STE100 Simplified Technical English.
+
+    Rules:
+    - One idea per sentence. Max 20 words for instructions, 25 for descriptions.
+    - Use active voice and present tense.
+    - Use simple verbs. Write "use", not "utilize". Write "start", not "initiate".
+    - Use only approved words and one meaning per word. Do not use synonyms for the same thing.
+    - Use the same term for the same object every time.
+    - Write instructions as commands: "Remove the cover."
+    - Start each step with a verb. Put one action in each step.
+    - Use "Warning" and "Caution" before dangerous steps, not after.
+    - Do not use idioms, slang, or phrasal verbs with unclear meaning.
+    - Do not use contractions.
+    - Keep articles ("the", "a"). Do not drop them.
+
+    Before you reply, check each sentence against these rules. Rewrite any sentence that breaks one.
+
+
 ## Checklist — run before outputting
 
 - [ ] Opened the assigned diffPath file first — not skipped

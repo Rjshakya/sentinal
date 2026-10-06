@@ -1,50 +1,59 @@
-"""Trigger adapter for the repair-and-publish workflow.
+"""Repair follow-up dispatch: review pipeline -> repair durable.
 
-Owns the per-workflow dispatch of
-:func:`app.workflows.repair_and_publish.workflow.repairAndPublishReviewWorkflow`
-so the review comment trigger (and any future caller) dispatches repairs
-through one place instead of reaching into the repair workflow directly.
-
-The dispatch mechanics (deterministic workflow id + ``DBOS.start_workflow_async``)
-stay in :mod:`app.workflows.repair_and_publish.workflow` — this module is
-the trigger edge: it takes the already-resolved run environment
-(:class:`LLMCtx` + :class:`SandboxCtx`) and fires the workflow.
+Called best-effort from the review pipeline when the inline post
+returns ``posted=False``. Pure execution-name build + one Invoke;
+infra failures raise so the caller logs and continues (never fail the
+review over a repair dispatch).
 """
 
 from __future__ import annotations
 
-from app.services.llm.types import LLMCtx
-from app.services.sandbox.types import SandboxCtx
-from app.utils.branded import CommitId, PRNumber
-from app.workflows.repair_and_publish.workflow import (
-    DispatchRepairAndPublishWorkflowInput,
-    dispatchRepairAndPublishWorkflow,
-)
+import logging
+
+from app.core.config import settings
+from app.workflows.durable.invoke import invokeRepairDurable
+from app.workflows.durable.naming import createRepairExecutionName
+from app.workflows.durable.types import DurableRepairEvent
+
+log = logging.getLogger(__name__)
 
 
 async def triggerRepairAfterReview(
     *,
-    llmCtx: LLMCtx,
-    sandboxCtx: SandboxCtx,
-    prNumber: PRNumber,
-    headSha: CommitId,
-) -> str:
-    """Dispatch the repair-and-publish workflow for a reviewed head.
-
-    Returns the deterministic repair workflow id. Never raises for
-    business outcomes; infrastructure failures propagate so the caller
-    (and ultimately GitHub redelivery) observes them.
-    """
-    return await dispatchRepairAndPublishWorkflow(
-        input=DispatchRepairAndPublishWorkflowInput(
-            prNumber=prNumber,
-            commitId=headSha,
-            llmCtx=llmCtx,
-            sandboxCtx=sandboxCtx,
-        )
+    prNumber: int,
+    commitId: str,
+    delivery: str,
+) -> bool:
+    """Invoke the repair durable for an unposted review; True if invoked."""
+    executionName = createRepairExecutionName(
+        prNumber=prNumber,
+        commitId=commitId,
     )
+    result = await invokeRepairDurable(
+        function_name=settings.repair_durable_function_name,
+        event=DurableRepairEvent(
+            delivery=delivery,
+            pr_number=prNumber,
+            commit_id=commitId,
+            execution_name=executionName,
+        ),
+    )
+    if not result.invoked:
+        log.warning(
+            "trigger.repair: invoke failed delivery=%s exec=%s: %s",
+            delivery,
+            executionName,
+            result.error,
+        )
+        return False
+    log.info(
+        "trigger.repair: invoked delivery=%s exec=%s pr=%s commit=%s",
+        delivery,
+        executionName,
+        prNumber,
+        commitId[:7],
+    )
+    return True
 
 
-__all__ = [
-    "triggerRepairAfterReview",
-]
+__all__ = ["triggerRepairAfterReview"]

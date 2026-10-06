@@ -8,6 +8,10 @@ wheels/
 .venv/
 .uv-cache/
 
+.aws-sam
+.pytest_cache
+**/.aws-sam/
+
 # LanceDB test dataset
 packages/api/lance-db/
 

@@ -1,5 +1,4 @@
 import os
-import socket
 from pathlib import Path
 
 from pydantic import Field
@@ -148,45 +147,6 @@ class Settings(BaseSettings):
         "disable indexing-dependent routes.",
     )
 
-    # --- Indexing pipeline ---
-    index_s3_bucket: str = Field(
-        default="",
-        description="S3 bucket holding the LanceDB vector datasets "
-        "(``s3://<bucket>/<prefix>/<owner>/<repo>``). Required for "
-        ":attr:`indexing_configured`.",
-    )
-    index_s3_prefix: str = Field(
-        default="sentinel/lance",
-        description="Key prefix under the S3 bucket for LanceDB datasets.",
-    )
-
-    aws_access_key_id: str = Field(
-        default="",
-        alias="AWS_ACCESS_KEY_ID",
-        description="AWS access key id (forwarded into the indexing sandbox).",
-    )
-    aws_secret_access_key: str = Field(
-        default="",
-        alias="AWS_SECRET_ACCESS_KEY",
-        description="AWS secret access key (forwarded into the indexing sandbox).",
-    )
-    aws_region: str = Field(
-        default="",
-        alias="AWS_REGION",
-        description="AWS region (forwarded into the indexing sandbox).",
-    )
-    aws_endpoint_url: str = Field(
-        default="",
-        alias="AWS_ENDPOINT_URL",
-        description="AWS endpoint URL for non-AWS S3 (MinIO, R2, etc.); "
-        "forwarded into the indexing sandbox.",
-    )
-    aws_session_token: str = Field(
-        default="",
-        alias="AWS_SESSION_TOKEN",
-        description="Optional AWS session token for temporary credentials.",
-    )
-
     # --- LLM (review agent) ---
     # The combined "provider:model" string consumed by
     # langchain.chat_models.init_chat_model. Examples:
@@ -284,18 +244,6 @@ class Settings(BaseSettings):
         ),
     )
 
-    # --- DBOS durable execution ---
-    dbos_executor_id: str = Field(
-        default=socket.gethostname(),
-        description="Unique executor ID for this DBOS process. Must be "
-        "unique per running API instance when self-hosting multiple workers.",
-    )
-
-    dbos_database_url: str = Field(
-        default="postgresql://postgres:postgres@localhost:5432/aicode",
-        description="Async SQLAlchemy database URL.",
-    )
-
     # --- GitHub webhook ---
     github_webhook_secret: str = Field(
         default="",
@@ -312,66 +260,8 @@ class Settings(BaseSettings):
         "blank.",
     )
 
-    # --- Telemetry (OpenLLMetry / traceloop-sdk) ---
-    # Standard OTLP/HTTP trace export. The env vars keep the SDK-native
-    # TRACELOOP_* names so they work even outside this settings object;
-    # the fields are the telemetry_* surface consumed by
-    # app.core.telemetry.
-    telemetry_api_key: str = Field(
-        default="",
-        alias="TRACELOOP_API_KEY",
-        description=(
-            "Bearer token for the OTLP endpoint (Traceloop Cloud or any "
-            "authenticated collector). Leave empty for unauthenticated "
-            "endpoints."
-        ),
-    )
-    telemetry_base_url: str = Field(
-        default="",
-        alias="TRACELOOP_BASE_URL",
-        description=(
-            "OTLP/HTTP endpoint for trace export, e.g. "
-            "'http://localhost:4318'. The SDK appends '/v1/traces'; an "
-            "http(s) prefix selects the OTLP/HTTP protocol. Leave both "
-            "this and TRACELOOP_API_KEY empty to disable telemetry "
-            "entirely (the SDK is never initialised)."
-        ),
-    )
-
-    axiom_dataset: str | None = Field(default="", description="Axiom dataset name")
-
-    axiom_metrics_dataset: str = Field(
-        default="",
-        description="Axiom Metrics-type dataset name for OTel metrics "
-        "ingestion (X-Axiom-Metrics-Dataset header).",
-    )
-
-    telemetry_trace_content: bool = Field(
-        default=True,
-        alias="TRACELOOP_TRACE_CONTENT",
-        description=(
-            "Capture prompts / completions / embeddings as span "
-            "attributes. True (default) gives full visibility into what "
-            "the review agents sent and received; set false to keep "
-            "message bodies out of the traces (metadata only)."
-        ),
-    )
-    telemetry_disable_batch: bool = Field(
-        default=False,
-        alias="TRACELOOP_DISABLE_BATCH",
-        description=(
-            "Send spans immediately instead of batching them. Useful in "
-            "dev to see traces in real time; leave false in production."
-        ),
-    )
-    telemetry_fastapi: bool = Field(
-        default=True,
-        description=(
-            "Instrument the FastAPI app (one HTTP span per request) "
-            "when telemetry is configured. Set false to disable the "
-            "HTTP layer while keeping LLM trace export."
-        ),
-    )
+    # --- Observability (new instrument lands on core/telemetry.py seam) ---
+    # Legacy TRACELOOP_*/OTLP fields removed with traceloop-sdk.
 
     review_e2e_installation_id: str = Field(
         default="",
@@ -420,31 +310,6 @@ class Settings(BaseSettings):
             self.workos_api_key
             and self.workos_client_id
             and self.workos_cookie_password
-        )
-
-    @property
-    def indexing_configured(self) -> bool:
-        """True when the indexing pipeline can run end-to-end.
-
-        Requires:
-
-        - An OpenAI key (for the in-sandbox embedding function).
-        - A configured sandbox provider (clone + chunking).
-        - An S3 bucket (``INDEX_S3_BUCKET``) with full AWS credentials
-          (``AWS_ACCESS_KEY_ID`` + ``AWS_SECRET_ACCESS_KEY`` +
-          ``AWS_REGION`` + ``AWS_ENDPOINT_URL``) so
-          :func:`app.services.indexing.steps.run_index.resolve_index_env`
-          can forward them into the in-sandbox ingestion script. Missing
-          any of those raises ``IndexingConfigError`` at step time.
-        """
-        return bool(
-            self.openai_api_key
-            and self.sandbox_configured
-            and self.index_s3_bucket
-            and self.aws_access_key_id
-            and self.aws_secret_access_key
-            and self.aws_region
-            and self.aws_endpoint_url
         )
 
     @property
@@ -511,17 +376,6 @@ class Settings(BaseSettings):
         return "sentinel:repo:"
 
     @property
-    def telemetry_configured(self) -> bool:
-        """True when OpenLLMetry has an OTLP endpoint or API key to export to.
-
-        Both ``telemetry_api_key`` and ``telemetry_base_url`` default to
-        empty so the module imports safely in tests and the SDK is never
-        initialised (no auto-generated Traceloop-cloud key) unless the
-        operator opts in.
-        """
-        return bool(self.telemetry_api_key or self.telemetry_base_url)
-
-    @property
     def eval_configured(self) -> bool:
         """True when ``POST /api/review`` can be invoked by the eval harness.
 
@@ -529,6 +383,40 @@ class Settings(BaseSettings):
         returns 503 — every other API surface is unaffected.
         """
         return bool(self.eval_api_token)
+
+    # --- AWS Lambda durable execution ---
+    # Webhooks always Invoke the durable functions; local runs without a
+    # function name raise at dispatch time (GitHub redelivers).
+    use_durable: bool = Field(
+        default=True,
+        description="Legacy flag (kept for env compat); durable is always used.",
+    )
+    review_opened_function_name: str = Field(
+        default="",
+        description="Lambda function name/ARN for the opened durable "
+        "execution (e.g. sentinel-review-opened).",
+    )
+    review_comment_function_name: str = Field(
+        default="",
+        description="Lambda function name/ARN for the comment durable "
+        "execution (e.g. sentinel-review-comment).",
+    )
+    review_durable_function_name: str = Field(
+        default="",
+        description="Legacy single review durable name (kept for env compat).",
+    )
+    repair_durable_function_name: str = Field(
+        default="",
+        description="Lambda function name/ARN for the repair-and-publish "
+        "durable execution.",
+    )
+
+    @property
+    def durable_configured(self) -> bool:
+        """True when durable Invoke can run (opened/comment fn names set)."""
+        if self.review_opened_function_name and self.review_comment_function_name:
+            return True
+        return bool(self.review_durable_function_name)
 
 
 settings = Settings()

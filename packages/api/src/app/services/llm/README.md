@@ -26,7 +26,8 @@ The only place in the codebase that calls `init_chat_model`.
   `InMemoryRateLimiter`, base URL, headers, `SecretStr` key) plus
   provider extras (OpenAI Responses API, DeepSeek json_object).
 - `acquireSharedLimiter` / `releaseSharedLimiter` — one limiter
-  per fan-out batch wave, referenced by key (never crosses DBOS).
+  per fan-out batch wave, referenced by key (never crosses the
+  durable boundary).
 
 ## Notes
 

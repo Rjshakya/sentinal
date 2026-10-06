@@ -1,7 +1,7 @@
 """Pure v2 combine helpers: trivial filter, context join, merge.
 
-No I/O, no DBOS, no logging, no raising — every function returns a
-value. The DBOS workflow calls them between durable steps:
+No I/O, no durable runtime, no logging, no raising — every function returns a
+value. The durable execution calls them between durable steps:
 
 - :func:`isTrivialFile` — host-side mechanical-file filter. Replaces
   the planner as the skip authority: lockfiles, minified assets,
@@ -362,11 +362,11 @@ def combineV2Reports(
     )
 
     if plannerUsage:
-        _accumulateV2Usage(totalUsagesPerPr["usages"], dict(plannerUsage))
+        accumulateV2Usage(totalUsagesPerPr["usages"], dict(plannerUsage))
     for path in sorted(researchUsages):
-        _accumulateV2Usage(totalUsagesPerPr["usages"], researchUsages[path])
+        accumulateV2Usage(totalUsagesPerPr["usages"], researchUsages[path])
     if summaryUsage:
-        _accumulateV2Usage(totalUsagesPerPr["usages"], dict(summaryUsage))
+        accumulateV2Usage(totalUsagesPerPr["usages"], dict(summaryUsage))
 
     return CombinedReview(
         review=combineReviewResults(
@@ -377,7 +377,7 @@ def combineV2Reports(
     )
 
 
-def _accumulateV2Usage(
+def accumulateV2Usage(
     buckets: dict[str, TotalUsages],
     usage: dict[str, UsageMetadata],
 ) -> None:
@@ -420,6 +420,7 @@ __all__ = [
     "BuiltJobs",
     "CombinedReview",
     "V2_FANOUT_BATCH_SIZE",
+    "accumulateV2Usage",
     "buildFileReviewJobs",
     "chunkedJobs",
     "coerceFileLaneError",

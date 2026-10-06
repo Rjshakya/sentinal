@@ -1,15 +1,16 @@
 """Reviews routes: surface the caller's review runs from the ``review``
 table, joined with the repo / PR context and the token usage row.
 
-All endpoints are user-scoped: they read ``request.state.user_id`` (set by
-``AuthMiddleware``) and filter every query on it.
+All ``GET`` endpoints are user-scoped: they read ``request.state.user_id``
+(set by ``AuthMiddleware``) and filter every query on it.
 
-The eval-only ``POST /review`` triggers the production ``reviewWorkflowV2``
-(planner + per-file agents) synchronously and returns its output. It is gated on the
-``X-Eval-Token`` request header (compared against
+The eval-only ``POST /review`` Invokes the durable review function
+asynchronously (``202`` + poll via ``GET /review/by-workflow/{id}``) so
+ API Gateway's 29s budget is never held by the agent run. Both are gated
+on the ``X-Eval-Token`` header (compared against
 :attr:`Settings.eval_api_token`) rather than the WorkOS session cookie,
 because the eval harness is a CLI process that cannot seal a session.
-The route is exempted from ``AuthMiddleware`` via ``BYPASS_METHODS``.
+The routes are exempted from ``AuthMiddleware`` via ``BYPASS_METHODS``.
 """
 
 from __future__ import annotations
@@ -20,44 +21,26 @@ from datetime import datetime
 from typing import Annotated, cast
 from uuid import UUID, uuid4
 
-from dbos import DBOS, SetWorkflowID
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.sql.elements import ColumnElement
-from sqlmodel import desc, select
+from sqlmodel import col, desc, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_session
-from app.models.enums import PRStatus, ReviewRunStatus
+from app.models.enums import ReviewRunStatus
 from app.models.pull_request import PullRequest
 from app.models.repo import Repo
 from app.models.review import Review, ReviewState
 from app.models.review_usage import ReviewUsage
+from app.repositories.code_comment import CodeCommentRepository
 from app.repositories.installation import InstallationRepository
 from app.repositories.repo import RepoRepository
 from app.repositories.review import ReviewRepository
-from app.services.llm import createDefaultLLMContext
-from app.utils.branded import (
-    BaseUrl,
-    CommitId,
-    InstallationId,
-    PRNumber,
-    RepoId,
-    UserId,
-)
+from app.repositories.review_summary import ReviewSummaryRepository
+from app.repositories.review_usage import ReviewUsageRepository
 from app.utils.schema import CommentSeverityStr, CommentSideStr, ReviewVerdictStr
-from app.utils.util import uuidToStr
-from app.workflows.triggers._common import buildSandboxCtx
-from app.workflows.review_v2.types import (
-    emptyPrSize,
-    ReviewWorkflowCtx,
-)
-from app.workflows.review_v2.workflow import (
-    buildReviewWorkflowInput,
-    createReviewV2WorkflowId,
-    reviewWorkflowV2,
-)
 
 router = APIRouter(prefix="/review", tags=["review"])
 
@@ -168,8 +151,8 @@ class EvalReviewResponse(BaseModel):
     """What ``POST /review`` returns on success.
 
     ``workflow_id`` is the deterministic
-    ``review-v2:{repo_id}:{pr_number}:{head_sha[:7]}`` id (plus the eval
-    route's ``:{rand6}`` suffix so repeated eval POSTs re-run instead of
+    ``review-v2-{repo_id}-{pr_number}-{head_sha[:7]}`` id (plus the eval
+    route's ``-{rand6}`` suffix so repeated eval POSTs re-run instead of
     deduping). ``comments`` are the extractor output over the concatenated
     per-file reports, merged by the v2 combine step; ``summary`` is currently
     empty (the v2 base build is comments-only).
@@ -228,173 +211,174 @@ def _secrets_match(provided: str, expected: str) -> bool:
     return hmac.compare_digest(digest_a, digest_b)
 
 
-async def _ensure_repo_row(
-    session: AsyncSession,
-    *,
-    user_id: str,
-    github_repo_id: int,
-    repo_owner: str,
-    repo_name: str,
-    clone_url: str,
-) -> str:
-    """Idempotent upsert of the local ``repos`` row.
+class EvalReviewAccepted(BaseModel):
+    """What ``POST /review`` returns: async dispatch, poll for results."""
 
-    The workflow's FK chain (``pull_requests`` / ``review`` /
-    ``code_comments`` / ``review_summaries``) needs a ``Repo`` row to
-    exist. The route does this work because the webhook triggers do it
-    too, but those resolve the row from the user's installation; the
-    eval path has no installation-to-user mapping on the call side, so
-    the row is synthesised here under the caller-supplied ``user_id``.
-    Returns the row's id (UUID string).
-    """
-    repo = RepoRepository(session=session)
-    existing = await repo.find_by_github_repo_id(github_repo_id)
-    if existing is not None:
-        return existing.id
-
-    row = Repo(
-        id=uuidToStr(),
-        user_id=user_id,
-        github_repo_id=github_repo_id,
-        repo_name=repo_name,
-        repo_owner=repo_owner,
-        clone_url=clone_url,
-    )
-    await repo.add(row)
-    await session.commit()
-    await session.refresh(row)
-    return row.id
+    workflow_id: str
+    execution_name: str
+    status_url: str
 
 
-@router.post("", response_model=EvalReviewResponse)
+def _eval_synthetic_payload(body: EvalReviewRequest) -> dict[str, object]:
+    """Build a minimal ``pull_request.opened``-shaped payload for the durable."""
+    return {
+        "repository": {
+            "id": body.github_repo_id,
+            "name": body.repo_name,
+            "owner": {"login": body.repo_owner},
+            "default_branch": body.default_branch,
+        },
+        "pull_request": {
+            "id": body.github_pr_id,
+            "number": body.pr_number,
+            "state": "open",
+            "merged": False,
+            "title": body.title,
+            "body": "",
+            "additions": 0,
+            "deletions": 0,
+            "changed_files": 0,
+            "base": {"ref": body.base_branch, "sha": body.base_sha},
+            "head": {"ref": body.head_branch, "sha": body.head_sha},
+            "user": {"login": body.author},
+        },
+        "installation": {"id": body.github_installation_id},
+    }
+
+
+@router.post("", response_model=EvalReviewAccepted, status_code=status.HTTP_202_ACCEPTED)
 async def trigger_review(
     request: Request,
     body: EvalReviewRequest,
     session: AsyncSession = Depends(get_session),
     _eval_token: None = Depends(get_eval_token),
-) -> EvalReviewResponse:
-    """Dispatch the production ``reviewWorkflowV2`` and return its output.
+) -> EvalReviewAccepted:
+    """Invoke the review durable asynchronously; poll the result.
 
-    See :class:`EvalReviewRequest` for the body shape. The handler
-    upserts the local ``repos`` row, builds the ``ReviewWorkflowCtx``
-    from settings (``createDefaultLLMContext()`` + a settings-driven
-    ``SandboxCtx``), dispatches the workflow under its deterministic
-    id, and waits synchronously for ``ReviewRunResult`` via
-    ``handle.get_result()``. On workflow failure the route returns 500
-    with the typed error name + message; the workflow's own ``except``
-    block has already flipped the ``review`` lifecycle row to FAILED.
+    Validates installation + repo rows (400 when missing), builds a
+    synthetic ``opened`` payload the durable parses with the same
+    ``extractPrPayload`` path as webhooks, Invokes with a
+    ``-{rand6}``-suffixed execution name so repeated eval POSTs re-run
+    instead of deduping, and returns ``202`` immediately. The durable
+    flips the ``review`` lifecycle row to SUCCESS/FAILED; fetch it via
+    ``GET /review/by-workflow/{workflow_id}``.
     """
-
-    ghRepoId = body.github_repo_id
-    ghPrId = body.github_pr_id
+    from app.workflows.durable.invoke import invokeOpenedDurable
+    from app.workflows.durable.naming import createOpenedExecutionName
+    from app.workflows.durable.types import OpenedDurableEvent
 
     installations = InstallationRepository(session=session)
     installation = await installations.find_by_github_installation_id(
         body.github_installation_id
     )
-
     if installation is None:
         raise HTTPException(status_code=400, detail={"error": "repo not found"})
 
     repos = RepoRepository(session=session)
-    repo = await repos.find_by_github_repo_id(ghRepoId)
-
+    repo = await repos.find_by_github_repo_id(body.github_repo_id)
     if repo is None:
         raise HTTPException(status_code=400, detail={"error": "repo not found"})
 
-    llm_ctx = createDefaultLLMContext(
-        model=body.model,
-        baseUrl=BaseUrl(body.baseUrl),
-        headers={"x-opencode-session": f"eval-session-{body.session_id}"},
-    )
-
-    sandbox_ctx = buildSandboxCtx(
-        userId=body.user_id,
-        repoId=repo.id,
-        repoName=body.repo_name,
-    )
-
-    workflow_input = buildReviewWorkflowInput(
-        userId=UserId(
-            body.user_id
-        ),  # not derivable — synthetic UUID (dataset: 00000000-…-0001)
-        ghRepoId=body.github_repo_id,  # dataset currently has fake 100000001
-        # ghPrId=4395127676,  # API pull id (eval path uses 0)
-        ghPrId=body.github_pr_id,
-        prNumber=PRNumber(body.pr_number),
-        baseBranch=body.base_branch,  # base.ref — matches the hardcode
-        defaultBranch=body.default_branch,  # repo's default_branch (currently None)
-        baseSha=body.base_sha,
-        # headBranch="add-endpoints",  # currently "feature/eval"
-        headBranch=body.head_branch,
-        headSha=CommitId(body.head_sha),
-        # author="Rjshakya",  # currently "eval"
-        # title="Add endpoints",  # currently "Eval PR"
-        author=body.author,
-        title=body.title,
-        body="",  # API body is null
-        status=PRStatus.OPEN,
-        prSize=emptyPrSize(),
-        githubInstallationId=InstallationId(
-            body.github_installation_id
-        ),  # not publicly derivable (per-install secret)
-        postToGithub=body.post_to_github,
-        trigger="opened",
-    )
-
-    workflow_ctx = ReviewWorkflowCtx(llmCtx=llm_ctx, sandboxCtx=sandbox_ctx)
-    workflow_id = createReviewV2WorkflowId(
-        repoId=RepoId(repo.id),
-        prNumber=PRNumber(body.pr_number),
+    base_name = createOpenedExecutionName(
+        ghRepoId=body.github_repo_id,
+        prNumber=body.pr_number,
         headSha=body.head_sha,
     )
-
-    id = str(uuid4())
-    workflow_id += f":{id[:6]}"
-
-    with SetWorkflowID(workflow_id):
-        handle = await DBOS.start_workflow_async(
-            reviewWorkflowV2, workflow_ctx, workflow_input
-        )
-
-    try:
-        result = await handle.get_result()
-    except Exception as exc:
+    execution_name = f"{base_name}-{uuid4().hex[:6]}"
+    result = await invokeOpenedDurable(
+        function_name=settings.review_opened_function_name
+        or settings.review_durable_function_name,
+        event=OpenedDurableEvent(
+            delivery=f"eval-{execution_name}",
+            execution_name=execution_name,
+            payload=_eval_synthetic_payload(body),  # type: ignore[arg-type]
+        ),
+    )
+    if not result.invoked:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "workflow_id": workflow_id,
-                "error": type(exc).__name__,
-                "message": str(exc),
-            },
-        ) from exc
+            detail={"workflow_id": execution_name, "error": result.error},
+        )
+    return EvalReviewAccepted(
+        workflow_id=execution_name,
+        execution_name=execution_name,
+        status_url=f"/review/by-workflow/{execution_name}",
+    )
 
-    review = result.review
-    return EvalReviewResponse(
+
+class EvalReviewStatus(BaseModel):
+    """Poll response for ``GET /review/by-workflow/{workflow_id}``."""
+
+    workflow_id: str
+    state: str
+    verdict: ReviewVerdictStr | None = None
+    summary: str | None = None
+    comments: list[EvalReviewComment] = Field(default_factory=list)
+    usages: dict[str, EvalReviewUsage] = Field(default_factory=dict)
+    model: str | None = None
+    error: str | None = None
+
+
+@router.get("/by-workflow/{workflow_id}", response_model=EvalReviewStatus)
+async def get_review_by_workflow(
+    workflow_id: str,
+    session: AsyncSession = Depends(get_session),
+    _eval_token: None = Depends(get_eval_token),
+) -> EvalReviewStatus:
+    """Return the eval run's status + results once SUCCESS (poll target)."""
+    repo = ReviewRepository(session=session)
+    row = await repo.find_by_workflow_id(workflow_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="review not found")
+    if row.state != ReviewState.SUCCESS:
+        return EvalReviewStatus(
+            workflow_id=workflow_id,
+            state=str(row.state),
+            error=row.error_message,
+        )
+    summaries = ReviewSummaryRepository(session=session)
+    summary_row = await summaries.find_by_review_id(row.id)
+    comments_repo = CodeCommentRepository(session=session)
+    comment_rows = await comments_repo.find_by_review_id(
+        row.id, order_by_created_at=True
+    )
+    usages = ReviewUsageRepository(session=session)
+    usage_rows = await usages.find(
+        col(usages.model.review_id) == row.id,
+        limit=1,
+    )
+    usage_row = usage_rows[0] if usage_rows else None
+    if summary_row is None:
+        raise HTTPException(status_code=404, detail="review summary not found")
+    return EvalReviewStatus(
         workflow_id=workflow_id,
-        verdict=review.verdict,
-        summary=review.summary,
+        state=str(row.state),
+        verdict=summary_row.verdict,  # type: ignore[arg-type]
+        summary=summary_row.summary,
         comments=[
             EvalReviewComment(
                 file_name=c.file_name,
                 comment=c.comment,
-                severity=c.severity,
+                severity=c.severity,  # type: ignore[arg-type]
                 from_line=c.from_line,
                 to_line=c.to_line,
-                side=c.side,
+                side=c.side,  # type: ignore[arg-type]
                 node_type=c.node_type,
             )
-            for c in review.comments
+            for c in comment_rows
         ],
-        usages={
-            model_name: EvalReviewUsage(
-                input_tokens=int(bucket["input_tokens"]),
-                output_tokens=int(bucket["output_tokens"]),
-                total_tokens=int(bucket["total_tokens"]),
-            )
-            for model_name, bucket in result.usages["usages"].items()
-        },
-        model=llm_ctx.modelId,
+        usages=(
+            {
+                str(usage_row.llm_model_id or "default"): EvalReviewUsage(
+                    input_tokens=usage_row.input_tokens,
+                    output_tokens=usage_row.output_tokens,
+                    total_tokens=usage_row.total_tokens,
+                )
+            }
+            if usage_row is not None
+            else {}
+        ),
+        model=row.llm_model,
     )
 
 

@@ -5,9 +5,9 @@ Persistent per-user LLM configuration. One row per
 multiple configs (one per provider / model / endpoint) and pick the
 active one at request time.
 
-The ``api_key`` is stored as plain ``str`` (kept serializable for
-DBOS). A follow-up should add at-rest encryption and redact the
-column from any log / OTLP log attribute payloads.
+The ``api_key`` is stored as plain ``str``. A follow-up should add
+at-rest encryption and redact the column from any log / OTLP log
+attribute payloads.
 """
 
 from __future__ import annotations

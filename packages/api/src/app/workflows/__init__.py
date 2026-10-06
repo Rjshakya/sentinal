@@ -1,18 +1,14 @@
-"""DBOS durable workflows, built on the refactored service layer.
+"""Durable review pipelines, built on the service layer.
 
-Each workflow package owns one domain pipeline and follows the new
-service conventions:
-
-- ``types.py``  — the contract: serializable ctxs, workflow inputs,
-  result projections. Ids are branded types from
-  :mod:`app.utils.branded`.
-- ``errors.py`` — error values (BaseModel) returned by pure step
-  functions, plus the raised step-exception wrappers used by the DBOS
-  step edges.
-- ``workflow.py`` — the DBOS orchestrator plus its pure helpers.
-- ``steps/``    — one file per I/O boundary: a pure function (returns
-  ``T | ErrorValue``, no logging, no DBOS, no raising) and a DBOS
-  edge (logs and raises for retries / business outcomes).
+- ``triggers/`` — webhook-edge adapters: pure payload extraction plus
+  one best-effort Lambda Invoke per delivery.
+- ``durable/`` — the durable handlers (``opened_handler.py``,
+  ``comment_handler.py``, ``repair_handler.py``), the shared
+  ``pipeline.py`` / ``repair_pipeline.py`` agent phases, and flat
+  ``steps/`` (one cohesive file per phase).
+- ``review_v2/`` — the worker library consumed by ``durable/steps/``:
+  sandbox/LLM/agent workers, input/result types, and the error
+  hierarchy.
 """
 
 from __future__ import annotations

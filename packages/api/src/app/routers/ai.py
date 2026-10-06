@@ -2,7 +2,7 @@
 
 ``POST /ai/repo/setup`` is synchronous — it bulk-inserts one ``Repo``
 row per requested GitHub repo and returns the per-repo outcome
-immediately (``200 OK``). No checks, no sandbox, no DBOS workflow, no
+immediately (``200 OK``). No checks, no sandbox, no durable execution, no
 polling. The dashboard only ever sends repos with
 ``is_configured=False``.
 """

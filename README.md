@@ -46,7 +46,7 @@ Google** as the review LLM.
    `Repo` row per selected repo (skipping already-configured ones),
    synchronously. No sandbox involved.
 5. **Open a PR** on a connected repo. GitHub's `pull_request`
-   `opened` webhook hands the delivery to a **durable DBOS workflow**
+   `opened` webhook hands the delivery to a **durable Lambda execution**
    that:
    - creates a fresh ephemeral sandbox and clones the repo at the
      PR head SHA (fail-closed),
@@ -66,11 +66,13 @@ Google** as the review LLM.
    tagged `P1_CRITICAL` / `P2_WARNING` / `P3_NITPICK`, and a verdict
    of `APPROVE` / `COMMENT` / `REQUEST_CHANGES`.
 
-The review pipeline is **idempotent** — its workflow id is
-`review-v2:{repo_id}:{pr_number}:{head_sha[:7]}`, so duplicate webhook
-deliveries for the same head SHA do not re-run the LLM. A process
-crash mid-invocation resumes from the last completed step without
-re-running the agent.
+The review pipeline is **idempotent** — its execution name is
+`review-v2:{gh_repo_id}:{pr_number}:{head_sha[:7]}`, so duplicate webhook
+deliveries for the same head SHA do not re-run the LLM. Each I/O step
+is checkpointed, so a retry resumes from the last completed step
+without re-running the agent. When the inline post fails terminally,
+a repair execution (`repair:{pr_number}:{head_sha[:7]}`) re-anchors
+and publishes the saved review.
 
 ---
 
@@ -93,7 +95,7 @@ Three planes, one persistence tier:
 │  API (FastAPI, async)                               │
 │  - /auth, /github, /ai, /users, /pulls, /review,    │
 │    /llm_config, /webhooks, /health                  │
-│  - DBOS durable workflows                           │
+│  - Durable executions (Lambda, checkpointed steps)  │
 │  - SQLModel + asyncpg → PostgreSQL 18               │
 └──────────────────────────────────────────────────────┘
                            │
@@ -127,17 +129,20 @@ Read flow for the dashboard:
 
 Read flow for a PR review:
 
-1. GitHub's `pull_request` `opened` (or `synchronize`) webhook fires
-   `POST /api/webhooks/github`.
-2. The handler verifies the `X-Hub-Signature-256` HMAC, parses the
-   payload, and dispatches a DBOS workflow with id
-   `review:{repo_id}:{pr_number}:{head_sha[:7]}`.
-3. The workflow runs end-to-end inside DBOS: diff fetch → in-sandbox
-   split (overview + per-file chunks) → `PullRequest` upsert → review
-   agent → persist summary + comments → sandbox stop.
-4. A separate `post:{repo_id}:{pr_number}:{head_sha[:7]}` workflow
-   posts the review to GitHub with retryable / non-retryable error
-   handling.
+1. GitHub's `pull_request` `opened` webhook fires
+   `POST /api/webhooks/github` (an `issue_comment` mentioning
+   `@<app_slug> review` triggers an incremental re-review instead).
+2. The handler verifies the `X-Hub-Signature-256` HMAC, validates the
+   payload, and async-Invokes the review Lambda with execution name
+   `review-v2:{gh_repo_id}:{pr_number}:{head_sha[:7]}`.
+3. The execution runs end-to-end with checkpointed steps: ctx resolve
+   → sandbox create → clone → codegraph index → diff fetch → in-sandbox
+   split (overview + per-file chunks) → `PullRequest` upsert → planner
+   + per-file agents → persist summary + comments + usage → inline
+   post → sandbox destroy.
+4. The inline post is best-effort: terminal failures return
+   `posted=False` and dispatch a repair execution that re-anchors and
+   publishes the saved review.
 
 ---
 
@@ -151,7 +156,7 @@ Read flow for a PR review:
 | GitHub       | Native GitHub App via `githubkit` (typed REST), HMAC-signed install flow, webhook receiver |
 | Sandbox      | E2B — provider map (`Providers`) resolves the class per run ctx                    |
 | AI           | `deepagents` (planning agent + per-file review agents, delegation disabled), LangChain chat models |
-| Durable jobs | DBOS — durable workflows, idempotent steps, retryable transactions on the same Postgres |
+| Durable jobs | AWS Lambda Durable Execution — checkpointed `@durable_step`s, per-step `StepConfig` retries, deterministic `DurableExecutionName`s |
 | Database     | PostgreSQL 18 (docker-compose), `gen_random_uuid()` defaults, CASCADE FKs           |
 | Logging      | stdlib `logging` → OpenTelemetry logs over OTLP (console fallback)                |
 | Telemetry    | OpenLLMetry (`traceloop-sdk`) — OTLP/HTTP traces for the review agents + FastAPI     |
@@ -174,14 +179,14 @@ ai-code-review/
 │       ├── main.py           # uvicorn entry point
 │       ├── alembic/
 │       │   ├── env.py
-│       │   └── versions/     # 8 migrations
+│       │   └── versions/     # forward-only revisions
 │       └── src/app/        # backend package (a README lives in every dir)
 │           ├── core/         # settings, db, auth, middleware, workos, telemetry
 │           ├── models/       # SQLModel tables + enums
 │           ├── repositories/ # generic BaseRepository[T] + per-model subclasses
 │           ├── routers/      # health, auth, github, ai, users, pulls, reviews, webhooks, llm_configs (+ schemas/)
 │           ├── services/     # agent_v2, github, llm, sandbox (ctx DI, errors-as-values)
-│           ├── workflows/    # review_v2, repair_and_publish, triggers
+│           ├── workflows/    # durable, review_v2, triggers
 │           └── utils/        # branded ids, sandbox paths, agent schemas, badges
 └── web/                      # TanStack Start frontend (pnpm)
     ├── package.json
@@ -355,8 +360,8 @@ A single `.env` at the repo root is loaded by `app.core.config.Settings`
 | `GITHUB_APP_PRIVATE_KEY_PATH`         | `""`                                        | Filesystem path to the PEM. Takes precedence over `GITHUB_APP_PRIVATE_KEY`. |
 | `GITHUB_WEBHOOK_SECRET`               | `""`                                        | Shared secret used to verify `X-Hub-Signature-256`. Leave empty to reject all webhook deliveries. |
 | `GITHUB_INSTALL_STATE_SECRET`         | `""`                                        | HMAC secret used to sign the install-flow state token. Falls back to `WORKOS_COOKIE_PASSWORD`. |
-| **DBOS**                              |                                             | |
-| `DBOS_EXECUTOR_ID`                    | `socket.gethostname()`                      | Unique per running API instance |
+| **Durable executions**                |                                             | |
+| `REVIEW_OPENED_FUNCTION_NAME` / `REVIEW_COMMENT_FUNCTION_NAME` / `REPAIR_DURABLE_FUNCTION_NAME` | `""` | Lambda function names/ARNs for the three durable executions (webhook Invoke targets) |
 
 ### Frontend (`web/.env`)
 
@@ -378,26 +383,14 @@ PostgreSQL 18 is the only persistence tier, brought up by
 `docker-compose.yml` on port 5432. The volume `aicode_pg_data` keeps the
 data across container restarts.
 
-Migrations live in `packages/api/alembic/versions/`. The current
-revision chain (oldest → HEAD), nine revisions total:
+Migrations live in `packages/api/alembic/versions/` and are
+forward-only (starting at `0001_init`).
 
-```
-0001_init                                    # repos, pull_requests, commit_snapshots, code_comments, review_summaries
-0002_extend_repos_and_sandboxes              # sandboxes table + extra repo columns
-d2c05e88f8e9_drop_commit_snapshots_and_fix_fks
-951a82befdb3_sandbox_provider_id_add         # sandboxes.provider_id
-243a7473b750_add_indexing_status
-d11be80b25c9_                                # installations table
-5d1d3894e8a5_
-fb1f0819aade_
-efc8cecac0b4_                                # reposetupresult table  (HEAD)
-```
-
-After `alembic upgrade head` the schema has **seven** tables: `repos`,
-`pull_requests`, `code_comments`, `review_summaries`, `sandboxes`,
-`installations`, `reposetupresult`. The `commit_snapshots` table from
-`0001_init` was dropped in `d2c05e88f8e9`; the `commit_id` columns on
-`code_comments` and `review_summaries` are now plain strings (no FK).
+After `alembic upgrade head` the schema has **nine** tables: `repos`,
+`pull_requests`, `code_comments`, `review_summaries`, `sandboxes`
+(legacy, unreferenced), `installations`, `llm_configs`, `review`,
+`review_usage`. The `commit_id` columns on `code_comments` and
+`review_summaries` are plain strings (no FK).
 
 Operations:
 
@@ -429,10 +422,6 @@ uv run python main.py
 # or, with auto-reload:
 uv run uvicorn main:app --reload --port 8000
 ```
-
-`main.py` sets `WindowsSelectorEventLoop` for uvicorn on `win32` so
-psycopg async / DBOS work on Windows. On Linux/macOS the default loop
-is fine.
 
 The first `docker compose up -d db` must already be running. Then
 `uv run alembic upgrade head` once.
@@ -662,8 +651,9 @@ Railway, etc.). It expects:
 - PostgreSQL 18 reachable at `DATABASE_URL` (use a managed Postgres or
   run a sidecar container).
 - All the env vars listed in [Environment variables](#environment-variables).
-- DBOS shares the same Postgres as the app (the `+asyncpg` driver
-  suffix is stripped automatically — see `main.py::_dbos_config`).
+- Durable review/repair runs on AWS Lambda (`packages/api/template.yaml`:
+  `ReviewOpenedFunction`, `ReviewCommentFunction`,
+  `RepairDurableFunction`).
 
 Migrations are forward-only. Run `alembic upgrade head` before the
 first deploy, and as part of every subsequent deploy that includes a
@@ -678,8 +668,6 @@ new revision.
   `WORKOS_COOKIE_PASSWORD` if you want to be able to rotate them
   separately.
 - Restrict `CORS_ORIGINS` to the deployed web origin.
-- Pick a stable `DBOS_EXECUTOR_ID` per running instance when
-  self-hosting multiple workers.
 
 ---
 
@@ -707,13 +695,9 @@ new revision.
   both empty the OpenLLMetry SDK is never initialised. For local
   debugging add `TRACELOOP_DISABLE_BATCH=true` to see spans in real
   time.
-- **Sandbox create fails on Windows.** uvicorn must be using the
-  `SelectorEventLoop`. `main.py` patches this in its `__main__` block
-  for `sys.platform == "win32"`.
-- **DBOS complains about the database URL.** The `+asyncpg` driver
-  suffix is stripped for DBOS automatically. If you see connection
-  errors, the rest of the URL (`postgresql://postgres:…@…/aicode`)
-  must be reachable from the API host.
+- **Database connection errors.** The `DATABASE_URL`
+  (`postgresql://postgres:…@…/aicode`) must be reachable from the API
+  host.
 
 ---
 

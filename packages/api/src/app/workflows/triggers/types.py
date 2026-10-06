@@ -56,7 +56,7 @@ class CommentTriggerInput(BaseModel):
     """Flat, typed view of a verified ``issue_comment`` payload.
 
     Every field is required; the trigger adapter
-    (:func:`app.workflows.triggers.comment.validateCommentPayload`)
+    (:func:`app.workflows.triggers.comment_payload.validateCommentPayload`)
     returns ``None`` when the raw webhook does not satisfy the
     pydantic schema, which the caller folds into a
     ``malformed_payload`` skip.
@@ -98,8 +98,10 @@ class LastReviewSnapshot(BaseModel):
     Lets the comment trigger decide the git-diff base for an
     incremental re-review: ``commitId`` is the head SHA the previous
     run reviewed; ``baseSha`` is the PR base that run started from
-    (kept for observability). Both are the values recorded on the
-    ``review`` lifecycle row, never re-fetched from GitHub.
+    (kept for observability). ``githubReviewId`` is the posted-review
+    back-link (``None`` when the run never landed on GitHub) and gates
+    the same-head skip. All are values recorded on the ``review``
+    lifecycle row, never re-fetched from GitHub.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -107,6 +109,7 @@ class LastReviewSnapshot(BaseModel):
     commitId: CommitId
     baseSha: str | None = None
     createdAt: datetime
+    githubReviewId: str | None = None
 
 
 __all__ = [

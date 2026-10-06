@@ -1,17 +1,10 @@
-import asyncio
 import logging
-import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-# psycopg async mode does not work with Windows' default ProactorEventLoop.
-# Force the SelectorEventLoop before any DBOS/SQLAlchemy async imports run.
-# if sys.platform == "win32":
-#     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-#
-from dbos import DBOS, DBOSConfig
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from mangum import Mangum
 
 from app.core.config import settings
 from app.core.db import create_db_and_tables
@@ -29,55 +22,32 @@ from app.routers import (
     webhooks,
 )
 
-# DBOS workflow registration. The webhook receiver now dispatches
-# through the github webhook sub-service, whose delegation handlers
-# import their adapters lazily (cycle avoidance) — so the workflows
-# must be imported here to register their @DBOS.workflow decorated
-# entry points before DBOS.launch(). The review workflow (and its
-# triggers) live in app.workflows.review_v2 and app.workflows.triggers.
-
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
-# OpenLLMetry telemetry: the single observability entry point, gated
-# on TRACELOOP_BASE_URL / TRACELOOP_API_KEY. It wires traces (via
-# Traceloop) and logs (OTLP) through the same endpoint. OpenTelemetry
-# instrumentors patch already-imported modules, so this is safe after
-# the routers above have imported LangChain / provider packages. The
-# FastAPI ASGI instrumentation is attached in create_app() via
-# instrument_fastapi.
+# Observability seam (no-op until the new instrument lands).
 init_telemetry()
-
-
-def _dbos_config() -> DBOSConfig:
-    """Build DBOS config from application settings.
-
-    DBOS shares the same Postgres database as the application. The URL
-    is stripped of the asyncpg driver suffix because DBOS creates its
-    own SQLAlchemy engine.
-    """
-    db_url = settings.dbos_database_url
-    return {
-        "name": "sentinel",
-        "system_database_url": db_url,
-        "executor_id": settings.dbos_executor_id,
-        "enable_otlp": settings.telemetry_configured,
-        "otel_attribute_format": "semconv",
-    }
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    await create_db_and_tables()
-    DBOS(config=_dbos_config())
-    DBOS.launch()
+    """Create tables on local/docker boot; skip on Lambda.
+
+    Mangum runs with ``lifespan="off"`` so this never executes on
+    Lambda. The env guard covers Lambda Web Adapter style hosts that
+    _do_ run lifespan: deployed envs own schema via Alembic, never
+    ``create_all`` at boot.
+    """
+    import os
+
+    if not os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+        await create_db_and_tables()
     try:
         yield
     finally:
-        DBOS.destroy()
+        pass
 
 
 def create_app() -> FastAPI:
@@ -107,14 +77,15 @@ def create_app() -> FastAPI:
     app.include_router(llm_configs.router, prefix=settings.api_prefix)
     app.include_router(webhooks.router, prefix=settings.api_prefix)
 
-    # One OTLP HTTP span per request (skipped when telemetry is
-    # unconfigured or TELEMETRY_FASTAPI=false).
     instrument_fastapi(app)
 
     return app
 
 
 app = create_app()
+
+# AWS Lambda entry point (API Gateway → Mangum → ASGI).
+handler = Mangum(app, lifespan="off")
 
 
 if __name__ == "__main__":
