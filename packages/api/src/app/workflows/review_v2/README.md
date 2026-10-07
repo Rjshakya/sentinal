@@ -2,8 +2,10 @@
 
 Webhook → ephemeral sandbox → clone at head → index graph →
 planner + file agents → persist + post inline. One run = one PR
-head SHA; the id `review-v2-{repo}-{pr}-{sha7}` dedupes duplicate
-deliveries to the same durable execution.
+head SHA; the id `review-v2:{gh_repo}:{pr}:{head_sha[:7]}` (delivery-suffixed
+for comment re-reviews) dedupes duplicate deliveries to the same durable
+execution. The `DurableExecutionName` on the wire is the dash-sanitized
+form (AWS charset rules).
 
 ## Mental model
 
@@ -25,8 +27,10 @@ the host decides which files get reviewed.
 - `steps/` — one worker per phase (sandbox, clone, graph-index,
   diff, split, chunks, planner, file, extract, persist, post,
   lifecycle). Only the sandbox id travels; every step reconnects.
-  See its README. The durable checkpoint edges live in
-  `durable/steps/`.
+  See its README. The durable checkpoint edges are the `@durable_step`s
+  wrapping each worker, dispatched through `durable/invoke.py`
+  (`InvocationType=Event` + `DurableExecutionName`; `Qualifier=$LATEST`
+  is required — AWS rejects unqualified durable Invokes).
 - `steps/combine.py` — pure joins between steps (trivial filter,
   inventory ⋈ planner context, batching, `verdictFor`). No I/O.
 - `types.py` — serializable contract (`ReviewWorkflowInput`,

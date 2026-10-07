@@ -160,7 +160,7 @@ Read flow for a PR review:
 | Database     | PostgreSQL 18 (docker-compose), `gen_random_uuid()` defaults, CASCADE FKs           |
 | Logging      | stdlib `logging` → OpenTelemetry logs over OTLP (console fallback)                |
 | Telemetry    | OpenLLMetry (`traceloop-sdk`) — OTLP/HTTP traces for the review agents + FastAPI     |
-| Deploy       | Web → Cloudflare Workers (`wrangler.jsonc`); API → BYO host (containers, Fly, Railway, etc.) |
+| Deploy       | Web → Cloudflare Workers (`wrangler.jsonc`); API → AWS Lambda via SAM (`packages/api/template.yaml`, stack `sentinel-dev`, `us-east-1`) |
 
 ---
 
@@ -173,9 +173,14 @@ ai-code-review/
 ├── .env / .env.example       # backend env (loaded from repo root)
 ├── AGENTS.md                 # deep architecture reference
 ├── packages/
+│   ├── evals/                # review-quality harness (uv member)
+│   ├── codegraph/            # codegraph CLI, published to PyPI (`pip install sentinel-codegraph`)
 │   └── api/                  # FastAPI backend (uv member)
 │       ├── pyproject.toml
 │       ├── alembic.ini
+│       ├── template.yaml     # SAM: 4 image Lambdas + regional HttpApi + domain
+│       ├── Dockerfile.lambda # container image for all 4 Lambda functions
+│       ├── samconfig.toml    # stack `sentinel-dev`, `us-east-1`, managed ECR repos
 │       ├── main.py           # uvicorn entry point
 │       ├── alembic/
 │       │   ├── env.py
@@ -312,7 +317,15 @@ docker compose run --rm migrate
 ## Environment variables
 
 A single `.env` at the repo root is loaded by `app.core.config.Settings`
-(via pydantic-settings). The web reads `web/.env` independently.
+(via pydantic-settings) for local dev. The web reads `web/.env` independently.
+
+Production does NOT use `.env`. Prod config is the Secrets Manager JSON
+secret `sentinel-dev/app` (~38 keys): 30 keys bind via CloudFormation
+dynamic resolves in `template.yaml` Globals; the large
+`GITHUB_APP_PRIVATE_KEY` is fetched at RUNTIME via
+`app/core/secrets.py:app_secrets()` (Lambda's 4KB env limit forbids it
+as an env var); region resolves `explicit-arg → SECRET_STORE_REGION →
+AWS_REGION → us-east-1`.
 
 ### Backend (`ai-code-review/.env`)
 
@@ -356,8 +369,8 @@ A single `.env` at the repo root is loaded by `app.core.config.Settings`
 | `GITHUB_APP_CLIENT_ID`                | `""`                                        | GitHub App OAuth client id |
 | `GITHUB_APP_CLIENT_SECRET`            | `""`                                        | GitHub App OAuth client secret |
 | `GITHUB_APP_SLUG`                     | `""`                                        | App slug (the human-readable URL segment) |
-| `GITHUB_APP_PRIVATE_KEY`              | `""`                                        | PEM private key; newlines may be encoded as the literal sequence `\n` |
-| `GITHUB_APP_PRIVATE_KEY_PATH`         | `""`                                        | Filesystem path to the PEM. Takes precedence over `GITHUB_APP_PRIVATE_KEY`. |
+| `GITHUB_APP_PRIVATE_KEY`              | `""`                                        | Base64-encoded single-line PEM. Prod: secret-only, runtime-fetched via `app/core/secrets.py`, never a Lambda env var (4KB limit) |
+| `GITHUB_APP_PRIVATE_KEY_PATH`         | `""`                                        | Declared in `Settings` but currently unread — the client resolves the key from the value / runtime secret instead |
 | `GITHUB_WEBHOOK_SECRET`               | `""`                                        | Shared secret used to verify `X-Hub-Signature-256`. Leave empty to reject all webhook deliveries. |
 | `GITHUB_INSTALL_STATE_SECRET`         | `""`                                        | HMAC secret used to sign the install-flow state token. Falls back to `WORKOS_COOKIE_PASSWORD`. |
 | **Durable executions**                |                                             | |
@@ -368,7 +381,7 @@ A single `.env` at the repo root is loaded by `app.core.config.Settings`
 | Variable               | Default                | Purpose |
 | ---------------------- | ---------------------- | ------- |
 | `VITE_API_URL`         | *(required)*           | Base URL for the API, **including the API prefix** (e.g. `http://localhost:8000/api`) |
-| `VITE_GITHUB_APP_SLUG` | `ai-code-review`       | Display name for the GitHub App (used in copy) |
+| `VITE_GITHUB_APP_SLUG` | `reviewpr-bot`       | Display name for the GitHub App (used in copy; must match the `@<slug> review` mention contract) |
 
 `workos_configured`, `llm_configured`, `sandbox_configured`,
 `github_app_configured`, and `github_webhook_configured` are derived
@@ -643,17 +656,27 @@ pnpm deploy    # = pnpm run build && wrangler deploy
 Public (non-secret) env vars go in `wrangler.jsonc` under `vars`. For
 secrets, use `wrangler secret put MY_VAR`.
 
-### API (BYO host)
+### API (SAM → Lambda)
 
-The API is a plain FastAPI app — bring your own host (containers, Fly,
-Railway, etc.). It expects:
+The API deploys via SAM (`packages/api/template.yaml`, stack
+`sentinel-dev`, `us-east-1`) as 4 container-image Lambda functions:
+`ApiFunction` (HTTP edge + webhook receiver) plus the three durable
+workers `ReviewOpenedFunction`, `ReviewCommentFunction`, and
+`RepairDurableFunction`. It expects:
 
 - PostgreSQL 18 reachable at `DATABASE_URL` (use a managed Postgres or
   run a sidecar container).
-- All the env vars listed in [Environment variables](#environment-variables).
-- Durable review/repair runs on AWS Lambda (`packages/api/template.yaml`:
-  `ReviewOpenedFunction`, `ReviewCommentFunction`,
-  `RepairDurableFunction`).
+- The Secrets Manager secret `sentinel-dev/app` holding every key in
+  [Environment variables](#environment-variables) (30 keys bind via
+  dynamic resolves; `GITHUB_APP_PRIVATE_KEY` is runtime-fetched).
+  Template params: `AppSecretStore=sentinel-dev/app`,
+  `SecretStoreRegion=us-east-1`. Never re-add a removed secret key
+  without the add → deploy → remove dance — CloudFormation validates
+  the OLD deployed model on update and fails on missing keys.
+- `api.reviewpr.app` is served by the regional `HttpApi` +
+  `ApiGatewayV2::DomainName` in the template (no CloudFront), with a
+  DNS-only CNAME in Cloudflare pointing at the `ApiRegionalTarget`
+  output.
 
 Migrations are forward-only. Run `alembic upgrade head` before the
 first deploy, and as part of every subsequent deploy that includes a

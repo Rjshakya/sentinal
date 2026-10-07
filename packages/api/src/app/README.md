@@ -17,15 +17,17 @@ is the only persistence tier.
 - `services/` — domain services behind the §9 contract: ctx objects,
   errors as values, no logging. (`agent_v2`, `github`, `llm`,
   `sandbox`.)
-- `workflows/` — durable pipelines (`durable/` handlers + steps,
-  `review_v2/` worker library) plus the webhook `triggers/` adapters.
+- `workflows/` — durable pipelines (`durable/` handlers + pipelines
+  (`invoke.py`), `review_v2/` worker library) plus the webhook
+  `triggers/` adapters. Workers live in `review_v2/steps/`.
 - `utils/` — shared value types (`branded`), sandbox path layout
   (`util`), agent output schemas (`schema`), misc helpers.
 
 ## Request flow
 
 ```
-router (validate + dispatch) → trigger adapter (resolve user/repo)
+router (validate + dispatch) → trigger adapter (pure extraction +
+  boto3 Invoke, no DB — ctx resolves inside the handler)
   → durable execution (checkpointed steps) → service (pure call + value error)
   → repository (AsyncSession) → Postgres
 ```
@@ -35,5 +37,8 @@ router (validate + dispatch) → trigger adapter (resolve user/repo)
 - Auth is opt-in per route group: `core/middleware.py::PROTECTED_PREFIXES`.
   The only anonymous I/O surface is the HMAC-verified webhook receiver.
 - Workflow ids are deterministic and encode the domain
-   (`review-v2-{repo_id}-{pr}-{head_sha[:7]}`), so duplicate deliveries
-  dedupe and restarts are safe.
+  (`review-v2:{gh_repo}:{pr}:{head_sha[:7]}` for opened reviews,
+  delivery-suffixed for comment re-reviews, `repair:{pr}:{head_sha[:7]}`
+  for repairs), so duplicate deliveries dedupe and restarts are safe.
+  The `DurableExecutionName` on the wire is the dash-sanitized form
+  (AWS charset rules); the `review.workflow_id` column keeps colons.

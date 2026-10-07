@@ -1,4 +1,12 @@
-Welcome to your new TanStack Start app! 
+# Sentinel web — TanStack Start on Cloudflare Workers
+
+Project contract (full deploy story lives in the root README):
+
+- `VITE_API_URL` includes the API prefix (e.g. `http://localhost:8000/api`).
+- Every API call sends `credentials: "include"` (sealed session cookie).
+- GitHub App slug is `reviewpr-bot` (the `@<slug> review` mention contract).
+- Settings page owns the per-user LLM config (`provider:model`, test-then-upsert).
+- No KV, D1, R2, or Durable Object bindings exist — `wrangler.jsonc` holds `vars` only.
 
 # Getting Started
 
@@ -49,7 +57,9 @@ This project uses the Cloudflare Vite plugin (configured in `vite.config.ts`) an
 
 For production env vars, run `wrangler secret put MY_VAR` for each secret listed in `.env.example`. Public (non-secret) vars go in `wrangler.jsonc` under `vars`.
 
-KV, D1, R2, and Durable Object bindings are configured in `wrangler.jsonc` — see https://developers.cloudflare.com/workers/wrangler/configuration/.
+No KV, D1, R2, or Durable Object bindings exist. The API origin is the
+regional HttpApi behind a Cloudflare DNS-only CNAME (no CloudFront) —
+see the root README's deployment section.
 
 
 

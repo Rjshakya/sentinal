@@ -1,6 +1,6 @@
 # review_v2/steps — one worker per pipeline phase
 
-Worker library consumed by `durable/steps/` (one thin `@durable_step`
+Worker library consumed by the `durable/` handlers (one thin `@durable_step`
 per worker: validate input model, `asyncio.run` the worker, return
 `model_dump`). Only the sandbox id travels between steps; every step
 reconnects. In pipeline order:
