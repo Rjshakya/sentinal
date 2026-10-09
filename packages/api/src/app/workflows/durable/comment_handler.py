@@ -19,6 +19,12 @@ from aws_durable_execution_sdk_python.retries import (
 )
 
 from app.core.config import settings
+from app.core.telemetry import (
+    extract_trace_context,
+    force_flush_telemetry,
+    init_telemetry,
+    start_span,
+)
 from app.workflows.durable.pipeline import AgentPhaseInput, runAgentPhase
 from app.workflows.durable.steps import (
     buildSandboxCtxForRun,
@@ -39,6 +45,8 @@ from app.workflows.triggers.types import CommentTriggerInput, LastReviewSnapshot
 
 log = logging.getLogger(__name__)
 
+init_telemetry()
+
 RETRY_3 = StepConfig(
     retry_strategy=create_retry_strategy(RetryStrategyConfig(max_attempts=3))
 )
@@ -50,6 +58,60 @@ RETRY_1 = StepConfig(
 @durable_execution
 def reviewCommentHandler(event: dict, ctx: DurableContext) -> dict:
     request = CommentDurableEvent.model_validate(event)
+    parent = extract_trace_context(
+        {
+            "traceparent": request.traceparent or "",
+            "tracestate": request.tracestate or "",
+        }
+    )
+    token = None
+    if parent is not None:
+        try:
+            from opentelemetry import context as otel_context
+
+            token = otel_context.attach(parent)
+        except Exception:
+            token = None
+    import time as _time
+
+    _started = _time.perf_counter()
+    try:
+        with start_span(
+            "reviewCommentHandler",
+            attributes={
+                "sentinel.delivery": request.delivery,
+                "sentinel.execution_name": request.execution_name,
+                "sentinel.trigger": "comment",
+            },
+        ):
+            return _reviewCommentHandlerInner(request, ctx)
+    finally:
+        try:
+            from app.core.telemetry import get_histogram
+
+            get_histogram(
+                "sentinel.handler_duration", description="Durable handler duration"
+            ).record(
+                _time.perf_counter() - _started, attributes={"trigger": "comment"}
+            )
+        except Exception:
+            pass
+        if token is not None:
+            try:
+                from opentelemetry import context as otel_context
+
+                otel_context.detach(token)
+            except Exception:
+                pass
+        try:
+            force_flush_telemetry(1000)
+        except Exception:
+            pass
+
+
+def _reviewCommentHandlerInner(
+    request: CommentDurableEvent, ctx: DurableContext
+) -> dict:
 
     triggerDict = ctx.step(
         parseCommentPayload(

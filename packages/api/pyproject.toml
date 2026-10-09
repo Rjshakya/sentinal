@@ -24,6 +24,13 @@ dependencies = [
     "boto3>=1.43.104",
     "aws-lambda-powertools>=3.35.0",
     "mangum>=0.22.0",
+    "opentelemetry-distro>=0.66b1",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1",
+    "opentelemetry-instrumentation-fastapi>=0.66b1",
+    "opentelemetry-instrumentation-sqlalchemy>=0.66b1",
+    "opentelemetry-instrumentation-httpx>=0.66b1",
+    "opentelemetry-instrumentation-botocore>=0.66b1",
+    "opentelemetry-instrumentation-logging>=0.66b1",
 ]
 
 [build-system]

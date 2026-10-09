@@ -51,6 +51,7 @@ from githubkit_schemas.v2026_03_10.types import (
 )
 
 from app.services.github.client import getAuthenticatedGitHubClient
+from app.core.telemetry import trace_span
 from app.services.github.pr.errors import GitHubPRError
 from app.services.github.pr.types import (
     IssueCommentItem,
@@ -108,6 +109,19 @@ def _statusOf(exc: Exception) -> int | None:
     return None
 
 
+def _prCtxAttrs(ctx: PRCtx, **kwargs: object) -> dict[str, object]:
+    """Span attributes for PR operations (identity only, no bodies)."""
+    try:
+        return {
+            "github.owner": str(ctx.owner),
+            "github.repo": str(ctx.repo),
+            "github.pr_number": int(ctx.prNumber),
+        }
+    except Exception:
+        return {}
+
+
+@trace_span("github.get_pr_state", attrs_from=_prCtxAttrs)
 async def getPrState(ctx: PRCtx) -> PRState | GitHubPRError:
     """Fetch the PR's current state from the GitHub API."""
     client = ctx.client
@@ -529,6 +543,7 @@ async def addReaction(
     return None
 
 
+@trace_span("github.post_review", attrs_from=_prCtxAttrs)
 async def postReview(
     ctx: PRCtx,
     draft: PRReviewDraft,

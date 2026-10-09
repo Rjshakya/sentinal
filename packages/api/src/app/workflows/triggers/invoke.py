@@ -25,6 +25,38 @@ from app.workflows.triggers.types import ReviewTriggerAck
 log = logging.getLogger(__name__)
 
 
+def _traceCtxForTrigger(
+    *, delivery: str, executionName: str, trigger: str
+) -> dict | None:
+    """Mint the serializable TraceCtx join keys. Never raises."""
+    try:
+        import uuid
+
+        from app.services.observability.service import createTraceCtx
+
+        try:
+            from app.core.telemetry import current_trace_id
+
+            traceId = current_trace_id() or uuid.uuid4().hex
+        except Exception:
+            traceId = uuid.uuid4().hex
+        if trigger not in ("opened", "comment", "repair"):
+            trigger = "opened"
+        result = createTraceCtx(
+            traceId=traceId,  # type: ignore[arg-type]
+            delivery=delivery,  # type: ignore[arg-type]
+            executionName=executionName,  # type: ignore[arg-type]
+            trigger=trigger,  # type: ignore[arg-type]
+        )
+        from app.services.observability.errors import ObsValidationError
+
+        if isinstance(result, ObsValidationError):
+            return None
+        return result.model_dump(mode="json")
+    except Exception:
+        return None
+
+
 async def handlePullRequestOpened(
     payload: dict,
     delivery: str,
@@ -44,12 +76,18 @@ async def handlePullRequestOpened(
         prNumber=int(pr.number),
         headSha=str(pr.headSha),
     )
+    traceCtxPayload = _traceCtxForTrigger(
+        delivery=delivery,
+        executionName=executionName,
+        trigger="opened",
+    )
     result = await invokeOpenedDurable(
         function_name=settings.review_opened_function_name,
         event=OpenedDurableEvent(
             delivery=delivery,
             execution_name=executionName,
             payload=payload,
+            traceCtx=traceCtxPayload,
         ),
     )
     if not result.invoked:
@@ -91,12 +129,18 @@ async def handleIssueCommentCreated(
         prNumber=int(trigger.prNumber),
         delivery=delivery,
     )
+    traceCtxPayload = _traceCtxForTrigger(
+        delivery=delivery,
+        executionName=executionName,
+        trigger="comment",
+    )
     result = await invokeCommentDurable(
         function_name=settings.review_comment_function_name,
         event=CommentDurableEvent(
             delivery=delivery,
             execution_name=executionName,
             payload=payload,
+            traceCtx=traceCtxPayload,
         ),
     )
     if not result.invoked:
