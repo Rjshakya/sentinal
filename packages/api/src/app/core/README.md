@@ -9,7 +9,8 @@ reverse.
 - `config.py` — `Settings(BaseSettings)` loaded from the monorepo-root
   `.env`, plus the `settings` singleton. Groups: server, WorkOS,
   sandbox, LLM (`llm_model` as a `"provider:model"` string),
-  GitHub App, durable function names, webhook secret, telemetry.
+  GitHub App, durable function names, webhook secret, Langfuse
+  (`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL`).
   `*_configured` properties are the 503 gates for routes.
 - `db.py` — async engine + `async_session_maker`, the `get_session`
   FastAPI dependency, and `create_db_and_tables` (greenfield-dev
@@ -23,9 +24,9 @@ reverse.
   exceptions. Attaches the `Session` to `request.state`.
 - `workos.py` — process-wide lazy `AsyncWorkOSClient`. Login URL,
   code exchange, seal/load session.
-- `telemetry.py` — OpenLLMetry init + FastAPI instrumentation, gated
-  on `TRACELOOP_BASE_URL` / `TRACELOOP_API_KEY`. Unconfigured → SDK
-  never initialises, logs stay on the console.
+- Tracing lives in `services/tracing/` (Langfuse handler + `@observe`
+  + `flushTraces`). Unconfigured (empty keys) → helpers are no-ops,
+  logs stay on the console.
 
 ## Notes
 

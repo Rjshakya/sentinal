@@ -40,13 +40,6 @@ class OpenedDurableEvent(BaseModel):
     delivery: str = Field(description="X-GitHub-Delivery id.")
     execution_name: str = Field(description="Deterministic execution name.")
     payload: dict = Field(description="Verified raw GitHub pull_request payload.")
-    traceparent: str | None = Field(
-        default=None, description="W3C traceparent injected at Invoke time."
-    )
-    tracestate: str | None = Field(default=None, description="W3C tracestate.")
-    traceCtx: dict | None = Field(
-        default=None, description="Legacy join keys (unused; traceparent carries context)."
-    )
 
 
 class CommentDurableEvent(BaseModel):
@@ -57,13 +50,6 @@ class CommentDurableEvent(BaseModel):
     delivery: str = Field(description="X-GitHub-Delivery id.")
     execution_name: str = Field(description="Deterministic execution name.")
     payload: dict = Field(description="Verified raw GitHub issue_comment payload.")
-    traceparent: str | None = Field(
-        default=None, description="W3C traceparent injected at Invoke time."
-    )
-    tracestate: str | None = Field(default=None, description="W3C tracestate.")
-    traceCtx: dict | None = Field(
-        default=None, description="Legacy join keys (unused; traceparent carries context)."
-    )
 
 
 class DurableRepairEvent(BaseModel):
@@ -75,13 +61,6 @@ class DurableRepairEvent(BaseModel):
     pr_number: int = Field(ge=1)
     commit_id: str = Field(min_length=7, max_length=64)
     execution_name: str
-    traceparent: str | None = Field(
-        default=None, description="W3C traceparent injected at Invoke time."
-    )
-    tracestate: str | None = Field(default=None, description="W3C tracestate.")
-    traceCtx: dict | None = Field(
-        default=None, description="Legacy join keys (unused; traceparent carries context)."
-    )
 
 
 class ReviewSkipped(BaseModel):

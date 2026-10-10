@@ -260,78 +260,29 @@ class Settings(BaseSettings):
         "blank.",
     )
 
-    # --- Observability (OTel: traces + metrics + logs over OTLP/HTTP) ---
-    # When OTEL_EXPORTER_OTLP_ENDPOINT is empty, telemetry stays disabled
-    # and all helpers are no-ops (same code runs locally and on Lambda).
-    otel_exporter_otlp_endpoint: str = Field(
+    # --- Observability (Langfuse: tracing + metrics for LLM/agent calls) ---
+    # When LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are empty, tracing
+    # stays disabled and all helpers are no-ops (same code runs locally
+    # and on Lambda).
+    langfuse_public_key: str = Field(
         default="",
-        description="OTLP/HTTP base endpoint (e.g. https://api.axiom.co). "
-        "Empty disables telemetry.",
+        description="Langfuse public key (pk-lf-...). Empty disables tracing.",
     )
-    otel_exporter_otlp_headers: str = Field(
+    langfuse_secret_key: str = Field(
         default="",
-        description="Comma-separated key=value pairs sent as OTLP/HTTP headers "
-        "(e.g. 'Authorization=Bearer $AXIOM_TOKEN,X-Axiom-Dataset=axiom-otel').",
+        description="Langfuse secret key (sk-lf-...). Empty disables tracing.",
     )
-    otel_service_name: str = Field(
-        default="sentinel-api",
-        description="OTel service.name resource attribute.",
-    )
-    otel_sampler_arg: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=1.0,
-        description="Head-sample ratio 0.0-1.0 for traces.",
-    )
-    otel_genai_capture_content: bool = Field(
-        default=False,
-        description="Capture prompt/completion bodies on GenAI spans. "
-        "Keep false in production (code diffs are large + sensitive).",
-    )
-    telemetry_fastapi: bool = Field(
-        default=True,
-        description="Instrument the FastAPI app (one HTTP span per request).",
-    )
-    telemetry_excluded_urls: str = Field(
-        default="health",
-        description="Comma-delimited regexes excluded from FastAPI tracing.",
-    )
-    axiom_dataset: str = Field(
-        default="",
-        description="Axiom Events-type dataset for traces/logs (X-Axiom-Dataset).",
-    )
-    axiom_metrics_dataset: str = Field(
-        default="",
-        description="Axiom Metrics-type dataset (X-Axiom-Metrics-Dataset).",
+    langfuse_base_url: str = Field(
+        default="https://cloud.langfuse.com",
+        description="Langfuse base URL (cloud region or self-hosted).",
     )
 
     @property
-    def telemetry_configured(self) -> bool:
-        """True when an OTLP endpoint is set (telemetry actually exports)."""
-        return bool(self.otel_exporter_otlp_endpoint.strip())
-
-    @property
-    def otlp_headers_dict(self) -> dict[str, str]:
-        """Parse OTEL_EXPORTER_OTLP_HEADERS plus Axiom dataset headers."""
-        headers: dict[str, str] = {}
-        raw = (self.otel_exporter_otlp_headers or "").strip()
-        if raw:
-            for part in raw.split(","):
-                part = part.strip()
-                if not part or "=" not in part:
-                    continue
-                key, value = part.split("=", 1)
-                key, value = key.strip(), value.strip()
-                if key:
-                    headers[key] = value
-        if self.axiom_dataset and "X-Axiom-Dataset" not in headers:
-            headers["X-Axiom-Dataset"] = self.axiom_dataset
-        metrics_ds = self.axiom_metrics_dataset.strip()
-        if metrics_ds and "X-Axiom-Metrics-Dataset" not in headers:
-            headers["X-Axiom-Metrics-Dataset"] = metrics_ds
-        return headers
-
-    # --- Observability (legacy traceloop fields kept for env parity) ---
+    def langfuse_configured(self) -> bool:
+        """True when Langfuse keys are set (tracing actually exports)."""
+        return bool(
+            self.langfuse_public_key.strip() and self.langfuse_secret_key.strip()
+        )
 
     review_e2e_installation_id: str = Field(
         default="",
@@ -360,6 +311,11 @@ class Settings(BaseSettings):
     )
 
     app_name: str = Field(default="reviewpr", description="app name")
+
+    app_version: str = Field(
+        default="0.1.0",
+        description="app version (reported as the Langfuse release/version).",
+    )
 
     @property
     def daytona_configured(self) -> bool:

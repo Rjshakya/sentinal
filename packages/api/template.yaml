@@ -65,19 +65,10 @@ Globals:
         DAYTONA_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:DAYTONA_API_KEY}}'
         # --- embeddings (keys used by the in-sandbox codegraph pipeline) ---
         OPENAI_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:OPENAI_API_KEY}}'
-        # --- observability (OTel over OTLP/HTTP; empty endpoint = disabled) ---
-        OTEL_EXPORTER_OTLP_ENDPOINT: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:OTEL_EXPORTER_OTLP_ENDPOINT}}'
-        OTEL_EXPORTER_OTLP_HEADERS: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:OTEL_EXPORTER_OTLP_HEADERS}}'
-        OTEL_SERVICE_NAME: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:OTEL_SERVICE_NAME}}'
-        OTEL_SAMPLER_ARG: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:OTEL_SAMPLER_ARG}}'
-        TELEMETRY_FASTAPI: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TELEMETRY_FASTAPI}}'
-        AXIOM_DATASET: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:AXIOM_DATASET}}'
-        AXIOM_METRICS_DATASET: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:AXIOM_METRICS_DATASET}}'
-        # --- observability legacy (kept for parity) ---
-        TRACELOOP_BASE_URL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_BASE_URL}}'
-        TRACELOOP_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_API_KEY}}'
-        TRACELOOP_TRACE_CONTENT: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_TRACE_CONTENT}}'
-        TRACELOOP_DISABLE_BATCH: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_DISABLE_BATCH}}'
+        # --- observability (Langfuse; empty keys = disabled) ---
+        LANGFUSE_PUBLIC_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:LANGFUSE_PUBLIC_KEY}}'
+        LANGFUSE_SECRET_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:LANGFUSE_SECRET_KEY}}'
+        LANGFUSE_BASE_URL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:LANGFUSE_BASE_URL}}'
 
 Resources:
   ApiFunction:

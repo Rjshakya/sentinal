@@ -127,17 +127,4 @@ async def github_webhook(
         result.accepted,
         result.skipReason,
     )
-    try:
-        from app.core.telemetry import aforce_flush_telemetry, count
-
-        count(
-            "sentinel.webhook_deliveries",
-            1,
-            {"event": event, "accepted": str(bool(result.accepted))},
-        )
-        if not result.accepted:
-            count("sentinel.webhook_skipped", 1, {"event": event})
-        await aforce_flush_telemetry(1000)
-    except Exception:
-        pass
     return Response(status_code=202)

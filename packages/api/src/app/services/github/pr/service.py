@@ -50,8 +50,9 @@ from githubkit_schemas.v2026_03_10.types import (
     ReposOwnerRepoPullsPullNumberReviewsPostBodyType,
 )
 
+from langfuse import observe
+
 from app.services.github.client import getAuthenticatedGitHubClient
-from app.core.telemetry import with_span
 from app.services.github.pr.errors import GitHubPRError
 from app.services.github.pr.types import (
     IssueCommentItem,
@@ -109,21 +110,21 @@ def _statusOf(exc: Exception) -> int | None:
     return None
 
 
-def _prCtxAttrs(ctx: PRCtx, **kwargs: object) -> dict[str, object]:
-    """Span attributes for PR operations (identity only, no bodies)."""
-    try:
-        return {
-            "github.owner": str(ctx.owner),
-            "github.repo": str(ctx.repo),
-            "github.pr_number": int(ctx.prNumber),
-        }
-    except Exception:
-        return {}
-
-
-@with_span("github.get_pr_state", attrs_from=_prCtxAttrs)
+@observe(name="github-get-pr-state", capture_input=False, capture_output=False)
 async def getPrState(ctx: PRCtx) -> PRState | GitHubPRError:
     """Fetch the PR's current state from the GitHub API."""
+    try:
+        from langfuse import get_client
+
+        get_client().update_current_span(
+            metadata={
+                "github_owner": str(ctx.owner),
+                "github_repo": str(ctx.repo),
+                "github_pr_number": int(ctx.prNumber),
+            }
+        )
+    except Exception:
+        pass
     client = ctx.client
 
     try:
@@ -543,7 +544,7 @@ async def addReaction(
     return None
 
 
-@with_span("github.post_review", attrs_from=_prCtxAttrs)
+@observe(name="github-post-review", capture_input=False, capture_output=False)
 async def postReview(
     ctx: PRCtx,
     draft: PRReviewDraft,
@@ -553,6 +554,19 @@ async def postReview(
     GitHub API only — the caller owns any local persistence. Anchors
     the review to ``ctx.commitId``.
     """
+    try:
+        from langfuse import get_client
+
+        get_client().update_current_span(
+            metadata={
+                "github_owner": str(ctx.owner),
+                "github_repo": str(ctx.repo),
+                "github_pr_number": int(ctx.prNumber),
+                "comment_count": len(draft.comments),
+            }
+        )
+    except Exception:
+        pass
     if ctx.commitId is None:
         return GitHubPRError(
             message="pr ctx requires commitId to post a review",

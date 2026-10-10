@@ -21,6 +21,7 @@ from app.services.agent_v2.types import (
 )
 from app.services.llm.types import LLMCtx
 from app.services.sandbox.types import SandboxCtx
+from app.services.tracing.types import ReviewTraceCtx
 from app.utils.branded import RepoId
 from app.utils.schema import ReviewComments
 from app.workflows.review_v2.errors import (
@@ -190,11 +191,21 @@ def runFileBatch(_ctx: StepContext, *, input: dict) -> dict:
 
 
 @durable_step
-def extractReviewComments(_ctx: StepContext, *, rawText: str) -> dict:
+def extractReviewComments(
+    _ctx: StepContext, *, rawText: str, traceCtx: dict | None = None
+) -> dict:
     """Transcribe concatenated file reports into comment drafts."""
+    parsedTraceCtx: ReviewTraceCtx | None = None
+    if traceCtx is not None:
+        try:
+            parsedTraceCtx = ReviewTraceCtx.model_validate(traceCtx)
+        except Exception:
+            parsedTraceCtx = None
     comments, usage = asyncio.run(
         extractCommentsStep(
-            extractorLlmCtx=buildExtractorLlmCtx(), rawText=rawText
+            extractorLlmCtx=buildExtractorLlmCtx(),
+            rawText=rawText,
+            traceCtx=parsedTraceCtx,
         )
     )
     return {

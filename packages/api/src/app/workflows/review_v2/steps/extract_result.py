@@ -18,11 +18,19 @@ import logging
 
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import HumanMessage, SystemMessage, UsageMetadata
+from langchain_core.runnables import RunnableConfig
+from langfuse import observe
 
 from app.core.config import settings
 from app.services.agent_v2.prompts.shared import COMMENT_BODY_FORMAT
 from app.services.llm.service import createLLMModel
 from app.services.llm.types import LLMCtx
+from app.services.tracing.service import (
+    buildAgentConfig,
+    createTraceCallbacks,
+    propagateReviewAttrs,
+)
+from app.services.tracing.types import ReviewTraceCtx
 from app.utils.branded import ApiKey
 from app.utils.schema import ReviewComments
 from app.workflows.review_v2.errors import (
@@ -89,10 +97,12 @@ def extractionError(message: str, *, retryable: bool = False) -> Exception:
     )
 
 
+@observe(name="extract-comments", capture_input=False)
 async def extractCommentsStep(
     *,
     extractorLlmCtx: LLMCtx,
     rawText: str,
+    traceCtx: ReviewTraceCtx | None = None,
 ) -> tuple[ReviewComments, dict[str, UsageMetadata]]:
     """Transcribe the findings report into :class:`ReviewComments`.
 
@@ -107,16 +117,42 @@ async def extractCommentsStep(
     if isinstance(chat, ValueError):
         raise extractionError(f"failed to build extractor model: {chat}")
 
+    if traceCtx is not None:
+        agentConfig: RunnableConfig = buildAgentConfig(
+            ctx=traceCtx,
+            runName="extract-comments",
+            lane="lane:extract",
+            extraMetadata={"input_chars": len(rawText)},
+        )
+    else:
+        agentConfig = {"run_name": "extract-comments"}
+        callbacks = createTraceCallbacks()
+        if callbacks:
+            agentConfig["callbacks"] = callbacks
+
     try:
         structured = chat.with_structured_output(ReviewComments)
-        with get_usage_metadata_callback() as usage_cb:
-            response = await structured.ainvoke(
-                [
-                    SystemMessage(content=COMMENTS_EXTRACTION_SYSTEM_PROMPT),
-                    HumanMessage(content=rawText),
-                ]
-            )
-            usage = usage_cb.usage_metadata
+        if traceCtx is not None:
+            with propagateReviewAttrs(ctx=traceCtx, traceName="review-extract"):
+                with get_usage_metadata_callback() as usage_cb:
+                    response = await structured.ainvoke(
+                        [
+                            SystemMessage(content=COMMENTS_EXTRACTION_SYSTEM_PROMPT),
+                            HumanMessage(content=rawText),
+                        ],
+                        config=agentConfig,
+                    )
+                    usage = usage_cb.usage_metadata
+        else:
+            with get_usage_metadata_callback() as usage_cb:
+                response = await structured.ainvoke(
+                    [
+                        SystemMessage(content=COMMENTS_EXTRACTION_SYSTEM_PROMPT),
+                        HumanMessage(content=rawText),
+                    ],
+                    config=agentConfig,
+                )
+                usage = usage_cb.usage_metadata
         result = ReviewComments.model_validate(response)
     except Exception as exc:
         if isinstance(exc, (TransientReviewStepFailure, ReviewStepFailure)):

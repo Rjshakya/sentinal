@@ -13,6 +13,7 @@ from typing import cast
 
 from aws_durable_execution_sdk_python import durable_step
 from aws_durable_execution_sdk_python.types import StepContext
+from langfuse import observe
 from pydantic import BaseModel, ConfigDict
 
 from app.core.config import settings
@@ -40,6 +41,7 @@ class RepoSnapshotOutput(RepoSnapshot):
 
 
 @durable_step
+@observe(name="get-user-by-installation", capture_input=False, capture_output=False)
 def getUserIdByInstallation(
     _ctx: StepContext, *, installationId: int
 ) -> str | None:
@@ -58,6 +60,7 @@ def getUserIdByInstallation(
 
 
 @durable_step
+@observe(name="get-repo-by-github-id", capture_input=False, capture_output=False)
 def getRepoByGithubId(_ctx: StepContext, *, ghRepoId: int) -> dict | None:
     """Return the local repo snapshot for a GitHub repo id, else None."""
 
@@ -79,6 +82,7 @@ def getRepoByGithubId(_ctx: StepContext, *, ghRepoId: int) -> dict | None:
 
 
 @durable_step
+@observe(name="resolve-llm-ctx", capture_input=False, capture_output=False)
 def resolveActiveLlmCtx(_ctx: StepContext, *, userId: str) -> dict:
     """Return the run LLM ctx: user's stored row, else settings default."""
 

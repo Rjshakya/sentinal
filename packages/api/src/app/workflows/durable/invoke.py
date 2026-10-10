@@ -40,12 +40,6 @@ async def invokeEvent(
     *, functionName: str, executionName: str, payload: dict
 ) -> DurableInvokeResult:
     try:
-        try:
-            from app.core.telemetry import inject_trace_context
-
-            payload = inject_trace_context(dict(payload))
-        except Exception:
-            payload = dict(payload)
         await asyncio.to_thread(
             invokeEventSync,
             functionName=functionName,

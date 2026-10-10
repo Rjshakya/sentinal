@@ -9,7 +9,6 @@ from mangum import Mangum
 from app.core.config import settings
 from app.core.db import create_db_and_tables
 from app.core.middleware import AuthMiddleware
-from app.core.telemetry import init_telemetry, instrument_fastapi
 from app.routers import (
     ai,
     auth,
@@ -26,9 +25,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
-
-# Observability seam (no-op until the new instrument lands).
-init_telemetry()
 
 
 @asynccontextmanager
@@ -76,8 +72,6 @@ def create_app() -> FastAPI:
     app.include_router(pulls.router, prefix=settings.api_prefix)
     app.include_router(llm_configs.router, prefix=settings.api_prefix)
     app.include_router(webhooks.router, prefix=settings.api_prefix)
-
-    instrument_fastapi(app)
 
     return app
 
