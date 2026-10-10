@@ -14,6 +14,8 @@ marker; each subpackage owns its public surface.
 - `llm/` — provider-agnostic chat-model factory (`LLMCtx` in,
   `BaseChatModel` out) plus the per-user `config/` sub-service.
 - `sandbox/` — sandbox ctx assembly + provider map (E2B live).
+- `tracing/` — Langfuse seam: `ReviewTraceCtx` identity,
+  `CallbackHandler` factory, `propagateReviewAttrs`, `flushTraces`.
 
 ## The contract
 

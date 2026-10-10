@@ -11,19 +11,23 @@ from aws_durable_execution_sdk_python.context import DurableContext
 
 from app.workflows.durable.repair_pipeline import RepairPhaseInput, runRepairPhase
 from app.workflows.durable.types import DurableRepairEvent
+from app.services.tracing.service import flushTraces
 
 
 @durable_execution
 def repair_durable_handler(event: dict, ctx: DurableContext) -> dict:
     request = DurableRepairEvent.model_validate(event)
-    return runRepairPhase(
-        ctx,
-        input=RepairPhaseInput(
-            delivery=request.delivery,
-            executionName=request.execution_name,
-            commitId=request.commit_id,
-        ),
-    )
+    try:
+        return runRepairPhase(
+            ctx,
+            input=RepairPhaseInput(
+                delivery=request.delivery,
+                executionName=request.execution_name,
+                commitId=request.commit_id,
+            ),
+        )
+    finally:
+        flushTraces()
 
 
 __all__ = ["repair_durable_handler"]

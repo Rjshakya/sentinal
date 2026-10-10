@@ -37,6 +37,7 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.rate_limiters import InMemoryRateLimiter
+from langfuse import observe
 from pydantic import SecretStr
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -154,6 +155,7 @@ async def createUserLLMContext(
     )
 
 
+@observe(name="llm-create-model", capture_input=False, capture_output=False)
 def createLLMModel(
     ctx: LLMCtx, *, rateLimiterKey: str | None = None
 ) -> BaseChatModel | LLMConfigError:
@@ -184,6 +186,15 @@ def createLLMModel(
             f"LLMCtx.model must be a 'provider:model' string, got {ctx.model!r}"
         )
     provider, model_id = ctx.model.split(":", 1)
+
+    try:
+        from langfuse import get_client
+
+        get_client().update_current_span(
+            metadata={"llm_model": ctx.model, "llm_origin": str(ctx.origin)}
+        )
+    except Exception:
+        pass
 
     init_kwargs: dict[str, Any] = {"max_retries": ctx.maxRetries}
     if ctx.rateLimitRps is not None and ctx.rateLimitRps > 0:

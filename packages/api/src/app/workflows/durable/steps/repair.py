@@ -47,6 +47,12 @@ from app.services.llm.errors import LLMConfigError
 from app.services.llm.service import createLLMModel
 from app.services.llm.types import LLMCtx
 from app.services.sandbox.types import SandboxCtx
+from app.services.tracing.service import (
+    buildAgentConfig,
+    propagateReviewAttrs,
+    traceSessionId,
+)
+from app.services.tracing.types import ReviewTraceCtx
 from app.workflows.review_v2.errors import SandboxConnectError
 from app.utils.branded import (
     CommitId,
@@ -354,6 +360,30 @@ def runRepairAgent(_ctx: StepContext, *, input: dict) -> dict | None:
         request = RepairAgentInput.model_validate(input)
         unpublished = request.unpublished
 
+        traceCtx = ReviewTraceCtx(
+            userId=str(unpublished.userId),
+            sessionId=traceSessionId(
+                userId=str(unpublished.userId),
+                repoId=str(unpublished.repoId),
+                prNumber=int(unpublished.prNumber),
+                headSha=str(unpublished.commitId),
+            ),
+            trigger="repair",
+            repoId=str(unpublished.repoId),
+            repoName=str(unpublished.repoName),
+            prNumber=int(unpublished.prNumber),
+            headSha=str(unpublished.commitId),
+            baseSha=unpublished.baseSha,
+            llmModel=str(request.llm.model),
+            llmOrigin=str(request.llm.origin),
+        )
+        agentConfig = buildAgentConfig(
+            ctx=traceCtx,
+            runName="repair-publish",
+            lane="lane:repair",
+            extraMetadata={"comment_count": len(unpublished.comments)},
+        )
+
         chat = createLLMModel(request.llm)
         if isinstance(chat, LLMConfigError):
             raise RuntimeError(f"failed to build repair model: {chat}")
@@ -373,15 +403,17 @@ def runRepairAgent(_ctx: StepContext, *, input: dict) -> dict | None:
                 toolCallRunLimit=REPAIR_MAX_TOOL_CALLS,
             ),
         )
-        await agent.ainvoke(
-            {
-                "messages": [
-                    HumanMessage(
-                        content=buildUserPrompt(unpublished, request.diffDir)
-                    )
-                ]
-            }
-        )
+        with propagateReviewAttrs(ctx=traceCtx, traceName="review-repair"):
+            await agent.ainvoke(
+                {
+                    "messages": [
+                        HumanMessage(
+                            content=buildUserPrompt(unpublished, request.diffDir)
+                        )
+                    ]
+                },
+                config=agentConfig,
+            )
 
         if holder.github_review_id is None:
             log.warning(

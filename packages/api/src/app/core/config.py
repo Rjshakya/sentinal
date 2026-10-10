@@ -260,8 +260,29 @@ class Settings(BaseSettings):
         "blank.",
     )
 
-    # --- Observability (new instrument lands on core/telemetry.py seam) ---
-    # Legacy TRACELOOP_*/OTLP fields removed with traceloop-sdk.
+    # --- Observability (Langfuse: tracing + metrics for LLM/agent calls) ---
+    # When LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are empty, tracing
+    # stays disabled and all helpers are no-ops (same code runs locally
+    # and on Lambda).
+    langfuse_public_key: str = Field(
+        default="",
+        description="Langfuse public key (pk-lf-...). Empty disables tracing.",
+    )
+    langfuse_secret_key: str = Field(
+        default="",
+        description="Langfuse secret key (sk-lf-...). Empty disables tracing.",
+    )
+    langfuse_base_url: str = Field(
+        default="https://cloud.langfuse.com",
+        description="Langfuse base URL (cloud region or self-hosted).",
+    )
+
+    @property
+    def langfuse_configured(self) -> bool:
+        """True when Langfuse keys are set (tracing actually exports)."""
+        return bool(
+            self.langfuse_public_key.strip() and self.langfuse_secret_key.strip()
+        )
 
     review_e2e_installation_id: str = Field(
         default="",
@@ -290,6 +311,11 @@ class Settings(BaseSettings):
     )
 
     app_name: str = Field(default="reviewpr", description="app name")
+
+    app_version: str = Field(
+        default="0.1.0",
+        description="app version (reported as the Langfuse release/version).",
+    )
 
     @property
     def daytona_configured(self) -> bool:

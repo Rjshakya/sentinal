@@ -18,6 +18,7 @@ from aws_durable_execution_sdk_python.retries import (
 )
 
 from app.core.config import settings
+from app.services.tracing.service import flushTraces
 from app.workflows.durable.pipeline import AgentPhaseInput, runAgentPhase
 from app.workflows.durable.steps import (
     buildSandboxCtxForRun,
@@ -42,6 +43,13 @@ RETRY_1 = StepConfig(
 @durable_execution
 def reviewOpenedHandler(event: dict, ctx: DurableContext) -> dict:
     request = OpenedDurableEvent.model_validate(event)
+    try:
+        return _reviewOpenedHandlerInner(request, ctx)
+    finally:
+        flushTraces()
+
+
+def _reviewOpenedHandlerInner(request: OpenedDurableEvent, ctx: DurableContext) -> dict:
 
     opened = ctx.step(
         parseOpenedPayload(payload=request.payload),

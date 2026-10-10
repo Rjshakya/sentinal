@@ -260,7 +260,24 @@ def runAgentPhase(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
         commentsList: list[dict] = []
         if rawText.strip():
             extOut = ctx.step(
-                extractReviewComments(rawText=rawText),
+                extractReviewComments(
+                    rawText=rawText,
+                    traceCtx={
+                        "userId": userId,
+                        "sessionId": (
+                            f"review:{userId}:{repoId}:{prNumber}:{headSha[:7]}"
+                        ),
+                        "trigger": str(dict(workflowInput).get("trigger") or "opened"),
+                        "delivery": input.delivery,
+                        "repoId": repoId,
+                        "repoName": repoName,
+                        "prNumber": prNumber,
+                        "headSha": headSha,
+                        "baseSha": baseSha,
+                        "llmModel": modelStr or None,
+                        "llmOrigin": llmProvider,
+                    },
+                ),
                 name="extract-comments",
                 config=RETRY_3,
             )

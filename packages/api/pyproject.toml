@@ -24,6 +24,7 @@ dependencies = [
     "boto3>=1.43.104",
     "aws-lambda-powertools>=3.35.0",
     "mangum>=0.22.0",
+    "langfuse>=4.17.0",
 ]
 
 [build-system]
