@@ -45,7 +45,7 @@ class OpenedDurableEvent(BaseModel):
     )
     tracestate: str | None = Field(default=None, description="W3C tracestate.")
     traceCtx: dict | None = Field(
-        default=None, description="Serializable TraceCtx join keys."
+        default=None, description="Legacy join keys (unused; traceparent carries context)."
     )
 
 
@@ -62,7 +62,7 @@ class CommentDurableEvent(BaseModel):
     )
     tracestate: str | None = Field(default=None, description="W3C tracestate.")
     traceCtx: dict | None = Field(
-        default=None, description="Serializable TraceCtx join keys."
+        default=None, description="Legacy join keys (unused; traceparent carries context)."
     )
 
 
@@ -80,7 +80,7 @@ class DurableRepairEvent(BaseModel):
     )
     tracestate: str | None = Field(default=None, description="W3C tracestate.")
     traceCtx: dict | None = Field(
-        default=None, description="Serializable TraceCtx join keys."
+        default=None, description="Legacy join keys (unused; traceparent carries context)."
     )
 
 

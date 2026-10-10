@@ -1,18 +1,21 @@
-"""Observability seam: OTel init + FastAPI instrumentation + span helpers.
+"""Observability: init + logger + spans + metrics over OTLP/HTTP.
 
-Single import point (``main.py`` calls :func:`init_telemetry` then
-:func:`instrument_fastapi`). When ``OTEL_EXPORTER_OTLP_ENDPOINT`` is empty
-every helper is a no-op, so the same code runs locally and on Lambda.
+Simple functional API (the single telemetry implementation):
 
-Design notes (kept compatible with the service error-as-value pattern):
+- :func:`init_telemetry` — start traces, metrics, logs. Never raises.
+- :func:`get_logger` — stdlib logger with trace correlation.
+- :func:`with_span` — decorator adding one span to a function.
+- :func:`start_span` — one span around a ``with`` block.
+- :func:`count` / :func:`record` — counter / histogram points.
+- :func:`inject_trace_context` / :func:`extract_trace_context` —
+  W3C propagation across the Lambda Invoke boundary.
 
-- :func:`init_telemetry` is idempotent and never raises.
-- :func:`trace_span` never marks returned ``*Error`` values as span
-  failures (type name ending in ``"Error"`` closes ``OK`` with an
-  ``error.value`` marker); only a raised exception closes ``ERROR``.
-- Trace propagation across the Lambda Invoke boundary is explicit:
-  :func:`inject_trace_context` adds ``traceparent`` to the durable event
-  payload, :func:`extract_trace_context` restores it in the handler.
+When ``OTEL_EXPORTER_OTLP_ENDPOINT`` is empty every helper is a no-op,
+so the same code runs locally and on Lambda.
+
+The decorator honours the service error-as-value contract: a returned
+``*Error`` model closes the span ``OK`` (with ``error.value=true``);
+only a raised exception closes ``ERROR`` and re-raises.
 """
 
 from __future__ import annotations
@@ -302,19 +305,24 @@ def start_span(
     attributes: dict[str, Any] | None = None,
     kind: Any = None,
 ) -> Iterator[Any]:
-    """Open a child span of the current context. Never raises."""
+    """Open a child span of the current context. Never raises on setup.
+
+    Body exceptions propagate unchanged (the span just ends first).
+    """
     try:
         from opentelemetry import trace as otel_trace
 
         kwargs: dict[str, Any] = {"attributes": dict(attributes or {})}
         if kind is not None:
             kwargs["kind"] = kind
-        with otel_trace.get_tracer("sentinel").start_as_current_span(
+        span_cm = otel_trace.get_tracer("sentinel").start_as_current_span(
             name, **kwargs
-        ) as span:
-            yield span
+        )
     except Exception:
         yield _NoopSpan()
+        return
+    with span_cm as span:
+        yield span
 
 
 def _is_error_value(result: Any) -> bool:
@@ -330,7 +338,17 @@ def _is_error_value(result: Any) -> bool:
         return False
 
 
-def trace_span(
+def get_logger(name: str) -> logging.Logger:
+    """Return the stdlib logger for ``name`` (trace-correlated).
+
+    The OTel logging instrumentor (installed by :func:`init_telemetry`)
+    attaches the current trace/span ids to every record, so plain
+    ``log.info(...)`` calls stay correlated with zero call-site changes.
+    """
+    return logging.getLogger(name)
+
+
+def with_span(
     name: str,
     *,
     attrs_from: Callable[..., dict[str, Any]] | None = None,
@@ -356,33 +374,24 @@ def trace_span(
                     attrs = dict(attrs_from(*args, **kwargs) or {})
                 except Exception:
                     attrs = {}
-            try:
-                with start_span(name, attributes=attrs, kind=kind) as span:
+            with start_span(name, attributes=attrs, kind=kind) as span:
+                try:
+                    result = await fn(*args, **kwargs)
+                except Exception as exc:
                     try:
-                        result = await fn(*args, **kwargs)
-                    except Exception as exc:
-                        try:
-                            span.record_exception(exc)
-                            from opentelemetry.trace import Status, StatusCode
+                        span.record_exception(exc)
+                        from opentelemetry.trace import Status, StatusCode
 
-                            span.set_status(
-                                Status(StatusCode.ERROR, str(exc)[:256])
-                            )
-                        except Exception:
-                            pass
-                        raise
-                    try:
-                        if _is_error_value(result):
-                            span.set_attribute("error.value", True)
-                        elif isinstance(attrs, dict) and attrs:
-                            pass
+                        span.set_status(Status(StatusCode.ERROR, str(exc)[:256]))
                     except Exception:
                         pass
-                    return result
-            except Exception:
-                # start_span itself is defensive; this path only runs when
-                # the wrapped call raised (re-raised above) — keep it.
-                raise
+                    raise
+                try:
+                    if _is_error_value(result):
+                        span.set_attribute("error.value", True)
+                except Exception:
+                    pass
+                return result
 
         @functools.wraps(fn)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -416,6 +425,10 @@ def trace_span(
         return async_wrapper if is_coro else sync_wrapper
 
     return decorator
+
+
+trace_span = with_span
+"""Backward-compatible alias for :func:`with_span`."""
 
 
 def inject_trace_context(payload: dict[str, Any]) -> dict[str, Any]:
@@ -555,18 +568,46 @@ class _NoopInstrument:
         pass
 
 
+def count(
+    name: str, value: int | float = 1, attrs: dict[str, str] | None = None
+) -> None:
+    """Add a counter point. Best-effort; never raises.
+
+    Keep ``attrs`` low-cardinality (route, event, status) — never SHAs,
+    file paths, or delivery ids. Full ids belong on spans.
+    """
+    try:
+        get_counter(name).add(value, attributes=dict(attrs or {}))
+    except Exception:
+        pass
+
+
+def record(
+    name: str, seconds: int | float, attrs: dict[str, str] | None = None
+) -> None:
+    """Record a duration point (seconds). Best-effort; never raises."""
+    try:
+        get_histogram(name).record(seconds, attributes=dict(attrs or {}))
+    except Exception:
+        pass
+
+
 __all__ = [
     "aforce_flush_telemetry",
+    "count",
     "current_trace_id",
     "extract_trace_context",
     "force_flush_telemetry",
     "get_counter",
     "get_histogram",
+    "get_logger",
     "get_tracer",
     "init_telemetry",
     "inject_trace_context",
     "instrument_fastapi",
     "is_telemetry_enabled",
+    "record",
     "start_span",
     "trace_span",
+    "with_span",
 ]

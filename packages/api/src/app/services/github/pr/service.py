@@ -51,7 +51,7 @@ from githubkit_schemas.v2026_03_10.types import (
 )
 
 from app.services.github.client import getAuthenticatedGitHubClient
-from app.core.telemetry import trace_span
+from app.core.telemetry import with_span
 from app.services.github.pr.errors import GitHubPRError
 from app.services.github.pr.types import (
     IssueCommentItem,
@@ -121,7 +121,7 @@ def _prCtxAttrs(ctx: PRCtx, **kwargs: object) -> dict[str, object]:
         return {}
 
 
-@trace_span("github.get_pr_state", attrs_from=_prCtxAttrs)
+@with_span("github.get_pr_state", attrs_from=_prCtxAttrs)
 async def getPrState(ctx: PRCtx) -> PRState | GitHubPRError:
     """Fetch the PR's current state from the GitHub API."""
     client = ctx.client
@@ -543,7 +543,7 @@ async def addReaction(
     return None
 
 
-@trace_span("github.post_review", attrs_from=_prCtxAttrs)
+@with_span("github.post_review", attrs_from=_prCtxAttrs)
 async def postReview(
     ctx: PRCtx,
     draft: PRReviewDraft,

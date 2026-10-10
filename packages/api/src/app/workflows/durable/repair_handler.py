@@ -15,6 +15,7 @@ from app.core.telemetry import (
     extract_trace_context,
     force_flush_telemetry,
     init_telemetry,
+    record,
     start_span,
 )
 
@@ -60,12 +61,10 @@ def repair_durable_handler(event: dict, ctx: DurableContext) -> dict:
             )
     finally:
         try:
-            from app.core.telemetry import get_histogram
-
-            get_histogram(
-                "sentinel.handler_duration", description="Durable handler duration"
-            ).record(
-                _time.perf_counter() - _started, attributes={"trigger": "repair"}
+            record(
+                "sentinel.handler_duration",
+                _time.perf_counter() - _started,
+                {"trigger": "repair"},
             )
         except Exception:
             pass

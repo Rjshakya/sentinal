@@ -1,138 +1,52 @@
-"""Observability service: flow-ctx assembly + backend-delegating scopes.
+"""Observability service: tiny functional facade over OTel.
 
-Public surface:
+The implementation lives in :mod:`app.core.telemetry` (the single
+telemetry owner). This package only re-exports the six readable entry
+points so service code imports from one stable place:
 
-- :func:`createTraceCtx` / :func:`continueTraceCtx` — assemble or
-  rebuild the serializable :class:`TraceCtx` (pure data — the join
-  keys of one full flow; crosses durable boundaries).
-- :func:`createObsCtx` — bind the live :class:`ObsBackend` to a flow
-  ctx at the edge (never crosses a durable boundary).
-- :func:`openScope` / :func:`closeScope` / :func:`eventInScope` /
-  :func:`withScope` — generic span lifecycle over the injected
-  backend.
-- :func:`emitEvent` — one structured log row.
-- :func:`countMetric` / :func:`observeLatency` — counter /
-  histogram points.
-- :func:`closeStepScope` / :func:`closeLlmScope` /
-  :func:`closeGithubScope` / :func:`closeSandboxScope` /
-  :func:`closeDbScope` — typed closers translating outcome values
-  into consistent span status + attributes.
+- :func:`init_telemetry` — start traces, metrics, logs.
+- :func:`get_logger` — trace-correlated stdlib logger.
+- :func:`with_span` — decorator adding one span to a function.
+- :func:`start_span` — one span around a ``with`` block.
+- :func:`count` / :func:`record` — counter / histogram points.
 
-Naming convention: this package intentionally uses **camelCase**
-identifiers — the same convention as :mod:`app.services.llm`,
-:mod:`app.services.sandbox`, and :mod:`app.services.github`.
+Naming convention: this package intentionally uses **snake_case**
+identifiers — plain verbs matching the stdlib (``get_logger``,
+``with_span``), unlike the camelCase service packages.
 """
 
-from app.services.observability.errors import (
-    ObsConfigError,
-    ObsEmitError,
-    ObsValidationError,
-)
-from app.services.observability.service import (
-    closeDbScope,
-    closeGithubScope,
-    closeLlmScope,
-    closeSandboxScope,
-    closeScope,
-    closeStepScope,
-    continueTraceCtx,
-    countMetric,
-    createObsCtx,
-    createTraceCtx,
-    emitEvent,
-    eventInScope,
-    observeLatency,
-    openScope,
-    traceAttrs,
-    withScope,
-    withTraceAttrs,
-)
-from app.services.observability.otel_backend import (
-    NoopObsBackend,
-    OtelObsBackend,
-    createOtelBackend,
-)
-from app.services.observability.types import (
-    CommitId,
-    DbOutcome,
-    DeliveryId,
-    EventName,
-    ExecutionName,
-    GithubOutcome,
-    LlmOutcome,
-    LlmPhase,
-    LogLevel,
-    MetricAttrs,
-    MetricName,
-    ObsBackend,
-    ObsCtx,
-    PRNumber,
-    RepoId,
-    ReviewRowId,
-    SandboxOutcome,
-    SpanAttrs,
-    SpanHandle,
-    SpanKind,
-    SpanScope,
-    SpanStatus,
-    StepOutcome,
-    StepStatus,
-    TraceCtx,
-    TraceId,
-    TriggerKind,
-    UserId,
+from app.core.telemetry import (
+    aforce_flush_telemetry,
+    count,
+    current_trace_id,
+    extract_trace_context,
+    force_flush_telemetry,
+    get_logger,
+    get_tracer,
+    init_telemetry,
+    inject_trace_context,
+    is_telemetry_enabled,
+    record,
+    start_span,
+    with_span,
 )
 
+trace_span = with_span
+"""Backward-compatible alias for :func:`with_span`."""
+
 __all__ = [
-    "CommitId",
-    "DbOutcome",
-    "DeliveryId",
-    "EventName",
-    "ExecutionName",
-    "GithubOutcome",
-    "LlmOutcome",
-    "LlmPhase",
-    "LogLevel",
-    "MetricAttrs",
-    "MetricName",
-    "NoopObsBackend",
-    "ObsBackend",
-    "ObsConfigError",
-    "ObsCtx",
-    "ObsEmitError",
-    "ObsValidationError",
-    "OtelObsBackend",
-    "PRNumber",
-    "RepoId",
-    "ReviewRowId",
-    "SandboxOutcome",
-    "SpanAttrs",
-    "SpanHandle",
-    "SpanKind",
-    "SpanScope",
-    "SpanStatus",
-    "StepOutcome",
-    "StepStatus",
-    "TraceCtx",
-    "TraceId",
-    "TriggerKind",
-    "UserId",
-    "closeDbScope",
-    "closeGithubScope",
-    "closeLlmScope",
-    "closeSandboxScope",
-    "closeScope",
-    "closeStepScope",
-    "continueTraceCtx",
-    "countMetric",
-    "createObsCtx",
-    "createOtelBackend",
-    "createTraceCtx",
-    "emitEvent",
-    "eventInScope",
-    "observeLatency",
-    "openScope",
-    "traceAttrs",
-    "withScope",
-    "withTraceAttrs",
+    "aforce_flush_telemetry",
+    "count",
+    "current_trace_id",
+    "extract_trace_context",
+    "force_flush_telemetry",
+    "get_logger",
+    "get_tracer",
+    "init_telemetry",
+    "inject_trace_context",
+    "is_telemetry_enabled",
+    "record",
+    "start_span",
+    "trace_span",
+    "with_span",
 ]

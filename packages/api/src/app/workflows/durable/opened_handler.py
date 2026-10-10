@@ -7,8 +7,6 @@ only serves opened.
 
 from __future__ import annotations
 
-import logging
-
 from aws_durable_execution_sdk_python import durable_execution
 from aws_durable_execution_sdk_python.config import StepConfig
 from aws_durable_execution_sdk_python.context import DurableContext
@@ -21,7 +19,9 @@ from app.core.config import settings
 from app.core.telemetry import (
     extract_trace_context,
     force_flush_telemetry,
+    get_logger,
     init_telemetry,
+    record,
     start_span,
 )
 from app.workflows.durable.pipeline import AgentPhaseInput, runAgentPhase
@@ -35,7 +35,7 @@ from app.workflows.durable.steps import (
 from app.workflows.durable.types import OpenedDurableEvent, ReviewSkipped
 from app.workflows.review_v2.types import ReviewWorkflowInput
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 init_telemetry()
 
@@ -79,12 +79,10 @@ def reviewOpenedHandler(event: dict, ctx: DurableContext) -> dict:
             return _reviewOpenedHandlerInner(request, ctx)
     finally:
         try:
-            from app.core.telemetry import get_histogram
-
-            get_histogram(
-                "sentinel.handler_duration", description="Durable handler duration"
-            ).record(
-                _time.perf_counter() - _started, attributes={"trigger": "opened"}
+            record(
+                "sentinel.handler_duration",
+                _time.perf_counter() - _started,
+                {"trigger": "opened"},
             )
         except Exception:
             pass

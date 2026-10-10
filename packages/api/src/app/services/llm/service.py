@@ -41,7 +41,7 @@ from pydantic import SecretStr
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
-from app.core.telemetry import trace_span
+from app.core.telemetry import with_span
 from app.repositories.llm_config import LLMConfigRecordRepository
 from app.services.llm.errors import LLMConfigError, LLMContextError
 from app.services.llm.types import (
@@ -163,7 +163,7 @@ def _llmModelAttrs(ctx: LLMCtx, **kwargs: object) -> dict[str, object]:
         return {}
 
 
-@trace_span("llm.create_model", attrs_from=_llmModelAttrs)
+@with_span("llm.create_model", attrs_from=_llmModelAttrs)
 def createLLMModel(
     ctx: LLMCtx, *, rateLimiterKey: str | None = None
 ) -> BaseChatModel | LLMConfigError:
