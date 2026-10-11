@@ -17,7 +17,10 @@ from aws_durable_execution_sdk_python.retries import (
     RetryStrategyConfig,
     create_retry_strategy,
 )
+from langfuse import observe, propagate_attributes
 from pydantic import BaseModel, ConfigDict
+
+from app.core.config import settings
 
 from app.workflows.durable.steps import (
     buildSandboxCtxForRun,
@@ -61,6 +64,7 @@ class RepairPhaseInput(BaseModel):
     commitId: str
 
 
+@observe(name="run-repair-phase", capture_input=False, capture_output=False)
 def runRepairPhase(ctx: DurableContext, *, input: RepairPhaseInput) -> dict:
     unpublishedDict = ctx.step(
         loadUnpublishedReview(commitId=input.commitId),
@@ -76,11 +80,8 @@ def runRepairPhase(ctx: DurableContext, *, input: RepairPhaseInput) -> dict:
     userId = str(unpublished.userId)
     repoId = str(unpublished.repoId)
     repoName = str(unpublished.repoName)
-    repoOwner = str(unpublished.repoOwner)
     prNumber = int(unpublished.prNumber)
     headSha = str(unpublished.commitId)
-    baseSha = str(unpublished.baseSha or unpublished.commitId)
-    installationId = int(unpublished.installationId)
 
     llm = ctx.step(
         resolveActiveLlmCtx(userId=userId),
@@ -102,6 +103,62 @@ def runRepairPhase(ctx: DurableContext, *, input: RepairPhaseInput) -> dict:
         headSha[:7],
         len(unpublished.comments),
     )
+
+    llmDict: dict[str, object] = dict(llm)
+    modelStr: str = str(llmDict.get("model") or "")
+    llmOrigin: str = str(llmDict.get("origin") or "system")
+    shortSha: str = headSha[:7] if len(headSha) >= 7 else headSha
+    sessionId: str = f"review:{userId}:{repoId}:{prNumber}:{shortSha}"
+    tags: list[str] = ["trigger:repair", f"pr:{prNumber}"]
+    if repoName:
+        tags.append(f"repo:{repoName}")
+    metadata: dict[str, str | int] = {
+        "delivery": input.delivery,
+        "trigger": "repair",
+        "repo_id": repoId,
+        "pr_number": prNumber,
+        "head_sha": headSha,
+        "llm_model": modelStr,
+        "llm_origin": llmOrigin,
+    }
+    if repoName:
+        metadata["repo_name"] = repoName
+    with propagate_attributes(
+        user_id=userId,
+        session_id=sessionId,
+        tags=tags,
+        metadata=metadata,
+        version=settings.app_version,
+        environment=settings.app_env,
+        trace_name="repair-run",
+    ):
+        return _runRepairAgentPhaseInner(
+            ctx,
+            input=input,
+            unpublished=unpublished,
+            unpublishedDict=dict(unpublishedDict),
+            llm=dict(llm),
+            sandbox=dict(sandbox),
+        )
+
+
+def _runRepairAgentPhaseInner(
+    ctx: DurableContext,
+    *,
+    input: RepairPhaseInput,
+    unpublished: UnpublishedReview,
+    unpublishedDict: dict[str, object],
+    llm: dict[str, object],
+    sandbox: dict[str, object],
+) -> dict:
+    userId = str(unpublished.userId)
+    repoId = str(unpublished.repoId)
+    repoName = str(unpublished.repoName)
+    repoOwner = str(unpublished.repoOwner)
+    prNumber = int(unpublished.prNumber)
+    headSha = str(unpublished.commitId)
+    baseSha = str(unpublished.baseSha or unpublished.commitId)
+    installationId = int(unpublished.installationId)
 
     # Carrier for the reused review sandbox steps (clone/diff/split only
     # read userId/prNumber/headSha/baseSha/installation).

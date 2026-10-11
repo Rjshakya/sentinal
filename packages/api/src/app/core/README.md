@@ -24,9 +24,11 @@ reverse.
   exceptions. Attaches the `Session` to `request.state`.
 - `workos.py` — process-wide lazy `AsyncWorkOSClient`. Login URL,
   code exchange, seal/load session.
-- Tracing lives in `services/tracing/` (Langfuse handler + `@observe`
-  + `flushTraces`). Unconfigured (empty keys) → helpers are no-ops,
-  logs stay on the console.
+- Tracing lives in `services/tracing/` (Langfuse handler +
+  `@observe` + `flushTraces`). `runAgentPhase` / `runRepairPhase`
+  set user/session attrs once with `propagate_attributes`; every
+  `@durable_step` is `@observe`d. Unconfigured (empty keys) →
+  helpers are no-ops, logs stay on the console.
 
 ## Notes
 

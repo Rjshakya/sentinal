@@ -111,6 +111,7 @@ class SandboxCtxInput(BaseModel):
 
 
 @durable_step
+@observe(name="build-sandbox-ctx", capture_input=False, capture_output=False)
 def buildSandboxCtxForRun(_ctx: StepContext, *, input: dict) -> dict:
     """Assemble the settings-driven sandbox ctx (pure, no I/O)."""
     request = SandboxCtxInput.model_validate(input)

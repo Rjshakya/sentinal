@@ -12,6 +12,7 @@ from uuid import UUID
 
 from aws_durable_execution_sdk_python import durable_step
 from aws_durable_execution_sdk_python.types import StepContext
+from langfuse import observe
 from pydantic import BaseModel, ConfigDict
 
 from app.utils.branded import (
@@ -49,6 +50,7 @@ class UpsertPrInput(BaseModel):
 
 
 @durable_step
+@observe(name="upsert-pr-row", capture_input=False, capture_output=False)
 def upsertPrRow(_ctx: StepContext, *, input: dict) -> str:
     """Insert/update the pull_requests row; returns the row id."""
     request = UpsertPrInput.model_validate(input)
@@ -78,6 +80,7 @@ class MarkRunningInput(BaseModel):
 
 
 @durable_step
+@observe(name="mark-review-running", capture_input=False, capture_output=False)
 def markReviewRunning(_ctx: StepContext, *, input: dict) -> str:
     """Find-or-create the RUNNING lifecycle row; returns review row id."""
     request = MarkRunningInput.model_validate(input)
@@ -110,6 +113,7 @@ class MarkSucceededInput(BaseModel):
 
 
 @durable_step
+@observe(name="mark-review-succeeded", capture_input=False, capture_output=False)
 def markReviewSucceeded(_ctx: StepContext, *, input: dict) -> dict:
     """Flip the lifecycle row to SUCCESS."""
     request = MarkSucceededInput.model_validate(input)
@@ -137,6 +141,7 @@ class MarkFailedInput(BaseModel):
 
 
 @durable_step
+@observe(name="mark-review-failed", capture_input=False, capture_output=False)
 def markReviewFailed(_ctx: StepContext, *, input: dict) -> dict:
     """Flip the lifecycle row to FAILED (noops when row was never made)."""
     request = MarkFailedInput.model_validate(input)
@@ -163,6 +168,7 @@ class PersistSummaryInput(BaseModel):
 
 
 @durable_step
+@observe(name="persist-summary", capture_input=False, capture_output=False)
 def persistSummary(_ctx: StepContext, *, input: dict) -> str:
     """Persist the review_summaries row; returns the summary id."""
     request = PersistSummaryInput.model_validate(input)
@@ -188,6 +194,7 @@ class PersistCommentsInput(BaseModel):
 
 
 @durable_step
+@observe(name="persist-comments", capture_input=False, capture_output=False)
 def persistComments(_ctx: StepContext, *, input: dict) -> list[str]:
     """Persist the code_comments rows; returns the row ids."""
     request = PersistCommentsInput.model_validate(input)
@@ -222,6 +229,7 @@ class PersistUsageInput(BaseModel):
 
 
 @durable_step
+@observe(name="persist-usage", capture_input=False, capture_output=False)
 def persistUsage(_ctx: StepContext, *, input: dict) -> str:
     """Persist the review_usages row; returns the row id."""
     request = PersistUsageInput.model_validate(input)
@@ -257,6 +265,7 @@ class PostReviewInput(BaseModel):
 
 
 @durable_step
+@observe(name="post-github-review", capture_input=False, capture_output=False)
 def postGithubReview(_ctx: StepContext, *, input: dict) -> dict:
     """Post the review inline; 4xx returns posted=False."""
     request = PostReviewInput.model_validate(input)
@@ -281,6 +290,7 @@ class BacklinksInput(BaseModel):
 
 
 @durable_step
+@observe(name="update-github-backlinks", capture_input=False, capture_output=False)
 def updateGithubBacklinks(_ctx: StepContext, *, input: dict) -> dict:
     """Write GitHub review/comment ids back onto local rows."""
     request = BacklinksInput.model_validate(input)

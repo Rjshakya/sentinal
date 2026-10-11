@@ -20,6 +20,7 @@ from aws_durable_execution_sdk_python import durable_step
 from aws_durable_execution_sdk_python.types import StepContext
 from deepagents import create_deep_agent
 from githubkit.exception import RequestFailed
+from langfuse import observe
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ModelRetryMiddleware,
@@ -27,6 +28,7 @@ from langchain.agents.middleware import (
 )
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import col
@@ -47,12 +49,7 @@ from app.services.llm.errors import LLMConfigError
 from app.services.llm.service import createLLMModel
 from app.services.llm.types import LLMCtx
 from app.services.sandbox.types import SandboxCtx
-from app.services.tracing.service import (
-    buildAgentConfig,
-    propagateReviewAttrs,
-    traceSessionId,
-)
-from app.services.tracing.types import ReviewTraceCtx
+from app.services.tracing.service import createTraceCallbacks
 from app.workflows.review_v2.errors import SandboxConnectError
 from app.utils.branded import (
     CommitId,
@@ -80,6 +77,7 @@ REPAIR_MAX_MODEL_CALLS = 200
 
 
 @durable_step
+@observe(name="load-unpublished-review", capture_input=False, capture_output=False)
 def loadUnpublishedReview(_ctx: StepContext, *, commitId: str) -> dict | None:
     """Load the publishable review for a commit, else None (nothing to do)."""
 
@@ -353,6 +351,7 @@ class RepairAgentInput(BaseModel):
 
 
 @durable_step
+@observe(name="run-repair-agent", capture_input=False, capture_output=False)
 def runRepairAgent(_ctx: StepContext, *, input: dict) -> dict | None:
     """Run the repair agent; returns PublishedReview dump, else None."""
 
@@ -360,29 +359,10 @@ def runRepairAgent(_ctx: StepContext, *, input: dict) -> dict | None:
         request = RepairAgentInput.model_validate(input)
         unpublished = request.unpublished
 
-        traceCtx = ReviewTraceCtx(
-            userId=str(unpublished.userId),
-            sessionId=traceSessionId(
-                userId=str(unpublished.userId),
-                repoId=str(unpublished.repoId),
-                prNumber=int(unpublished.prNumber),
-                headSha=str(unpublished.commitId),
-            ),
-            trigger="repair",
-            repoId=str(unpublished.repoId),
-            repoName=str(unpublished.repoName),
-            prNumber=int(unpublished.prNumber),
-            headSha=str(unpublished.commitId),
-            baseSha=unpublished.baseSha,
-            llmModel=str(request.llm.model),
-            llmOrigin=str(request.llm.origin),
-        )
-        agentConfig = buildAgentConfig(
-            ctx=traceCtx,
-            runName="repair-publish",
-            lane="lane:repair",
-            extraMetadata={"comment_count": len(unpublished.comments)},
-        )
+        agentConfig: RunnableConfig = {
+            "run_name": "repair-publish",
+            "callbacks": createTraceCallbacks(),
+        }
 
         chat = createLLMModel(request.llm)
         if isinstance(chat, LLMConfigError):
@@ -403,17 +383,16 @@ def runRepairAgent(_ctx: StepContext, *, input: dict) -> dict | None:
                 toolCallRunLimit=REPAIR_MAX_TOOL_CALLS,
             ),
         )
-        with propagateReviewAttrs(ctx=traceCtx, traceName="review-repair"):
-            await agent.ainvoke(
-                {
-                    "messages": [
-                        HumanMessage(
-                            content=buildUserPrompt(unpublished, request.diffDir)
-                        )
-                    ]
-                },
-                config=agentConfig,
-            )
+        await agent.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(
+                        content=buildUserPrompt(unpublished, request.diffDir)
+                    )
+                ]
+            },
+            config=agentConfig,
+        )
 
         if holder.github_review_id is None:
             log.warning(
@@ -446,6 +425,7 @@ class SavePublishInput(BaseModel):
 
 
 @durable_step
+@observe(name="save-publish-outcome", capture_input=False, capture_output=False)
 def savePublishOutcome(_ctx: StepContext, *, input: dict) -> dict:
     """Write posted ids onto review/summary/comments; delete left rows."""
 
@@ -496,6 +476,7 @@ class DeleteRepoInput(BaseModel):
 
 
 @durable_step
+@observe(name="delete-cloned-repo", capture_input=False, capture_output=False)
 def deleteClonedRepo(_ctx: StepContext, *, input: dict) -> dict:
     """Remove the cloned repo from the sandbox (best-effort, never raises)."""
 
@@ -536,6 +517,7 @@ class DispatchRepairInput(BaseModel):
 
 
 @durable_step
+@observe(name="dispatch-repair-followup", capture_input=False, capture_output=False)
 def dispatchRepairFollowUp(_ctx: StepContext, *, input: dict) -> bool:
     """Invoke the repair durable best-effort; False when invoke failed."""
 

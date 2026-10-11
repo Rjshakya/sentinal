@@ -21,6 +21,7 @@ import logging
 
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import HumanMessage, SystemMessage, UsageMetadata
+from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 
 from app.services.agent_v2.prompts.summary import (
@@ -30,12 +31,7 @@ from app.services.agent_v2.prompts.summary import (
 from app.services.agent_v2.types import ChunkInventory, PlannerContext
 from app.services.llm.errors import LLMConfigError
 from app.services.llm.service import createLLMModel
-from app.services.tracing.service import (
-    buildAgentConfig,
-    propagateReviewAttrs,
-    traceSessionId,
-)
-from app.services.tracing.types import ReviewTraceCtx
+from app.services.tracing.service import createTraceCallbacks
 from app.utils.branded import RepoId
 from app.utils.schema import ReviewComments, SummaryResult
 from app.workflows.review_v2.errors import (
@@ -116,37 +112,20 @@ async def synthesizeSummaryStep(
 
     structured = chat.with_structured_output(SummaryResult)
 
-    traceCtx = ReviewTraceCtx(
-        userId=str(input.userId),
-        sessionId=traceSessionId(
-            userId=str(input.userId),
-            repoId=str(repo.id),
-            prNumber=int(input.prNumber),
-            headSha=str(input.headSha),
-        ),
-        trigger=str(input.trigger),
-        repoId=str(repo.id),
-        repoName=str(repo.repoName),
-        prNumber=int(input.prNumber),
-        headSha=str(input.headSha),
-        baseSha=str(input.baseSha),
-    )
-    agentConfig = buildAgentConfig(
-        ctx=traceCtx,
-        runName="synthesize-summary",
-        lane="lane:summary",
-    )
+    agentConfig: RunnableConfig = {
+        "run_name": "synthesize-summary",
+        "callbacks": createTraceCallbacks(),
+    }
     try:
-        with propagateReviewAttrs(ctx=traceCtx, traceName="review-summary"):
-            with get_usage_metadata_callback() as usage_cb:
-                response = await structured.ainvoke(
-                    [
-                        SystemMessage(content=systemPrompt),
-                        HumanMessage(content=userPrompt),
-                    ],
-                    config=agentConfig,
-                )
-                usage = usage_cb.usage_metadata
+        with get_usage_metadata_callback() as usage_cb:
+            response = await structured.ainvoke(
+                [
+                    SystemMessage(content=systemPrompt),
+                    HumanMessage(content=userPrompt),
+                ],
+                config=agentConfig,
+            )
+            usage = usage_cb.usage_metadata
     except Exception as exc:
         retryable = isLlmRetryError(exc)
         log.warning(

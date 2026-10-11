@@ -12,6 +12,7 @@ import logging
 
 from aws_durable_execution_sdk_python import durable_step
 from aws_durable_execution_sdk_python.types import StepContext
+from langfuse import observe
 from pydantic import BaseModel, ConfigDict
 
 from app.core.db import async_session_maker
@@ -37,6 +38,7 @@ log = logging.getLogger(__name__)
 
 
 @durable_step
+@observe(name="parse-opened-payload", capture_input=False, capture_output=False)
 def parseOpenedPayload(_ctx: StepContext, *, payload: dict) -> dict | None:
     """Validate a pull_request payload into PRPayload dump, else None."""
     parsed = extractOpenedPrPayload(payload)
@@ -56,6 +58,7 @@ class CommentPayloadInput(BaseModel):
 
 
 @durable_step
+@observe(name="parse-comment-payload", capture_input=False, capture_output=False)
 def parseCommentPayload(_ctx: StepContext, *, input: dict) -> dict | None:
     """Validate an issue_comment payload, else None (malformed or gated)."""
     request = CommentPayloadInput.model_validate(input)
@@ -81,6 +84,7 @@ class LivePrStateInput(BaseModel):
 
 
 @durable_step
+@observe(name="fetch-live-pr-state", capture_input=False, capture_output=False)
 def fetchLivePrState(_ctx: StepContext, *, input: dict) -> dict | None:
     """Fetch the PR snapshot from GitHub, else None on API error."""
     request = LivePrStateInput.model_validate(input)
@@ -112,6 +116,7 @@ class LastReviewInput(BaseModel):
 
 
 @durable_step
+@observe(name="load-last-review", capture_input=False, capture_output=False)
 def loadLastSuccessfulReview(_ctx: StepContext, *, input: dict) -> dict | None:
     """Return the last successful review snapshot dump, else None."""
     request = LastReviewInput.model_validate(input)

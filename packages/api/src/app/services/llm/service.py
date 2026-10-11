@@ -187,15 +187,6 @@ def createLLMModel(
         )
     provider, model_id = ctx.model.split(":", 1)
 
-    try:
-        from langfuse import get_client
-
-        get_client().update_current_span(
-            metadata={"llm_model": ctx.model, "llm_origin": str(ctx.origin)}
-        )
-    except Exception:
-        pass
-
     init_kwargs: dict[str, Any] = {"max_retries": ctx.maxRetries}
     if ctx.rateLimitRps is not None and ctx.rateLimitRps > 0:
         shared = _SHARED_LIMITERS.get(rateLimiterKey) if rateLimiterKey else None

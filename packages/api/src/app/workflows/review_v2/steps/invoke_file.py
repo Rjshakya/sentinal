@@ -23,6 +23,7 @@ import logging
 
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import UsageMetadata
+from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 
 from app.services.agent_v2.errors import AgentV2BuildError
@@ -38,12 +39,7 @@ from app.services.llm.service import createLLMModel
 from app.services.llm.types import LLMCtx
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.types import SandboxCtx
-from app.services.tracing.service import (
-    buildAgentConfig,
-    propagateReviewAttrs,
-    traceSessionId,
-)
-from app.services.tracing.types import ReviewTraceCtx
+from app.services.tracing.service import createTraceCallbacks
 from app.workflows.review_v2.errors import (
     FileLaneError,
     ReviewStepFailure,
@@ -182,37 +178,17 @@ async def invokeFileReviewStep(
     )
     promptPayload = {"messages": [{"role": "user", "content": prompt}]}
 
-    traceCtx = ReviewTraceCtx(
-        userId=str(input.userId),
-        sessionId=traceSessionId(
-            userId=str(input.userId),
-            repoId=str(repo.id),
-            prNumber=int(input.prNumber),
-            headSha=str(input.headSha),
-        ),
-        trigger=str(input.trigger),
-        repoId=str(repo.id),
-        repoName=str(repo.repoName),
-        prNumber=int(input.prNumber),
-        headSha=str(input.headSha),
-        baseSha=str(input.baseSha),
-        llmModel=str(llmCtx.model),
-        llmOrigin=str(llmCtx.origin),
-    )
-    agentConfig = buildAgentConfig(
-        ctx=traceCtx,
-        runName=f"file-review:{filePath}",
-        lane="lane:file",
-        extraMetadata={"file_path": filePath},
-    )
+    agentConfig: RunnableConfig = {
+        "run_name": f"file-review:{filePath}",
+        "callbacks": createTraceCallbacks(),
+    }
 
     try:
-        with propagateReviewAttrs(ctx=traceCtx, traceName="review-file"):
-            with get_usage_metadata_callback() as usage_cb:
-                result = await agent.ainvoke(promptPayload, config=agentConfig)
-                usage = usage_cb.usage_metadata
-                if not isinstance(result, dict):
-                    result = {"messages": []}
+        with get_usage_metadata_callback() as usage_cb:
+            result = await agent.ainvoke(promptPayload, config=agentConfig)
+            usage = usage_cb.usage_metadata
+            if not isinstance(result, dict):
+                result = {"messages": []}
     except Exception as exc:
         retryable = isLlmRetryError(exc)
         log.warning(
