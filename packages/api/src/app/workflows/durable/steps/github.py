@@ -7,7 +7,6 @@ handlers return early with ``ReviewSkipped``.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from aws_durable_execution_sdk_python import durable_step
@@ -27,6 +26,7 @@ from app.utils.branded import (
     RepoOwner,
     UserId,
 )
+from app.workflows.durable.steps.loop import runStep
 from app.workflows.triggers.comment_payload import (
     classifyComment,
     validateCommentPayload,
@@ -103,7 +103,7 @@ def fetchLivePrState(_ctx: StepContext, *, input: dict) -> dict | None:
             return None
         return state.model_dump(mode="json")
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 class LastReviewInput(BaseModel):
@@ -135,7 +135,7 @@ def loadLastSuccessfulReview(_ctx: StepContext, *, input: dict) -> dict | None:
                 githubReviewId=row.github_review_id,
             ).model_dump(mode="json")
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 __all__ = [

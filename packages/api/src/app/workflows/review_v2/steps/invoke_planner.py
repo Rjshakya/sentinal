@@ -202,6 +202,7 @@ async def invokePlannerStep(
             retryable,
             type(exc).__name__,
             exc,
+            exc_info=True,
         )
         if retryable:
             raise TransientReviewStepFailure(

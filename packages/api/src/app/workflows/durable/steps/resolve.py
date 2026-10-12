@@ -2,12 +2,11 @@
 
 Each step validates its input model first, runs one DB/settings lookup,
 and returns ``model_dump(mode="json")``. No lazy imports, no private
-async helpers — the async worker is inline via ``asyncio.run``.
+async helpers — the async worker is inline via ``runStep``.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import cast
 
@@ -29,6 +28,7 @@ from app.services.sandbox.service import (
 )
 from app.services.sandbox.types import ProviderId, SanboxProviderApiKey, SandboxCtx
 from app.utils.branded import RepoId, UserId
+from app.workflows.durable.steps.loop import runStep
 from app.workflows.review_v2.types import RepoSnapshot
 
 log = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ def getUserIdByInstallation(
                 return None
             return str(row.user_id)
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 @durable_step
@@ -78,7 +78,7 @@ def getRepoByGithubId(_ctx: StepContext, *, ghRepoId: int) -> dict | None:
                 defaultBranch=row.default_branch,
             ).model_dump(mode="json")
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 @durable_step
@@ -97,7 +97,7 @@ def resolveActiveLlmCtx(_ctx: StepContext, *, userId: str) -> dict:
             )
             return createDefaultLLMContext().model_dump(mode="json")
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 class SandboxCtxInput(BaseModel):

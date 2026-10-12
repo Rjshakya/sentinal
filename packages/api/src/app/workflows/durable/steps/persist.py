@@ -1,13 +1,12 @@
 """Persist/post/lifecycle steps: DB rows and GitHub post.
 
-Each step validates its input first, runs one worker via asyncio.run,
+Each step validates its input first, runs one worker via runStep,
 returns model_dump. Imports on top. Fail-closed steps propagate for
 SDK retry; post returns posted=False on terminal 4xx.
 """
 
 from __future__ import annotations
 
-import asyncio
 from uuid import UUID
 
 from aws_durable_execution_sdk_python import durable_step
@@ -24,6 +23,7 @@ from app.utils.branded import (
     UserId,
 )
 from app.utils.schema import CodeCommentDraft, ReviewResult
+from app.workflows.durable.steps.loop import runStep
 from app.workflows.review_v2.steps.persist import (
     persistCodeCommentsTx,
     persistReviewSummaryTx,
@@ -55,7 +55,7 @@ def upsertPrRow(_ctx: StepContext, *, input: dict) -> str:
     """Insert/update the pull_requests row; returns the row id."""
     request = UpsertPrInput.model_validate(input)
     return str(
-        asyncio.run(
+        runStep(
             upsertPullRequestTx(
                 repoId=request.repoId,
                 input=request.workflowInput,
@@ -85,7 +85,7 @@ def markReviewRunning(_ctx: StepContext, *, input: dict) -> str:
     """Find-or-create the RUNNING lifecycle row; returns review row id."""
     request = MarkRunningInput.model_validate(input)
     return str(
-        asyncio.run(
+        runStep(
             markReviewRunningStep(
                 userId=request.userId,
                 repo=request.repo,
@@ -117,7 +117,7 @@ class MarkSucceededInput(BaseModel):
 def markReviewSucceeded(_ctx: StepContext, *, input: dict) -> dict:
     """Flip the lifecycle row to SUCCESS."""
     request = MarkSucceededInput.model_validate(input)
-    asyncio.run(
+    runStep(
         markReviewStoppedStep(
             reviewRowId=request.reviewRowId,
             commentCount=request.commentCount,
@@ -145,7 +145,7 @@ class MarkFailedInput(BaseModel):
 def markReviewFailed(_ctx: StepContext, *, input: dict) -> dict:
     """Flip the lifecycle row to FAILED (noops when row was never made)."""
     request = MarkFailedInput.model_validate(input)
-    asyncio.run(
+    runStep(
         markReviewErroredStep(
             reviewRowId=request.reviewRowId,
             errorName=request.errorName,
@@ -173,7 +173,7 @@ def persistSummary(_ctx: StepContext, *, input: dict) -> str:
     """Persist the review_summaries row; returns the summary id."""
     request = PersistSummaryInput.model_validate(input)
     return str(
-        asyncio.run(
+        runStep(
             persistReviewSummaryTx(
                 prRowId=request.prRowId,
                 reviewRowId=request.reviewRowId,
@@ -199,7 +199,7 @@ def persistComments(_ctx: StepContext, *, input: dict) -> list[str]:
     """Persist the code_comments rows; returns the row ids."""
     request = PersistCommentsInput.model_validate(input)
     return list(
-        asyncio.run(
+        runStep(
             persistCodeCommentsTx(
                 prRowId=request.prRowId,
                 reviewRowId=request.reviewRowId,
@@ -234,7 +234,7 @@ def persistUsage(_ctx: StepContext, *, input: dict) -> str:
     """Persist the review_usages row; returns the row id."""
     request = PersistUsageInput.model_validate(input)
     return str(
-        asyncio.run(
+        runStep(
             persistReviewUsageTx(
                 userId=request.userId,
                 prRowId=request.prRowId,
@@ -269,7 +269,7 @@ class PostReviewInput(BaseModel):
 def postGithubReview(_ctx: StepContext, *, input: dict) -> dict:
     """Post the review inline; 4xx returns posted=False."""
     request = PostReviewInput.model_validate(input)
-    return asyncio.run(
+    return runStep(
         postReviewStep(
             repo=request.repo,
             input=request.workflowInput,
@@ -294,7 +294,7 @@ class BacklinksInput(BaseModel):
 def updateGithubBacklinks(_ctx: StepContext, *, input: dict) -> dict:
     """Write GitHub review/comment ids back onto local rows."""
     request = BacklinksInput.model_validate(input)
-    asyncio.run(
+    runStep(
         updatePostBacklinksTx(
             reviewRowId=request.reviewRowId,
             reviewSummaryId=request.reviewSummaryId,

@@ -131,6 +131,12 @@ async def extractCommentsStep(
     except Exception as exc:
         if isinstance(exc, (TransientReviewStepFailure, ReviewStepFailure)):
             raise
+        log.warning(
+            "extract_comments_step: failed: %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
         raise extractionError(
             f"extractor {type(exc).__name__}: {exc}",
             retryable=isLlmRetryError(exc),

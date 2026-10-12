@@ -197,6 +197,7 @@ async def invokeFileReviewStep(
             retryable,
             type(exc).__name__,
             exc,
+            exc_info=True,
         )
         if retryable:
             raise TransientReviewStepFailure(

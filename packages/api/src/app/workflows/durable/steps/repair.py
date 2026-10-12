@@ -1,7 +1,7 @@
 """Repair-phase steps: load unpublished review, run repair agent, save outcome.
 
 Each step validates its input first, runs one operation via
-``asyncio.run``, and returns ``model_dump(mode="json")``. Imports on top.
+``runStep``, and returns ``model_dump(mode="json")``. Imports on top.
 Fail-closed steps let exceptions propagate for SDK retry; the handler
 marks the run FAILED when retries exhaust. The cloned-repo delete is
 best-effort and never raises.
@@ -9,7 +9,6 @@ best-effort and never raises.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import shlex
@@ -62,6 +61,7 @@ from app.utils.branded import (
     UserId,
 )
 from app.utils.schema import CommentSeverityStr, CommentSideStr, ReviewVerdictStr
+from app.workflows.durable.steps.loop import runStep
 from app.workflows.durable.types import CommentRow, PublishedReview, UnpublishedReview
 from app.workflows.review_v2.steps._helpers import (
     asAsyncSandbox,
@@ -152,7 +152,7 @@ def loadUnpublishedReview(_ctx: StepContext, *, commitId: str) -> dict | None:
                 comments=comments,
             ).model_dump(mode="json")
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 def buildRepairMiddleware(
@@ -411,7 +411,7 @@ def runRepairAgent(_ctx: StepContext, *, input: dict) -> dict | None:
             attempts=holder.attempts,
         )
 
-    result = asyncio.run(run())
+    result = runStep(run())
     if result is None:
         return None
     return result.model_dump(mode="json")
@@ -464,7 +464,7 @@ def savePublishOutcome(_ctx: StepContext, *, input: dict) -> dict:
                 )
             await session.commit()
 
-    asyncio.run(run())
+    runStep(run())
     return {}
 
 
@@ -504,7 +504,7 @@ def deleteClonedRepo(_ctx: StepContext, *, input: dict) -> dict:
                 result.exit_code,
             )
 
-    asyncio.run(run())
+    runStep(run())
     return {}
 
 
@@ -529,7 +529,7 @@ def dispatchRepairFollowUp(_ctx: StepContext, *, input: dict) -> bool:
             delivery=request.delivery,
         )
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 __all__ = [

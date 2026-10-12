@@ -1,14 +1,13 @@
 """Sandbox-phase steps: create, clone, index, diff, split, chunks, destroy.
 
 Each step validates its input first, runs one review_v2 worker via
-``asyncio.run``, and returns ``model_dump(mode="json")``. Imports on top.
+``runStep``, and returns ``model_dump(mode="json")``. Imports on top.
 Fail-closed infra steps let exceptions propagate for SDK retry; the
 handler marks the run FAILED when retries exhaust.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from aws_durable_execution_sdk_python import durable_step
@@ -26,6 +25,7 @@ from app.utils.branded import (
     RepoOwner,
     UserId,
 )
+from app.workflows.durable.steps.loop import runStep
 from app.workflows.review_v2.steps.clone_repo_v2 import cloneRepoV2Step
 from app.workflows.review_v2.steps.codegraph_index import installCodeGraphAndIndexRepoStep
 from app.workflows.review_v2.steps.create_sandbox import createSandboxStep
@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 def createEphemeralSandbox(_ctx: StepContext, *, sandbox: dict) -> dict:
     """Create the run sandbox; returns SandboxCtx dump with sandboxId."""
     sandboxCtx = SandboxCtx.model_validate(sandbox)
-    return asyncio.run(createSandboxStep(sandboxCtx=sandboxCtx)).model_dump(mode="json")
+    return runStep(createSandboxStep(sandboxCtx=sandboxCtx)).model_dump(mode="json")
 
 
 class CloneInput(BaseModel):
@@ -63,7 +63,7 @@ def clonePrHead(_ctx: StepContext, *, input: dict) -> dict:
     """Clone + detached-head checkout (fail-closed)."""
     request = CloneInput.model_validate(input)
     parsed = request.workflowInput
-    return asyncio.run(
+    return runStep(
         cloneRepoV2Step(
             sandboxCtx=request.sandbox,
             userId=UserId(parsed.userId),
@@ -92,7 +92,7 @@ def indexCodegraph(_ctx: StepContext, *, input: dict) -> dict:
     """Install codegraph CLI + index the PR tree (fail-closed)."""
     request = IndexInput.model_validate(input)
     parsed = request.workflowInput
-    return asyncio.run(
+    return runStep(
         installCodeGraphAndIndexRepoStep(
             sandboxCtx=request.sandbox,
             userId=UserId(parsed.userId),
@@ -119,7 +119,7 @@ def fetchPrDiff(_ctx: StepContext, *, input: dict) -> dict:
     """Write file.diff for diffBaseSha-or-baseSha...headSha."""
     request = DiffInput.model_validate(input)
     parsed = request.workflowInput
-    return asyncio.run(
+    return runStep(
         fetchDiffStep(
             sandboxCtx=request.sandbox,
             repoId=request.repoId,
@@ -147,7 +147,7 @@ def splitPrDiff(_ctx: StepContext, *, input: dict) -> dict:
     request = SplitInput.model_validate(input)
     parsed = request.workflowInput
     return dict(
-        asyncio.run(
+        runStep(
             splitDiffStep(
                 sandboxCtx=request.sandbox,
                 repoId=request.repoId,
@@ -164,7 +164,7 @@ def listDiffChunks(_ctx: StepContext, *, input: dict) -> dict:
     """Inventory splitted_diffs/ into ChunkInventory (the diff truth)."""
     request = SplitInput.model_validate(input)
     parsed = request.workflowInput
-    return asyncio.run(
+    return runStep(
         listChunkFilesStep(
             sandboxCtx=request.sandbox,
             repoId=request.repoId,
@@ -179,7 +179,7 @@ def listDiffChunks(_ctx: StepContext, *, input: dict) -> dict:
 def destroySandbox(_ctx: StepContext, *, sandbox: dict) -> dict:
     """Destroy the ephemeral sandbox (best-effort, never raises)."""
     sandboxCtx = SandboxCtx.model_validate(sandbox)
-    asyncio.run(killSandboxStep(sandboxCtx=sandboxCtx))
+    runStep(killSandboxStep(sandboxCtx=sandboxCtx))
     return {}
 
 
