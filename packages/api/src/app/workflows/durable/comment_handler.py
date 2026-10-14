@@ -10,17 +10,12 @@ from __future__ import annotations
 
 import logging
 
-from aws_durable_execution_sdk_python import durable_execution
-from aws_durable_execution_sdk_python.config import StepConfig
-from aws_durable_execution_sdk_python.context import DurableContext
-from aws_durable_execution_sdk_python.retries import (
-    RetryStrategyConfig,
-    create_retry_strategy,
-)
+from async_durable_execution import durable_execution, step
 
 from app.core.config import settings
 from app.services.tracing.service import flushTraces
 from app.workflows.durable.pipeline import AgentPhaseInput, runAgentPhase
+from app.workflows.durable.retry import RETRY_1, RETRY_3
 from app.workflows.durable.steps import (
     buildSandboxCtxForRun,
     fetchLivePrState,
@@ -40,28 +35,19 @@ from app.workflows.triggers.types import CommentTriggerInput, LastReviewSnapshot
 
 log = logging.getLogger(__name__)
 
-RETRY_3 = StepConfig(
-    retry_strategy=create_retry_strategy(RetryStrategyConfig(max_attempts=3))
-)
-RETRY_1 = StepConfig(
-    retry_strategy=create_retry_strategy(RetryStrategyConfig(max_attempts=1))
-)
-
 
 @durable_execution
-def reviewCommentHandler(event: dict, ctx: DurableContext) -> dict:
+async def reviewCommentHandler(event: dict) -> dict:
     request = CommentDurableEvent.model_validate(event)
     try:
-        return _reviewCommentHandlerInner(request, ctx)
+        return await _reviewCommentHandlerInner(request)
     finally:
         flushTraces()
 
 
-def _reviewCommentHandlerInner(
-    request: CommentDurableEvent, ctx: DurableContext
-) -> dict:
+async def _reviewCommentHandlerInner(request: CommentDurableEvent) -> dict:
 
-    triggerDict = ctx.step(
+    triggerDict = await step(
         parseCommentPayload(
             input={
                 "payload": request.payload,
@@ -70,7 +56,7 @@ def _reviewCommentHandlerInner(
             }
         ),
         name="parse-comment",
-        config=RETRY_1,
+        retry_strategy=RETRY_1,
     )
     if triggerDict is None:
         return ReviewSkipped(
@@ -82,27 +68,27 @@ def _reviewCommentHandlerInner(
     ghRepoId = int(trigger.ghRepoId)
     prNumber = int(trigger.prNumber)
 
-    userId = ctx.step(
+    userId = await step(
         getUserIdByInstallation(installationId=installationId),
         name="get-user",
-        config=RETRY_3,
+        retry_strategy=RETRY_3,
     )
     if not userId:
         return ReviewSkipped(
             delivery=request.delivery, skip_reason="unowned_installation"
         ).model_dump(mode="json")
 
-    repo = ctx.step(
+    repo = await step(
         getRepoByGithubId(ghRepoId=ghRepoId),
         name="get-repo",
-        config=RETRY_3,
+        retry_strategy=RETRY_3,
     )
     if repo is None:
         return ReviewSkipped(
             delivery=request.delivery, skip_reason="repo_not_configured"
         ).model_dump(mode="json")
 
-    prState = ctx.step(
+    prState = await step(
         fetchLivePrState(
             input={
                 "userId": str(userId),
@@ -113,7 +99,7 @@ def _reviewCommentHandlerInner(
             }
         ),
         name="fetch-pr",
-        config=RETRY_3,
+        retry_strategy=RETRY_3,
     )
     if prState is None:
         return ReviewSkipped(
@@ -123,12 +109,12 @@ def _reviewCommentHandlerInner(
     headSha = str(prState["headSha"])
     baseSha = str(prState["baseSha"])
 
-    lastDict = ctx.step(
+    lastDict = await step(
         loadLastSuccessfulReview(
             input={"repoId": str(repo["id"]), "prNumber": prNumber}
         ),
         name="load-last",
-        config=RETRY_3,
+        retry_strategy=RETRY_3,
     )
     lastReview = LastReviewSnapshot.model_validate(lastDict) if lastDict else None
     if isHeadAlreadyPosted(apiHeadSha=headSha, lastReview=lastReview):
@@ -148,12 +134,12 @@ def _reviewCommentHandlerInner(
     diffBaseSha = str(diffBase) if diffBase is not None else None
 
     repoId = str(repo["id"])
-    llm = ctx.step(
+    llm = await step(
         resolveActiveLlmCtx(userId=str(userId)),
         name="resolve-llm",
-        config=RETRY_3,
+        retry_strategy=RETRY_3,
     )
-    sandbox = ctx.step(
+    sandbox = await step(
         buildSandboxCtxForRun(
             input={
                 "userId": str(userId),
@@ -162,7 +148,7 @@ def _reviewCommentHandlerInner(
             }
         ),
         name="build-sandbox",
-        config=RETRY_1,
+        retry_strategy=RETRY_1,
     )
 
     log.info(
@@ -205,8 +191,7 @@ def _reviewCommentHandlerInner(
         }
     ).model_dump(mode="json")
 
-    return runAgentPhase(
-        ctx,
+    return await runAgentPhase(
         input=AgentPhaseInput(
             delivery=request.delivery,
             executionName=request.execution_name,

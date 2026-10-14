@@ -27,7 +27,7 @@ reverse.
 - Tracing lives in `services/tracing/` (Langfuse handler +
   `@observe` + `flushTraces`). `runAgentPhase` / `runRepairPhase`
   set user/session attrs once with `propagate_attributes`; every
-  `@durable_step` is `@observe`d. Unconfigured (empty keys) →
+  `@durable_callable` step is `@observe`d. Unconfigured (empty keys) →
   helpers are no-ops, logs stay on the console.
 
 ## Notes

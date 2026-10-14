@@ -6,20 +6,18 @@ handler only serves repair.
 
 from __future__ import annotations
 
-from aws_durable_execution_sdk_python import durable_execution
-from aws_durable_execution_sdk_python.context import DurableContext
+from async_durable_execution import durable_execution
 
+from app.services.tracing.service import flushTraces
 from app.workflows.durable.repair_pipeline import RepairPhaseInput, runRepairPhase
 from app.workflows.durable.types import DurableRepairEvent
-from app.services.tracing.service import flushTraces
 
 
 @durable_execution
-def repair_durable_handler(event: dict, ctx: DurableContext) -> dict:
+async def repair_durable_handler(event: dict) -> dict:
     request = DurableRepairEvent.model_validate(event)
     try:
-        return runRepairPhase(
-            ctx,
+        return await runRepairPhase(
             input=RepairPhaseInput(
                 delivery=request.delivery,
                 executionName=request.execution_name,

@@ -1,15 +1,23 @@
 # Lambda container image (deps exceed zip 250MB: langchain/e2b/deepagents).
 # Build: sam build --use-container. Runtime: python3.13 (durable SDK supported).
-FROM public.ecr.aws/lambda/python:3.13 AS base
+FROM public.ecr.aws/lambda/python:3.13
 # Lambda RIC resolves handlers under LAMBDA_TASK_ROOT (/var/task).
 WORKDIR /var/task
+# Locked third-party deps, generated from the workspace uv.lock (repo root):
+#   uv export --frozen --package api --no-dev --format requirements.txt --no-emit-package api --no-hashes -o packages/api/requirements.lambda.txt
+# Re-run that export whenever uv.lock changes. This layer only rebuilds on dep changes.
+COPY requirements.lambda.txt ./
+RUN pip install --no-cache-dir -r requirements.lambda.txt
+# Project code only (--no-deps: third-party already installed above, no re-resolve).
+# src/ must be present: hatchling needs it to build the api wheel.
 COPY pyproject.toml ./
-# uv workspace root lives one level up; copy minimal src for layer cache.
 COPY src/ ./src/
+RUN pip install --no-cache-dir --no-deps .
+# Loose runtime files (not part of the wheel): copy after installs
+# so changes here do not bust the install layers.
 COPY main.py alembic.ini ./
 COPY alembic/ ./alembic/
-RUN pip install --no-cache-dir -e . mangum aws-durable-execution-sdk-python boto3 aws-lambda-powertools
 # Cold-start: pre-compile bytecode for heavy imports.
-ENV UV_COMPILE_BYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH="/var/task:/var/task/src:${PYTHONPATH}"
-RUN python -m compileall -q src || true
+ENV PYTHONUNBUFFERED=1 PYTHONPATH="/var/task:${PYTHONPATH}"
+RUN python -m compileall -q src main.py || true
 CMD ["main.handler"]

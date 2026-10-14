@@ -156,7 +156,7 @@ Read flow for a PR review:
 | GitHub       | Native GitHub App via `githubkit` (typed REST), HMAC-signed install flow, webhook receiver |
 | Sandbox      | E2B — provider map (`Providers`) resolves the class per run ctx                    |
 | AI           | `deepagents` (planning agent + per-file review agents, delegation disabled), LangChain chat models |
-| Durable jobs | AWS Lambda Durable Execution — checkpointed `@durable_step`s, per-step `StepConfig` retries, deterministic `DurableExecutionName`s |
+| Durable jobs | AWS Lambda Durable Execution — native async `@durable_execution` handlers, checkpointed `@durable_callable` steps, per-step `RetryStrategy` retries, deterministic `DurableExecutionName`s |
 | Database     | PostgreSQL 18 (docker-compose), `gen_random_uuid()` defaults, CASCADE FKs           |
 | Logging      | stdlib `logging` → OpenTelemetry logs over OTLP (console fallback)                |
 | Telemetry    | OpenLLMetry (`traceloop-sdk`) — OTLP/HTTP traces for the review agents + FastAPI     |

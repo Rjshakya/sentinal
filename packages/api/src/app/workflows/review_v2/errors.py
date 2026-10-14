@@ -5,7 +5,7 @@ Two layers:
 **Error values** (subclasses of :class:`ReviewStepError`) — plain
 Pydantic models carrying a ``retryable`` flag plus the branded run
 identity. Workers raise them wrapped in a step exception; the durable
-step retries transient failures per its ``StepConfig``.
+step retries transient failures per its retry strategy.
 
 **Raised step exceptions** (:class:`ReviewStepFailure` /
 :class:`TransientReviewStepFailure`) — the only exceptions workers

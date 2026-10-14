@@ -27,7 +27,7 @@ the host decides which files get reviewed.
 - `steps/` — one worker per phase (sandbox, clone, graph-index,
   diff, split, chunks, planner, file, extract, persist, post,
   lifecycle). Only the sandbox id travels; every step reconnects.
-  See its README. The durable checkpoint edges are the `@durable_step`s
+  See its README. The durable checkpoint edges are the `@durable_callable` steps
   wrapping each worker, dispatched through `durable/invoke.py`
   (`InvocationType=Event` + `DurableExecutionName`; `Qualifier=$LATEST`
   is required — AWS rejects unqualified durable Invokes).

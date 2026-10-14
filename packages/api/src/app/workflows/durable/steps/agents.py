@@ -1,16 +1,15 @@
 """Agent-phase steps: planner, file batches, extract, summary.
 
 Degrade steps catch final ReviewStepFailure inside and return the
-degraded value; transient failures propagate for SDK retry. Imports
-on top.
+degraded value; transient failures propagate for SDK retry. Imports on
+top.
 """
 
 from __future__ import annotations
 
 import logging
 
-from aws_durable_execution_sdk_python import durable_step
-from aws_durable_execution_sdk_python.types import StepContext
+from async_durable_execution import durable_callable
 from langfuse import observe
 from pydantic import BaseModel, ConfigDict
 
@@ -23,7 +22,6 @@ from app.services.llm.types import LLMCtx
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import RepoId
 from app.utils.schema import ReviewComments
-from app.workflows.durable.steps.loop import runStep
 from app.workflows.review_v2.errors import (
     ReviewStepFailure,
     TransientReviewStepFailure,
@@ -74,21 +72,19 @@ class PlannerInput(BaseModel):
     limits: ReviewLimits
 
 
-@durable_step
+@durable_callable
 @observe(name="run-planner", capture_input=False, capture_output=False)
-def runPlanner(_ctx: StepContext, *, input: dict) -> dict:
+async def runPlanner(*, input: dict) -> dict:
     """Run the planning agent; degrades to empty usage on final failure."""
     request = PlannerInput.model_validate(input)
     try:
-        usage = runStep(
-            invokePlannerStep(
-                sandboxCtx=request.sandbox,
-                llmCtx=request.llm,
-                repo=request.repo,
-                input=request.workflowInput,
-                actualFiles=list(request.actualFiles),
-                limits=request.limits,
-            )
+        usage = await invokePlannerStep(
+            sandboxCtx=request.sandbox,
+            llmCtx=request.llm,
+            repo=request.repo,
+            input=request.workflowInput,
+            actualFiles=list(request.actualFiles),
+            limits=request.limits,
         )
     except ReviewStepFailure as exc:
         log.warning("runPlanner: degraded to empty context: %s", exc)
@@ -108,18 +104,16 @@ class PlanReadInput(BaseModel):
     workflowInput: ReviewWorkflowInput
 
 
-@durable_step
+@durable_callable
 @observe(name="read-planner-output", capture_input=False, capture_output=False)
-def readPlannerOutput(_ctx: StepContext, *, input: dict) -> dict:
+async def readPlannerOutput(*, input: dict) -> dict:
     """Read plan.json; None means the planner never submitted."""
     request = PlanReadInput.model_validate(input)
     try:
-        plan = runStep(
-            getPlanStep(
-                sandboxCtx=request.sandbox,
-                repoId=request.repoId,
-                input=request.workflowInput,
-            )
+        plan = await getPlanStep(
+            sandboxCtx=request.sandbox,
+            repoId=request.repoId,
+            input=request.workflowInput,
         )
     except ReviewStepFailure as exc:
         log.warning("readPlannerOutput: no usable plan: %s", exc)
@@ -139,69 +133,63 @@ class FileBatchInput(BaseModel):
     sharedConcerns: str
 
 
-@durable_step
+@durable_callable
 @observe(name="run-file-batch", capture_input=False, capture_output=False)
-def runFileBatch(_ctx: StepContext, *, input: dict) -> dict:
+async def runFileBatch(*, input: dict) -> dict:
     """Review one batch of files; per-file failures degrade to nothing."""
     request = FileBatchInput.model_validate(input)
-
-    async def run() -> dict:
-        reports: dict[str, str] = {}
-        failed: list[str] = []
-        usages: dict[str, dict] = {}
-        for job in request.jobs:
-            text: str | None = None
-            usage: object = {}
-            attempts = 0
-            while attempts < 2 and text is None:
-                attempts += 1
-                try:
-                    text, usage = await invokeFileReviewStep(
-                        filePath=job.filePath,
-                        job=job,
-                        sharedConcerns=request.sharedConcerns,
-                        sandboxCtx=request.sandbox,
-                        llmCtx=request.llm,
-                        repo=request.repo,
-                        input=request.workflowInput,
-                        limits=request.limits,
-                        rateLimiterKey=None,
-                    )
-                except TransientReviewStepFailure as exc:
-                    log.warning(
-                        "runFileBatch: transient file=%s attempt=%d: %s",
-                        job.filePath,
-                        attempts,
-                        exc,
-                    )
-                    if attempts >= 2:
-                        failed.append(job.filePath)
-                except (ReviewStepFailure, Exception) as exc:
-                    log.warning(
-                        "runFileBatch: failed file=%s: %s: %s",
-                        job.filePath,
-                        type(exc).__name__,
-                        exc,
-                    )
+    reports: dict[str, str] = {}
+    failed: list[str] = []
+    usages: dict[str, dict] = {}
+    for job in request.jobs:
+        text: str | None = None
+        usage: object = {}
+        attempts = 0
+        while attempts < 2 and text is None:
+            attempts += 1
+            try:
+                text, usage = await invokeFileReviewStep(
+                    filePath=job.filePath,
+                    job=job,
+                    sharedConcerns=request.sharedConcerns,
+                    sandboxCtx=request.sandbox,
+                    llmCtx=request.llm,
+                    repo=request.repo,
+                    input=request.workflowInput,
+                    limits=request.limits,
+                    rateLimiterKey=None,
+                )
+            except TransientReviewStepFailure as exc:
+                log.warning(
+                    "runFileBatch: transient file=%s attempt=%d: %s",
+                    job.filePath,
+                    attempts,
+                    exc,
+                )
+                if attempts >= 2:
                     failed.append(job.filePath)
-                    break
-            if text is not None:
-                reports[job.filePath] = text
-                usages[job.filePath] = usageToJson(usage)
-        return {"reports": reports, "failed": failed, "usages": usages}
+            except (ReviewStepFailure, Exception) as exc:
+                log.warning(
+                    "runFileBatch: failed file=%s: %s: %s",
+                    job.filePath,
+                    type(exc).__name__,
+                    exc,
+                )
+                failed.append(job.filePath)
+                break
+        if text is not None:
+            reports[job.filePath] = text
+            usages[job.filePath] = usageToJson(usage)
+    return {"reports": reports, "failed": failed, "usages": usages}
 
-    return runStep(run())
 
-
-@durable_step
+@durable_callable
 @observe(name="extract-review-comments", capture_input=False, capture_output=False)
-def extractReviewComments(_ctx: StepContext, *, rawText: str) -> dict:
+async def extractReviewComments(*, rawText: str) -> dict:
     """Transcribe concatenated file reports into comment drafts."""
-    comments, usage = runStep(
-        extractCommentsStep(
-            extractorLlmCtx=buildExtractorLlmCtx(),
-            rawText=rawText,
-        )
+    comments, usage = await extractCommentsStep(
+        extractorLlmCtx=buildExtractorLlmCtx(),
+        rawText=rawText,
     )
     return {
         "comments": comments.model_dump(mode="json").get("List", []),
@@ -219,20 +207,18 @@ class SummaryInput(BaseModel):
     comments: ReviewComments
 
 
-@durable_step
+@durable_callable
 @observe(name="synthesize-walkthrough", capture_input=False, capture_output=False)
-def synthesizeWalkthrough(_ctx: StepContext, *, input: dict) -> dict:
+async def synthesizeWalkthrough(*, input: dict) -> dict:
     """Synthesize the walkthrough; degrades to empty string."""
     request = SummaryInput.model_validate(input)
     try:
-        summary, usage = runStep(
-            synthesizeSummaryStep(
-                input=request.workflowInput,
-                repo=request.repo,
-                inventory=request.inventory,
-                plannerContext=request.plannerContext,
-                comments=request.comments,
-            )
+        summary, usage = await synthesizeSummaryStep(
+            input=request.workflowInput,
+            repo=request.repo,
+            inventory=request.inventory,
+            plannerContext=request.plannerContext,
+            comments=request.comments,
         )
     except ReviewStepFailure as exc:
         log.warning("synthesizeWalkthrough: degraded to empty: %s", exc)
