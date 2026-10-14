@@ -18,11 +18,14 @@ import logging
 
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import HumanMessage, SystemMessage, UsageMetadata
+from langchain_core.runnables import RunnableConfig
+from langfuse import observe
 
 from app.core.config import settings
 from app.services.agent_v2.prompts.shared import COMMENT_BODY_FORMAT
 from app.services.llm.service import createLLMModel
 from app.services.llm.types import LLMCtx
+from app.services.tracing.service import createTraceCallbacks
 from app.utils.branded import ApiKey
 from app.utils.schema import ReviewComments
 from app.workflows.review_v2.errors import (
@@ -89,6 +92,7 @@ def extractionError(message: str, *, retryable: bool = False) -> Exception:
     )
 
 
+@observe(name="extract-comments", capture_input=False)
 async def extractCommentsStep(
     *,
     extractorLlmCtx: LLMCtx,
@@ -107,6 +111,11 @@ async def extractCommentsStep(
     if isinstance(chat, ValueError):
         raise extractionError(f"failed to build extractor model: {chat}")
 
+    agentConfig: RunnableConfig = {
+        "run_name": "extract-comments",
+        "callbacks": createTraceCallbacks(),
+    }
+
     try:
         structured = chat.with_structured_output(ReviewComments)
         with get_usage_metadata_callback() as usage_cb:
@@ -114,18 +123,29 @@ async def extractCommentsStep(
                 [
                     SystemMessage(content=COMMENTS_EXTRACTION_SYSTEM_PROMPT),
                     HumanMessage(content=rawText),
-                ]
+                ],
+                config=agentConfig,
             )
             usage = usage_cb.usage_metadata
         result = ReviewComments.model_validate(response)
     except Exception as exc:
         if isinstance(exc, (TransientReviewStepFailure, ReviewStepFailure)):
             raise
+        log.warning(
+            "extract_comments_step: failed: %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
         raise extractionError(
             f"extractor {type(exc).__name__}: {exc}",
             retryable=isLlmRetryError(exc),
         ) from exc
-    log.info("extracting comments result: input_chars=%d", len(rawText))
+    log.info(
+        "extracting comments result: input_chars=%d comments:%d",
+        len(rawText),
+        len(result.List),
+    )
     return result, usage
 
 

@@ -65,11 +65,10 @@ Globals:
         DAYTONA_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:DAYTONA_API_KEY}}'
         # --- embeddings (keys used by the in-sandbox codegraph pipeline) ---
         OPENAI_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:OPENAI_API_KEY}}'
-        # --- observability (no-op until the new instrument lands; kept for parity) ---
-        TRACELOOP_BASE_URL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_BASE_URL}}'
-        TRACELOOP_API_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_API_KEY}}'
-        TRACELOOP_TRACE_CONTENT: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_TRACE_CONTENT}}'
-        TRACELOOP_DISABLE_BATCH: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:TRACELOOP_DISABLE_BATCH}}'
+        # --- observability (Langfuse; empty keys = disabled) ---
+        LANGFUSE_PUBLIC_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:LANGFUSE_PUBLIC_KEY}}'
+        LANGFUSE_SECRET_KEY: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:LANGFUSE_SECRET_KEY}}'
+        LANGFUSE_BASE_URL: !Sub '{{resolve:secretsmanager:${AppSecretStore}:SecretString:LANGFUSE_BASE_URL}}'
 
 Resources:
   ApiFunction:

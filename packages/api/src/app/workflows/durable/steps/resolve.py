@@ -2,17 +2,17 @@
 
 Each step validates its input model first, runs one DB/settings lookup,
 and returns ``model_dump(mode="json")``. No lazy imports, no private
-async helpers — the async worker is inline via ``asyncio.run``.
+async helpers — the async worker is inline via ``runStep``.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import cast
 
 from aws_durable_execution_sdk_python import durable_step
 from aws_durable_execution_sdk_python.types import StepContext
+from langfuse import observe
 from pydantic import BaseModel, ConfigDict
 
 from app.core.config import settings
@@ -28,6 +28,7 @@ from app.services.sandbox.service import (
 )
 from app.services.sandbox.types import ProviderId, SanboxProviderApiKey, SandboxCtx
 from app.utils.branded import RepoId, UserId
+from app.workflows.durable.steps.loop import runStep
 from app.workflows.review_v2.types import RepoSnapshot
 
 log = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class RepoSnapshotOutput(RepoSnapshot):
 
 
 @durable_step
+@observe(name="get-user-by-installation", capture_input=False, capture_output=False)
 def getUserIdByInstallation(
     _ctx: StepContext, *, installationId: int
 ) -> str | None:
@@ -54,10 +56,11 @@ def getUserIdByInstallation(
                 return None
             return str(row.user_id)
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 @durable_step
+@observe(name="get-repo-by-github-id", capture_input=False, capture_output=False)
 def getRepoByGithubId(_ctx: StepContext, *, ghRepoId: int) -> dict | None:
     """Return the local repo snapshot for a GitHub repo id, else None."""
 
@@ -75,10 +78,11 @@ def getRepoByGithubId(_ctx: StepContext, *, ghRepoId: int) -> dict | None:
                 defaultBranch=row.default_branch,
             ).model_dump(mode="json")
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 @durable_step
+@observe(name="resolve-llm-ctx", capture_input=False, capture_output=False)
 def resolveActiveLlmCtx(_ctx: StepContext, *, userId: str) -> dict:
     """Return the run LLM ctx: user's stored row, else settings default."""
 
@@ -93,7 +97,7 @@ def resolveActiveLlmCtx(_ctx: StepContext, *, userId: str) -> dict:
             )
             return createDefaultLLMContext().model_dump(mode="json")
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 class SandboxCtxInput(BaseModel):
@@ -107,6 +111,7 @@ class SandboxCtxInput(BaseModel):
 
 
 @durable_step
+@observe(name="build-sandbox-ctx", capture_input=False, capture_output=False)
 def buildSandboxCtxForRun(_ctx: StepContext, *, input: dict) -> dict:
     """Assemble the settings-driven sandbox ctx (pure, no I/O)."""
     request = SandboxCtxInput.model_validate(input)

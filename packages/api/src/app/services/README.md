@@ -14,6 +14,11 @@ marker; each subpackage owns its public surface.
 - `llm/` — provider-agnostic chat-model factory (`LLMCtx` in,
   `BaseChatModel` out) plus the per-user `config/` sub-service.
 - `sandbox/` — sandbox ctx assembly + provider map (E2B live).
+- `tracing/` — Langfuse seam: `CallbackHandler` factory
+  (`createTraceCallbacks`), `flushTraces`. Trace attributes are set
+  once by the durable parent (`runAgentPhase` / `runRepairPhase`)
+  with raw `propagate_attributes`; agent steps only pass
+  `config={"callbacks": [...]}`.
 
 ## The contract
 

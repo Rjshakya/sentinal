@@ -7,11 +7,11 @@ on top.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from aws_durable_execution_sdk_python import durable_step
 from aws_durable_execution_sdk_python.types import StepContext
+from langfuse import observe
 from pydantic import BaseModel, ConfigDict
 
 from app.services.agent_v2.types import (
@@ -23,6 +23,7 @@ from app.services.llm.types import LLMCtx
 from app.services.sandbox.types import SandboxCtx
 from app.utils.branded import RepoId
 from app.utils.schema import ReviewComments
+from app.workflows.durable.steps.loop import runStep
 from app.workflows.review_v2.errors import (
     ReviewStepFailure,
     TransientReviewStepFailure,
@@ -74,11 +75,12 @@ class PlannerInput(BaseModel):
 
 
 @durable_step
+@observe(name="run-planner", capture_input=False, capture_output=False)
 def runPlanner(_ctx: StepContext, *, input: dict) -> dict:
     """Run the planning agent; degrades to empty usage on final failure."""
     request = PlannerInput.model_validate(input)
     try:
-        usage = asyncio.run(
+        usage = runStep(
             invokePlannerStep(
                 sandboxCtx=request.sandbox,
                 llmCtx=request.llm,
@@ -107,11 +109,12 @@ class PlanReadInput(BaseModel):
 
 
 @durable_step
+@observe(name="read-planner-output", capture_input=False, capture_output=False)
 def readPlannerOutput(_ctx: StepContext, *, input: dict) -> dict:
     """Read plan.json; None means the planner never submitted."""
     request = PlanReadInput.model_validate(input)
     try:
-        plan = asyncio.run(
+        plan = runStep(
             getPlanStep(
                 sandboxCtx=request.sandbox,
                 repoId=request.repoId,
@@ -137,6 +140,7 @@ class FileBatchInput(BaseModel):
 
 
 @durable_step
+@observe(name="run-file-batch", capture_input=False, capture_output=False)
 def runFileBatch(_ctx: StepContext, *, input: dict) -> dict:
     """Review one batch of files; per-file failures degrade to nothing."""
     request = FileBatchInput.model_validate(input)
@@ -186,15 +190,17 @@ def runFileBatch(_ctx: StepContext, *, input: dict) -> dict:
                 usages[job.filePath] = usageToJson(usage)
         return {"reports": reports, "failed": failed, "usages": usages}
 
-    return asyncio.run(run())
+    return runStep(run())
 
 
 @durable_step
+@observe(name="extract-review-comments", capture_input=False, capture_output=False)
 def extractReviewComments(_ctx: StepContext, *, rawText: str) -> dict:
     """Transcribe concatenated file reports into comment drafts."""
-    comments, usage = asyncio.run(
+    comments, usage = runStep(
         extractCommentsStep(
-            extractorLlmCtx=buildExtractorLlmCtx(), rawText=rawText
+            extractorLlmCtx=buildExtractorLlmCtx(),
+            rawText=rawText,
         )
     )
     return {
@@ -214,11 +220,12 @@ class SummaryInput(BaseModel):
 
 
 @durable_step
+@observe(name="synthesize-walkthrough", capture_input=False, capture_output=False)
 def synthesizeWalkthrough(_ctx: StepContext, *, input: dict) -> dict:
     """Synthesize the walkthrough; degrades to empty string."""
     request = SummaryInput.model_validate(input)
     try:
-        summary, usage = asyncio.run(
+        summary, usage = runStep(
             synthesizeSummaryStep(
                 input=request.workflowInput,
                 repo=request.repo,

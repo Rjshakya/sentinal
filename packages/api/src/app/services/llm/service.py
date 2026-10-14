@@ -37,6 +37,7 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.rate_limiters import InMemoryRateLimiter
+from langfuse import observe
 from pydantic import SecretStr
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -154,6 +155,7 @@ async def createUserLLMContext(
     )
 
 
+@observe(name="llm-create-model", capture_input=False, capture_output=False)
 def createLLMModel(
     ctx: LLMCtx, *, rateLimiterKey: str | None = None
 ) -> BaseChatModel | LLMConfigError:

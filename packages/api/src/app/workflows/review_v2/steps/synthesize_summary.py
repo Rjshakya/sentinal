@@ -21,6 +21,8 @@ import logging
 
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import HumanMessage, SystemMessage, UsageMetadata
+from langchain_core.runnables import RunnableConfig
+from langfuse import observe
 
 from app.services.agent_v2.prompts.summary import (
     createSummarySystemPrompt,
@@ -29,6 +31,7 @@ from app.services.agent_v2.prompts.summary import (
 from app.services.agent_v2.types import ChunkInventory, PlannerContext
 from app.services.llm.errors import LLMConfigError
 from app.services.llm.service import createLLMModel
+from app.services.tracing.service import createTraceCallbacks
 from app.utils.branded import RepoId
 from app.utils.schema import ReviewComments, SummaryResult
 from app.workflows.review_v2.errors import (
@@ -61,6 +64,7 @@ def summaryError(
     )
 
 
+@observe(name="synthesize-summary", capture_input=False)
 async def synthesizeSummaryStep(
     *,
     input: ReviewWorkflowInput,
@@ -107,13 +111,19 @@ async def synthesizeSummaryStep(
     )
 
     structured = chat.with_structured_output(SummaryResult)
+
+    agentConfig: RunnableConfig = {
+        "run_name": "synthesize-summary",
+        "callbacks": createTraceCallbacks(),
+    }
     try:
         with get_usage_metadata_callback() as usage_cb:
             response = await structured.ainvoke(
                 [
                     SystemMessage(content=systemPrompt),
                     HumanMessage(content=userPrompt),
-                ]
+                ],
+                config=agentConfig,
             )
             usage = usage_cb.usage_metadata
     except Exception as exc:
@@ -123,6 +133,7 @@ async def synthesizeSummaryStep(
             retryable,
             type(exc).__name__,
             exc,
+            exc_info=True,
         )
         if retryable:
             raise TransientReviewStepFailure(

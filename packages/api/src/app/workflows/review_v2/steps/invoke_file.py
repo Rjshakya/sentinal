@@ -23,6 +23,8 @@ import logging
 
 from langchain_core.callbacks import get_usage_metadata_callback
 from langchain_core.messages import UsageMetadata
+from langchain_core.runnables import RunnableConfig
+from langfuse import observe
 
 from app.services.agent_v2.errors import AgentV2BuildError
 from app.services.agent_v2.prompts import createFileReviewUserPrompt
@@ -37,6 +39,7 @@ from app.services.llm.service import createLLMModel
 from app.services.llm.types import LLMCtx
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.types import SandboxCtx
+from app.services.tracing.service import createTraceCallbacks
 from app.workflows.review_v2.errors import (
     FileLaneError,
     ReviewStepFailure,
@@ -78,6 +81,7 @@ def lastAiText(result: dict) -> str:
     return ""
 
 
+@observe(name="file-review", capture_input=False)
 async def invokeFileReviewStep(
     *,
     filePath: str,
@@ -174,9 +178,14 @@ async def invokeFileReviewStep(
     )
     promptPayload = {"messages": [{"role": "user", "content": prompt}]}
 
+    agentConfig: RunnableConfig = {
+        "run_name": f"file-review:{filePath}",
+        "callbacks": createTraceCallbacks(),
+    }
+
     try:
         with get_usage_metadata_callback() as usage_cb:
-            result = await agent.ainvoke(promptPayload)
+            result = await agent.ainvoke(promptPayload, config=agentConfig)
             usage = usage_cb.usage_metadata
             if not isinstance(result, dict):
                 result = {"messages": []}
@@ -188,6 +197,7 @@ async def invokeFileReviewStep(
             retryable,
             type(exc).__name__,
             exc,
+            exc_info=True,
         )
         if retryable:
             raise TransientReviewStepFailure(

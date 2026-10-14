@@ -18,8 +18,10 @@ from aws_durable_execution_sdk_python.retries import (
     RetryStrategyConfig,
     create_retry_strategy,
 )
+from langfuse import observe, propagate_attributes
 from pydantic import BaseModel, ConfigDict
 
+from app.core.config import settings
 from app.services.agent_v2.types import ChunkInventory, PlannerContext
 from app.utils.branded import CommitId, PRNumber, RepoId, UserId
 from app.utils.schema import ReviewComments
@@ -87,7 +89,46 @@ class AgentPhaseInput(BaseModel):
     diffBaseSha: str | None
 
 
+@observe(name="run-agent-phase", capture_input=False, capture_output=False)
 def runAgentPhase(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
+    """Parent review trace: sets user/session attrs, runs the agent phase."""
+    llmDict: dict[str, object] = dict(input.llm)
+    repoDict: dict[str, object] = dict(input.repo)
+    workflowDict: dict[str, object] = dict(input.workflowInput)
+    modelStr: str = str(llmDict.get("model") or "")
+    llmOrigin: str = str(llmDict.get("origin") or "system")
+    repoName: str = str(repoDict.get("repoName") or repoDict.get("repo_name") or "")
+    trigger: str = str(workflowDict.get("trigger") or "opened")
+    shortSha: str = input.headSha[:7] if len(input.headSha) >= 7 else input.headSha
+    sessionId: str = f"review:{input.userId}:{input.repoId}:{input.prNumber}:{shortSha}"
+    tags: list[str] = [f"trigger:{trigger}", f"pr:{input.prNumber}"]
+    if repoName:
+        tags.append(f"repo:{repoName}")
+    metadata: dict[str, str | int] = {
+        "delivery": input.delivery,
+        "trigger": trigger,
+        "repo_id": input.repoId,
+        "pr_number": input.prNumber,
+        "head_sha": input.headSha,
+        "base_sha": input.baseSha,
+        "llm_model": modelStr,
+        "llm_origin": llmOrigin,
+    }
+    if repoName:
+        metadata["repo_name"] = repoName
+    with propagate_attributes(
+        user_id=input.userId,
+        session_id=sessionId,
+        tags=tags,
+        metadata=metadata,
+        version=settings.app_version,
+        environment=settings.app_env,
+        trace_name="review-run",
+    ):
+        return _runAgentPhaseInner(ctx, input=input)
+
+
+def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
     repo = input.repo
     workflowInput = input.workflowInput
     llm = input.llm
