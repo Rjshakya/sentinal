@@ -1,78 +1,67 @@
 # Sentinel Evals
 
-Two-stage harness that evaluates the production review agents (see
-AGENTS.md §3.8) against authored PR datasets.
+Dataset in, production agent stages, one report out.
 
 ## Flow
 
-`python main.py <pr-id>` runs, sequentially:
+`python main.py --data dataset --env local --model openai:gpt-5-mini`
+runs, in order:
 
-1. **review** — POST the dataset `input.json` to
-   `POST /api/review` on the production API (gated by the
-   `X-Eval-Token` header). The API runs the full production
-   `reviewWorkflowV2` — sandbox create, v2 clone, diff split,
-   chunk inventory, planner, per-file fan-out, extractor,
-   persistence — and returns the typed review output synchronously. The eval runner
-   adapts the response onto a `ReviewOutput` and renders
-   `results/<pr-id>/result.md`.
-2. **judge** — an isolated structured-output LLM judge scores the
-   review against the gold bugs in `output.json`. Writes
-   `report/<pr-id>/report.json` with per-comment verdicts and
-   derived precision / recall / F1 / FP rate.
+1. **load** — read every `dataset/<case>/{input,output}.json` pair.
+   `inputs[i]` maps to `outputs[i]`.
+2. **review** — `runReviewAgent` per input: the production agent stages
+   called directly (clone, codegraph index, diff, split, chunks,
+   planner, file batch, extract, summary, combine). No durable
+   execution, no DB rows, no GitHub post.
+3. **judge** — `runJudgeAgent` per review against the gold bugs.
+4. **metrics** — `scoreOne` per pair plus `createMetrics` over the full
+   item list. Writes `report/report.json` plus `report/results/<case>.json`.
 
-The eval no longer runs the production agents in-process — it drives
-the same pipeline the production webhook does, end-to-end, so the
-results reflect the real review behaviour (DBOS steps, sandbox
-lifecycle, partial-failure degradation, etc.).
+## Parts
+
+- `agents/review.py` — `runReviewAgent(...)`: functional port of the
+  durable agent phase. Takes `SandboxCtx` + `LLMCtx` + `RepoSnapshot`
+  + `ReviewWorkflowInput` + `ReviewLimits`. Absent installation id
+  means a public clone.
+- `agents/judge.py` — `runJudgeAgent(...)`: structured LLM verdict.
+- `agents/base.py` — shared `ReviewOutput` / `AgentRunError`.
+- `environments/` — `LocalBackend` / `DockerBackend` (`BaseSandbox`
+  children: only `execute`, `upload`, `download`, `id` are bespoke).
+  The local backend mounts its temp dir at `/home/user`, which the
+  production workers hardcode.
+- `providers/` — `LocalProvider` / `DockerProvider` adapt the backends
+  to the production provider contract; `registerEvalProviders()` puts
+  them in the production provider map at eval runtime.
+- `datasets/` — `PrInput` (PR facts only) plus `GoldOutput`, paired by
+  index. Sandbox, model, and clone token come from the run config.
+- `metrics/` — pure `scoreOne` plus dataset-level `createMetrics`.
+- `runner.py` — `runEval(cfg)` wires the four parts.
 
 ## Datasets
 
 ```
-dataset/<pr-id>/
-├── input.json     # user_id, github_repo_id, github_installation_id,
-│                  # repo_url, repo_owner, repo_name, pr_number,
-│                  # base_sha, head_sha
+dataset/<case>/
+├── input.json     # repo_url, owner, name, pr_number,
+│                  # base_sha, head_sha, branches, title/author/body
 └── output.json    # gold verdict + bugs[] (id, bug, location, severity)
 ```
 
-`<pr-id>` is `{repo}-pr-{n}` (e.g. `code-review-test-pr-2`) — unique
-per PR, so runs and artefacts stay idempotent. Severities are the
-prod enum: `P1_CRITICAL` / `P2_WARNING` / `P3_NITPICK`. `location`
-is `path/to/file:line` or `path/to/file:from-to`.
-
-## result.md
-
-The review output is a fixed template (verdict / summary / comments
-with severity + anchors). The judge parses it deterministically —
-never edit a result.md by hand.
-
 ## Run
 
-The eval needs:
+Host (local env needs git + python3 only):
 
-- A reachable production API (`EVAL_API_URL`) with the review
-  pipeline configured (LLM + sandbox + GitHub App).
-- A matching `EVAL_API_TOKEN` (the API rejects with 401 on mismatch).
-- The GitHub App installed on the test repo (the workflow uses the
-  installation token to clone).
-
-Host:
-
-    export EVAL_API_URL=http://localhost:8000/api
-    export EVAL_API_TOKEN=<must match the API's EVAL_API_TOKEN>
     cd packages/evals
-    uv sync
-    uv run python main.py code-review-test-pr-2
+    uv sync --all-packages
+    uv run python main.py --data dataset --env local --model openai:gpt-5-mini
 
-The runner blocks for as long as the workflow takes (~3-8 min per
-PR end-to-end). Override via `EVAL_REVIEW_TIMEOUT_S` (seconds,
-default 1800). When `EVAL_API_URL` or `EVAL_API_TOKEN` is unset the
-runner exits 1 with a clear error.
+Docker env (isolated Linux; needs the docker CLI):
 
-Docker:
+    uv run python main.py --data dataset --env docker --model openai:gpt-5-mini
 
-    docker build -f packages/evals/Dockerfile.eval -t sentinel-evals .
-    docker run --rm -it \
-      -e EVAL_API_URL=http://host.docker.internal:8000/api \
-      -e EVAL_API_TOKEN=<token> \
-      sentinel-evals code-review-test-pr-2
+E2B env (cloud; key via `--api-key`):
+
+    uv run python main.py --data dataset --env e2b --model openai:gpt-5-mini --api-key ...
+
+Flags: `--model provider:model`, `--base-url`, `--api-key`,
+`--out report`. Clones run without auth (repos are assumed public);
+a present installation id mints a token as in production.

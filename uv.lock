@@ -534,8 +534,10 @@ version = "0.1.0"
 source = { editable = "packages/evals" }
 dependencies = [
     { name = "api" },
-    { name = "httpx" },
+    { name = "deepagents" },
+    { name = "e2b" },
     { name = "langchain-core" },
+    { name = "langchain-e2b" },
     { name = "pydantic" },
     { name = "python-dotenv" },
 ]
@@ -543,8 +545,10 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "api", editable = "packages/api" },
-    { name = "httpx", specifier = ">=0.27" },
+    { name = "deepagents", specifier = ">=0.6.12" },
+    { name = "e2b", specifier = ">=2.30.0" },
     { name = "langchain-core", specifier = ">=0.3" },
+    { name = "langchain-e2b", specifier = ">=0.0.5" },
     { name = "pydantic", specifier = ">=2.6" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
 ]
