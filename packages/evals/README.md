@@ -4,7 +4,7 @@ Dataset list in, production agent stages, stored evaluations out.
 
 ## Flow
 
-`python main.py --data dataset/example.json --env local --model openai:gpt-5-mini`
+`python main.py --data dataset/example.json --sandbox local --model openai:gpt-5-mini`
 runs, in order:
 
 1. **load** — read a JSON file or directory of JSON files. Each file holds
@@ -79,18 +79,26 @@ Host (local env needs git + python3 only):
 
     cd packages/evals
     uv sync --all-packages
-    uv run python main.py --data dataset/example.json --env local --model openai:gpt-5-mini
+    uv run python main.py --data dataset/example.json --sandbox local --model openai:gpt-5-mini
 
 Docker env (isolated Linux; needs the docker CLI):
 
-    uv run python main.py --data dataset/example.json --env docker --model openai:gpt-5-mini
+    uv run python main.py --data dataset/example.json --sandbox docker --model openai:gpt-5-mini
 
-E2B env (cloud; key via `--api-key`):
+E2B env (cloud; key via `E2B_API_KEY` env):
 
-    uv run python main.py --data dataset/example.json --env e2b --model openai:gpt-5-mini --api-key ...
+    uv run python main.py --data dataset/example.json --sandbox e2b --model openai:gpt-5-mini
 
-Flags: `--model provider:model`, `--base-url`, `--api-key`,
+Custom gateway (base URL plus API key plus headers share one `LLMCtx`
+for the review and judge agents):
+
+    uv run python main.py --data dataset/example.json --sandbox local --model openai:gpt-5-mini --base-url https://gateway.example.com/v1 --llm-key ... --default-header X-G-F=251
+
+Flags: `--model provider:model`, `--base-url`, `--llm-key`,
+`--default-header` (`Key=Value`, repeatable, e.g. `--default-header X-G-F=251`),
 `--github-token` (or `GITHUB_TOKEN` env), `--results-dir` (default
-`results`). Clones run without auth
+`results`). `--llm-key` is required with `--base-url`. Sandbox provider
+keys come from settings (`E2B_API_KEY` env), never from CLI flags.
+Clones run without auth
 (repos are assumed public); a present installation id mints a token
 as in production.

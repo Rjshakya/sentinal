@@ -76,10 +76,11 @@ class RunConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     datasetPath: str = Field(min_length=1)
-    env: EnvKind = Field(default="local")
+    sandbox: EnvKind = Field(default="local")
     model: str = Field(default="openai:gpt-5-mini", min_length=3)
     baseUrl: str = Field(default="")
-    apiKey: str = Field(default="")
+    llmKey: str = Field(default="")
+    defaultHeaders: dict[str, str] = Field(default_factory=dict)
     githubToken: str = Field(default="")
     judgePrompt: str = Field(default=JUDGE_SYSTEM_PROMPT, min_length=1)
     resultsDir: str = Field(default="results", min_length=1)
@@ -106,20 +107,16 @@ def buildLlmContext(runConfig: RunConfig) -> LLMCtx | RunError:
     return LLMCtx(
         model=runConfig.model,
         origin="system",
-        apiKey=ApiKey(runConfig.apiKey) if runConfig.apiKey else None,
+        apiKey=ApiKey(runConfig.llmKey) if runConfig.llmKey else None,
         baseUrl=BaseUrl(runConfig.baseUrl) if runConfig.baseUrl else None,
-        defaultHeaders={},
+        defaultHeaders=dict(runConfig.defaultHeaders),
         maxRetries=3,
         rateLimitRps=0.5,
     )
 
 
-def resolveSandboxApiKey(runConfig: RunConfig) -> str:
-    if runConfig.apiKey:
-        return runConfig.apiKey
-    if runConfig.env == "e2b":
-        return settings.e2b_api_key
-    return ""
+def resolveSandboxApiKey() -> str:
+    return settings.e2b_api_key
 
 
 def resolveGithubToken(runConfig: RunConfig) -> str | None:
@@ -297,7 +294,7 @@ async def runEval(runConfig: RunConfig) -> DatasetMetrics | RunError:
     registerEvalProviders()
     reviewLimits = ReviewLimits(modelCallRunLimit=120, toolCallRunLimit=120)
     githubToken = resolveGithubToken(runConfig)
-    sandboxApiKey = resolveSandboxApiKey(runConfig)
+    sandboxApiKey = resolveSandboxApiKey()
 
     itemScores: list[PrScore] = []
     evaluations: list[PrEvaluation] = []
@@ -314,7 +311,7 @@ async def runEval(runConfig: RunConfig) -> DatasetMetrics | RunError:
                 userId=evalUserId,
                 repoId=repoContext.id,
                 repoName=prContext.repoName,
-                providerId=cast(ProviderId, runConfig.env),
+                providerId=cast(ProviderId, runConfig.sandbox),
                 apiKey=SanboxProviderApiKey(sandboxApiKey),
                 sandboxName=f"eval-{prContext.repoName}-{prContext.prNumber}",
                 rootPath="/home/user",
@@ -353,7 +350,7 @@ async def runEval(runConfig: RunConfig) -> DatasetMetrics | RunError:
         recordReviewEvaluation(caseId, datasetEntry, prContext, reviewOutput, judgeResult, itemScores, evaluations)
     datasetMetrics = createDatasetMetrics(itemScores)
     evaluationsFile = buildEvaluationsFile(
-        runConfig.datasetPath, str(runConfig.env), datasetMetrics, evaluations
+        runConfig.datasetPath, str(runConfig.sandbox), datasetMetrics, evaluations
     )
     evaluationsPath = buildEvaluationsFilePath(Path(runConfig.resultsDir), runConfig.model)
     saveError = saveEvaluationsFile(evaluationsPath, evaluationsFile)
