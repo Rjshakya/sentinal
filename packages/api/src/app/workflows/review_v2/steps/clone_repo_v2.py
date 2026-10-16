@@ -135,9 +135,10 @@ def main() -> int:
     args = parser.parse_args()
 
     token = os.environ.get("GITHUB_TOKEN", "")
-    if not token:
-        print("clone_repo_v2.py: GITHUB_TOKEN not set", file=sys.stderr)
-        return 1
+    if token:
+        url = f"https://x-access-token:{token}@github.com/{args.owner}/{args.repo}.git"
+    else:
+        url = f"https://github.com/{args.owner}/{args.repo}.git"
 
     try:
         os.makedirs(args.workspace, exist_ok=True)
@@ -146,7 +147,6 @@ def main() -> int:
         return 1
     shutil.rmtree(args.dest, ignore_errors=True)
 
-    url = f"https://x-access-token:{token}@github.com/{args.owner}/{args.repo}.git"
     clone = _run(["git", "clone", url, args.dest])
     if clone.returncode != 0:
         print(clone.stderr.strip() or "git clone failed", file=sys.stderr)
@@ -297,16 +297,20 @@ async def cloneRepoV2Step(
     repoName: RepoName,
     prNumber: PRNumber,
     headSha: CommitId,
-    githubInstallationId: InstallationId,
+    githubInstallationId: InstallationId | None = None,
 ) -> CloneV2Result:
     """Clone the repo and check out the PR head, atomically.
 
-    Mints the installation token, reconnects the sandbox, and runs the
-    in-sandbox script source inline (``python3 -c``) with the token as
-    an inline ``GITHUB_TOKEN=...`` env assignment — no files are
-    uploaded. The script removes any stale clone directory, ``git
-    clone``s the default branch, fetches ``refs/pull/{pr}/head``,
-    checks out the head SHA detached, and verifies ``HEAD``.
+    Reconnects the sandbox and runs the in-sandbox script source
+    inline (``python3 -c``) with the token as an inline
+    ``GITHUB_TOKEN=...`` env assignment — no files are uploaded. The
+    script removes any stale clone directory, ``git clone``s the
+    default branch, fetches ``refs/pull/{pr}/head``, checks out the
+    head SHA detached, and verifies ``HEAD``.
+
+    When ``githubInstallationId`` is present, the installation token
+    is minted and used. When absent, no token is minted and the clone
+    runs without auth — the repo is assumed public (e.g. eval runs).
 
     Fail-closed: any checkout-stage refusal fails the run — v2 never
     reviews a half-built tree.
@@ -317,28 +321,33 @@ async def cloneRepoV2Step(
         ReviewStepFailure: the clone failed, or the PR-head checkout
             (or its verify gate) refused.
     """
-    repoCtx = createRepoCtx(
-        userId=userId,
-        installationId=githubInstallationId,
-        owner=repoOwner,
-        repo=repoName,
-    )
-    token = await mintAccessToken(repoCtx)
-    if isinstance(token, GitHubRepoError):
-        log.warning(
-            "clone_repo_v2_step: token mint failed (will retry): "
-            "installation_id=%s repo_id=%s cause=%s",
-            githubInstallationId,
-            repoId,
-            token.message,
+    token: str
+    if githubInstallationId is None:
+        token = ""
+    else:
+        repoCtx = createRepoCtx(
+            userId=userId,
+            installationId=githubInstallationId,
+            owner=repoOwner,
+            repo=repoName,
         )
-        raise TransientReviewStepFailure(
-            CloneV2TransientError(
-                message=f"installation token mint failed: {token.message}",
-                userId=userId,
-                repoId=repoId,
+        minted = await mintAccessToken(repoCtx)
+        if isinstance(minted, GitHubRepoError):
+            log.warning(
+                "clone_repo_v2_step: token mint failed (will retry): "
+                "installation_id=%s repo_id=%s cause=%s",
+                githubInstallationId,
+                repoId,
+                minted.message,
             )
-        )
+            raise TransientReviewStepFailure(
+                CloneV2TransientError(
+                    message=f"installation token mint failed: {minted.message}",
+                    userId=userId,
+                    repoId=repoId,
+                )
+            )
+        token = str(minted)
 
     sandbox = await connectSandbox(sandboxCtx)
     if isinstance(sandbox, SandboxConnectError):

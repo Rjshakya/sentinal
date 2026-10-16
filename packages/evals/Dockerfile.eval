@@ -7,4 +7,4 @@ WORKDIR /app
 COPY . /app
 
 WORKDIR /app/packages/evals
-ENTRYPOINT ["uv", "run", "python", "main.py"]
+ENTRYPOINT ["uv", "run", "python", "main.py", "--data", "dataset"]

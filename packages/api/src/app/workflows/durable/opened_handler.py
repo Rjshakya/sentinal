@@ -9,17 +9,11 @@ from __future__ import annotations
 
 import logging
 
-from aws_durable_execution_sdk_python import durable_execution
-from aws_durable_execution_sdk_python.config import StepConfig
-from aws_durable_execution_sdk_python.context import DurableContext
-from aws_durable_execution_sdk_python.retries import (
-    RetryStrategyConfig,
-    create_retry_strategy,
-)
+from async_durable_execution import durable_execution, step
 
-from app.core.config import settings
 from app.services.tracing.service import flushTraces
 from app.workflows.durable.pipeline import AgentPhaseInput, runAgentPhase
+from app.workflows.durable.retry import RETRY_1, RETRY_3
 from app.workflows.durable.steps import (
     buildSandboxCtxForRun,
     getRepoByGithubId,
@@ -32,29 +26,22 @@ from app.workflows.review_v2.types import ReviewWorkflowInput
 
 log = logging.getLogger(__name__)
 
-RETRY_3 = StepConfig(
-    retry_strategy=create_retry_strategy(RetryStrategyConfig(max_attempts=3))
-)
-RETRY_1 = StepConfig(
-    retry_strategy=create_retry_strategy(RetryStrategyConfig(max_attempts=1))
-)
-
 
 @durable_execution
-def reviewOpenedHandler(event: dict, ctx: DurableContext) -> dict:
+async def reviewOpenedHandler(event: dict) -> dict:
     request = OpenedDurableEvent.model_validate(event)
     try:
-        return _reviewOpenedHandlerInner(request, ctx)
+        return await _reviewOpenedHandlerInner(request)
     finally:
         flushTraces()
 
 
-def _reviewOpenedHandlerInner(request: OpenedDurableEvent, ctx: DurableContext) -> dict:
+async def _reviewOpenedHandlerInner(request: OpenedDurableEvent) -> dict:
 
-    opened = ctx.step(
+    opened = await step(
         parseOpenedPayload(payload=request.payload),
         name="parse-opened",
-        config=RETRY_1,
+        retry_strategy=RETRY_1,
     )
     if opened is None:
         return ReviewSkipped(
@@ -70,20 +57,20 @@ def _reviewOpenedHandlerInner(request: OpenedDurableEvent, ctx: DurableContext) 
     ghRepoId = int(opened["ghRepoId"])
     prNumber = int(opened["number"])
 
-    userId = ctx.step(
+    userId = await step(
         getUserIdByInstallation(installationId=installationId),
         name="get-user",
-        config=RETRY_3,
+        retry_strategy=RETRY_3,
     )
     if not userId:
         return ReviewSkipped(
             delivery=request.delivery, skip_reason="unowned_installation"
         ).model_dump(mode="json")
 
-    repo = ctx.step(
+    repo = await step(
         getRepoByGithubId(ghRepoId=ghRepoId),
         name="get-repo",
-        config=RETRY_3,
+        retry_strategy=RETRY_3,
     )
     if repo is None:
         return ReviewSkipped(
@@ -94,12 +81,12 @@ def _reviewOpenedHandlerInner(request: OpenedDurableEvent, ctx: DurableContext) 
     headSha = str(opened["headSha"])
     baseSha = str(opened["baseSha"])
 
-    llm = ctx.step(
+    llm = await step(
         resolveActiveLlmCtx(userId=str(userId)),
         name="resolve-llm",
-        config=RETRY_3,
+        retry_strategy=RETRY_3,
     )
-    sandbox = ctx.step(
+    sandbox = await step(
         buildSandboxCtxForRun(
             input={
                 "userId": str(userId),
@@ -108,7 +95,7 @@ def _reviewOpenedHandlerInner(request: OpenedDurableEvent, ctx: DurableContext) 
             }
         ),
         name="build-sandbox",
-        config=RETRY_1,
+        retry_strategy=RETRY_1,
     )
 
     log.info(
@@ -143,9 +130,7 @@ def _reviewOpenedHandlerInner(request: OpenedDurableEvent, ctx: DurableContext) 
         }
     ).model_dump(mode="json")
 
-    _ = settings
-    return runAgentPhase(
-        ctx,
+    return await runAgentPhase(
         input=AgentPhaseInput(
             delivery=request.delivery,
             executionName=request.execution_name,

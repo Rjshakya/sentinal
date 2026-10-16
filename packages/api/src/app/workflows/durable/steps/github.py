@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from aws_durable_execution_sdk_python import durable_step
-from aws_durable_execution_sdk_python.types import StepContext
+from async_durable_execution import durable_callable
 from langfuse import observe
 from pydantic import BaseModel, ConfigDict
 
@@ -26,7 +25,6 @@ from app.utils.branded import (
     RepoOwner,
     UserId,
 )
-from app.workflows.durable.steps.loop import runStep
 from app.workflows.triggers.comment_payload import (
     classifyComment,
     validateCommentPayload,
@@ -37,9 +35,9 @@ from app.workflows.triggers.types import LastReviewSnapshot
 log = logging.getLogger(__name__)
 
 
-@durable_step
+@durable_callable
 @observe(name="parse-opened-payload", capture_input=False, capture_output=False)
-def parseOpenedPayload(_ctx: StepContext, *, payload: dict) -> dict | None:
+async def parseOpenedPayload(*, payload: dict) -> dict | None:
     """Validate a pull_request payload into PRPayload dump, else None."""
     parsed = extractOpenedPrPayload(payload)
     if parsed is None:
@@ -57,9 +55,9 @@ class CommentPayloadInput(BaseModel):
     appSlug: str
 
 
-@durable_step
+@durable_callable
 @observe(name="parse-comment-payload", capture_input=False, capture_output=False)
-def parseCommentPayload(_ctx: StepContext, *, input: dict) -> dict | None:
+async def parseCommentPayload(*, input: dict) -> dict | None:
     """Validate an issue_comment payload, else None (malformed or gated)."""
     request = CommentPayloadInput.model_validate(input)
     trigger = validateCommentPayload(request.payload, delivery=request.delivery)
@@ -83,27 +81,23 @@ class LivePrStateInput(BaseModel):
     prNumber: PRNumber
 
 
-@durable_step
+@durable_callable
 @observe(name="fetch-live-pr-state", capture_input=False, capture_output=False)
-def fetchLivePrState(_ctx: StepContext, *, input: dict) -> dict | None:
+async def fetchLivePrState(*, input: dict) -> dict | None:
     """Fetch the PR snapshot from GitHub, else None on API error."""
     request = LivePrStateInput.model_validate(input)
-
-    async def run() -> dict | None:
-        prCtx = createPRCtx(
-            request.userId,
-            request.installationId,
-            request.owner,
-            request.repo,
-            request.prNumber,
-        )
-        state = await getPrState(prCtx)
-        if isinstance(state, GitHubPRError):
-            log.warning("fetchLivePrState: github fetch failed: %s", state.message)
-            return None
-        return state.model_dump(mode="json")
-
-    return runStep(run())
+    prCtx = createPRCtx(
+        request.userId,
+        request.installationId,
+        request.owner,
+        request.repo,
+        request.prNumber,
+    )
+    state = await getPrState(prCtx)
+    if isinstance(state, GitHubPRError):
+        log.warning("fetchLivePrState: github fetch failed: %s", state.message)
+        return None
+    return state.model_dump(mode="json")
 
 
 class LastReviewInput(BaseModel):
@@ -115,27 +109,23 @@ class LastReviewInput(BaseModel):
     prNumber: int
 
 
-@durable_step
+@durable_callable
 @observe(name="load-last-review", capture_input=False, capture_output=False)
-def loadLastSuccessfulReview(_ctx: StepContext, *, input: dict) -> dict | None:
+async def loadLastSuccessfulReview(*, input: dict) -> dict | None:
     """Return the last successful review snapshot dump, else None."""
     request = LastReviewInput.model_validate(input)
-
-    async def run() -> dict | None:
-        async with async_session_maker() as session:
-            row = await ReviewRepository(session=session).find_latest_success(
-                request.repoId, request.prNumber
-            )
-            if row is None:
-                return None
-            return LastReviewSnapshot(
-                commitId=CommitId(row.commit_id),
-                baseSha=row.base_sha,
-                createdAt=row.created_at,
-                githubReviewId=row.github_review_id,
-            ).model_dump(mode="json")
-
-    return runStep(run())
+    async with async_session_maker() as session:
+        row = await ReviewRepository(session=session).find_latest_success(
+            request.repoId, request.prNumber
+        )
+        if row is None:
+            return None
+        return LastReviewSnapshot(
+            commitId=CommitId(row.commit_id),
+            baseSha=row.base_sha,
+            createdAt=row.created_at,
+            githubReviewId=row.github_review_id,
+        ).model_dump(mode="json")
 
 
 __all__ = [

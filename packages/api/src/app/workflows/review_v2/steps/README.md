@@ -1,7 +1,7 @@
 # review_v2/steps — one worker per pipeline phase
 
-Worker library consumed by the `durable/` handlers (one thin `@durable_step`
-per worker: validate input model, `asyncio.run` the worker, return
+Worker library consumed by the `durable/` handlers (one thin `@durable_callable`
+step per worker: validate input model, `await` the worker, return
 `model_dump`). Only the sandbox id travels between steps; every step
 reconnects. In pipeline order:
 
@@ -42,4 +42,4 @@ reconnects. In pipeline order:
 
 - `__init__.py` re-exports every worker plus the pure helpers.
 - Workers raise `ReviewStepFailure` / `TransientReviewStepFailure`;
-  the durable step retries transient failures per its `StepConfig`.
+  the durable step retries transient failures per its retry strategy.

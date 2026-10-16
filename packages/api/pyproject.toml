@@ -21,11 +21,11 @@ dependencies = [
     "langchain-google-genai>=4.2",
     "langchain-e2b>=0.0.5",
     "langchain-deepseek>=1.1.0",
-    "aws-durable-execution-sdk-python>=2.0.1",
-    "boto3>=1.43.104",
+    "boto3>=1.42.90,<1.43.1",
     "aws-lambda-powertools>=3.35.0",
     "mangum>=0.22.0",
     "langfuse>=4.17.0",
+    "async-durable-execution>=2.5.0",
 ]
 
 [build-system]
@@ -37,7 +37,6 @@ packages = ["src/app"]
 
 [dependency-groups]
 dev = [
-    "aws-durable-execution-sdk-python-testing>=1.2.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]

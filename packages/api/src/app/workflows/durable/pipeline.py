@@ -1,23 +1,18 @@
 """Shared agent phase: sandbox -> clone -> agents -> persist -> post.
 
 Called by both durable handlers after they resolve their inputs. Linear
-``ctx.step`` calls only — no closures, no _kill/_fail wrappers. When the
-inline post returns ``posted=False`` with comments to show, the pipeline
-dispatches the repair durable best-effort before marking SUCCESS. On
-exception the except block issues two plain steps (mark failed + destroy)
-and returns ``ReviewFailed``. Imports on top.
+``await step(...)`` calls only — no closures, no _kill/_fail wrappers.
+When the inline post returns ``posted=False`` with comments to show, the
+pipeline dispatches the repair durable best-effort before marking
+SUCCESS. On exception the except block issues two plain steps (mark
+failed + destroy) and returns ``ReviewFailed``. Imports on top.
 """
 
 from __future__ import annotations
 
 import logging
 
-from aws_durable_execution_sdk_python.config import StepConfig
-from aws_durable_execution_sdk_python.context import DurableContext
-from aws_durable_execution_sdk_python.retries import (
-    RetryStrategyConfig,
-    create_retry_strategy,
-)
+from async_durable_execution import step
 from langfuse import observe, propagate_attributes
 from pydantic import BaseModel, ConfigDict
 
@@ -25,6 +20,7 @@ from app.core.config import settings
 from app.services.agent_v2.types import ChunkInventory, PlannerContext
 from app.utils.branded import CommitId, PRNumber, RepoId, UserId
 from app.utils.schema import ReviewComments
+from app.workflows.durable.retry import RETRY_1, RETRY_3
 from app.workflows.durable.steps import (
     clonePrHead,
     createEphemeralSandbox,
@@ -57,16 +53,8 @@ from app.workflows.review_v2.steps.combine import (
     concatFileReports,
 )
 from app.workflows.review_v2.steps.persist import sumTotalUsages
-from app.workflows.review_v2.types import ReviewLimits
 
 log = logging.getLogger(__name__)
-
-RETRY_3 = StepConfig(
-    retry_strategy=create_retry_strategy(RetryStrategyConfig(max_attempts=3))
-)
-RETRY_1 = StepConfig(
-    retry_strategy=create_retry_strategy(RetryStrategyConfig(max_attempts=1))
-)
 
 
 class AgentPhaseInput(BaseModel):
@@ -90,7 +78,7 @@ class AgentPhaseInput(BaseModel):
 
 
 @observe(name="run-agent-phase", capture_input=False, capture_output=False)
-def runAgentPhase(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
+async def runAgentPhase(*, input: AgentPhaseInput) -> dict:
     """Parent review trace: sets user/session attrs, runs the agent phase."""
     llmDict: dict[str, object] = dict(input.llm)
     repoDict: dict[str, object] = dict(input.repo)
@@ -125,10 +113,10 @@ def runAgentPhase(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
         environment=settings.app_env,
         trace_name="review-run",
     ):
-        return _runAgentPhaseInner(ctx, input=input)
+        return await _runAgentPhaseInner(input=input)
 
 
-def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
+async def _runAgentPhaseInner(*, input: AgentPhaseInput) -> dict:
     repo = input.repo
     workflowInput = input.workflowInput
     llm = input.llm
@@ -150,17 +138,17 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
     sandboxActive: dict = dict(input.sandbox)
 
     try:
-        sandboxActive = ctx.step(
+        sandboxActive = await step(
             createEphemeralSandbox(sandbox=input.sandbox),
             name="create-sandbox",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        prRowId = ctx.step(
+        prRowId = await step(
             upsertPrRow(input={"repoId": repoId, "workflowInput": workflowInput}),
             name="upsert-pr",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        reviewRowId = ctx.step(
+        reviewRowId = await step(
             markReviewRunning(
                 input={
                     "userId": userId,
@@ -176,9 +164,9 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="mark-running",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        ctx.step(
+        await step(
             clonePrHead(
                 input={
                     "sandbox": sandboxActive,
@@ -190,9 +178,9 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="clone",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        ctx.step(
+        await step(
             indexCodegraph(
                 input={
                     "sandbox": sandboxActive,
@@ -202,9 +190,9 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="codegraph-index",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        ctx.step(
+        await step(
             fetchPrDiff(
                 input={
                     "sandbox": sandboxActive,
@@ -214,9 +202,9 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="fetch-diff",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        ctx.step(
+        await step(
             splitPrDiff(
                 input={
                     "sandbox": sandboxActive,
@@ -225,9 +213,9 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="split-diff",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        inventory = ctx.step(
+        inventory = await step(
             listDiffChunks(
                 input={
                     "sandbox": sandboxActive,
@@ -236,9 +224,9 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="list-chunks",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        plannerOut = ctx.step(
+        plannerOut = await step(
             runPlanner(
                 input={
                     "sandbox": sandboxActive,
@@ -250,9 +238,9 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="invoke-planner",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        planOut = ctx.step(
+        planOut = await step(
             readPlannerOutput(
                 input={
                     "sandbox": sandboxActive,
@@ -261,7 +249,7 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="get-plan",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
 
         plannerContext = planOut.get("planner_context") or PlannerContext().model_dump(
@@ -276,7 +264,7 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
         failedFiles: list[str] = []
         researchUsages: dict[str, dict] = {}
         for i, batch in enumerate(chunkedJobs(built.jobs)):
-            batchOut = ctx.step(
+            batchOut = await step(
                 runFileBatch(
                     input={
                         "sandbox": sandboxActive,
@@ -289,7 +277,7 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                     }
                 ),
                 name=f"file-batch-{i}",
-                config=RETRY_1,
+                retry_strategy=RETRY_1,
             )
             reports.update(dict(batchOut.get("reports") or {}))
             failedFiles.extend(list(batchOut.get("failed") or []))
@@ -300,13 +288,13 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
         rawText = concatFileReports(reports)
         commentsList: list[dict] = []
         if rawText.strip():
-            extOut = ctx.step(
+            extOut = await step(
                 extractReviewComments(rawText=rawText),
                 name="extract-comments",
-                config=RETRY_3,
+                retry_strategy=RETRY_3,
             )
             commentsList = list(extOut.get("comments") or [])
-        summOut = ctx.step(
+        summOut = await step(
             synthesizeWalkthrough(
                 input={
                     "workflowInput": workflowInput,
@@ -317,7 +305,7 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="synthesize-summary",
-            config=RETRY_1,
+            retry_strategy=RETRY_1,
         )
         combined = combineV2Reports(
             comments=ReviewComments.model_validate({"List": commentsList}),
@@ -331,7 +319,7 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
             userId=UserId(userId),
         )
         reviewDump: dict = combined.review.model_dump(mode="json")
-        summaryId = ctx.step(
+        summaryId = await step(
             persistSummary(
                 input={
                     "prRowId": prRowId,
@@ -341,9 +329,9 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="persist-summary",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        commentIds = ctx.step(
+        commentIds = await step(
             persistComments(
                 input={
                     "prRowId": prRowId,
@@ -353,10 +341,10 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="persist-comments",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
         inTokens, outTokens, totalTokens, tokenDetails = sumTotalUsages(combined.usages)
-        ctx.step(
+        await step(
             persistUsage(
                 input={
                     "userId": userId,
@@ -375,11 +363,11 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="persist-usage",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
         posted = False
         githubReviewId: int | None = None
-        postOut = ctx.step(
+        postOut = await step(
             postGithubReview(
                 input={
                     "repo": repo,
@@ -388,11 +376,11 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="post-review",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
         posted = bool(postOut.get("posted"))
         if not posted and commentsList:
-            ctx.step(
+            await step(
                 dispatchRepairFollowUp(
                     input={
                         "prNumber": prNumber,
@@ -401,11 +389,11 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                     }
                 ),
                 name="dispatch-repair",
-                config=RETRY_1,
+                retry_strategy=RETRY_1,
             )
         if posted and postOut.get("githubReviewId") is not None:
             githubReviewId = int(postOut["githubReviewId"])
-            ctx.step(
+            await step(
                 updateGithubBacklinks(
                     input={
                         "reviewRowId": str(reviewRowId),
@@ -417,9 +405,9 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                     }
                 ),
                 name="update-backlinks",
-                config=RETRY_3,
+                retry_strategy=RETRY_3,
             )
-        ctx.step(
+        await step(
             markReviewSucceeded(
                 input={
                     "reviewRowId": str(reviewRowId),
@@ -432,12 +420,12 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="mark-succeeded",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        ctx.step(
+        await step(
             destroySandbox(sandbox=sandboxActive),
             name="kill-sandbox-done",
-            config=RETRY_1,
+            retry_strategy=RETRY_1,
         )
         log.info(
             "pipeline: complete delivery=%s pr=%s verdict=%s comments=%d posted=%s",
@@ -465,7 +453,7 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
         ).model_dump(mode="json")
 
     except Exception as exc:
-        ctx.step(
+        await step(
             markReviewFailed(
                 input={
                     "reviewRowId": reviewRowId,
@@ -477,12 +465,12 @@ def _runAgentPhaseInner(ctx: DurableContext, *, input: AgentPhaseInput) -> dict:
                 }
             ),
             name="mark-failed",
-            config=RETRY_1,
+            retry_strategy=RETRY_1,
         )
-        ctx.step(
+        await step(
             destroySandbox(sandbox=sandboxActive),
             name="kill-sandbox-failed",
-            config=RETRY_1,
+            retry_strategy=RETRY_1,
         )
         return ReviewFailed(
             delivery=input.delivery,

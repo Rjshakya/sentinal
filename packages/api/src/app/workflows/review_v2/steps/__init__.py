@@ -4,8 +4,8 @@ Each file exposes a single async worker (explicit inputs, raises
 :class:`app.workflows.review_v2.errors.ReviewStepFailure` /
 ``TransientReviewStepFailure`` on failure). The durable checkpoint
 edges live in :mod:`app.workflows.durable.steps` — one thin
-``@durable_step`` per worker that validates its input model, runs the
-worker via ``asyncio.run``, and returns ``model_dump``.
+``@durable_callable`` step per worker that validates its input model,
+awaits the worker, and returns ``model_dump``.
 
 The sandbox handle never crosses a step boundary: workers receive the
 serializable :class:`app.services.sandbox.types.SandboxCtx` and

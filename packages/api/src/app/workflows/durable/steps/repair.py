@@ -1,7 +1,7 @@
 """Repair-phase steps: load unpublished review, run repair agent, save outcome.
 
-Each step validates its input first, runs one operation via
-``runStep``, and returns ``model_dump(mode="json")``. Imports on top.
+Each step validates its input first, runs one operation, and returns
+``model_dump(mode="json")``. Imports on top.
 Fail-closed steps let exceptions propagate for SDK retry; the handler
 marks the run FAILED when retries exhaust. The cloned-repo delete is
 best-effort and never raises.
@@ -15,8 +15,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
-from aws_durable_execution_sdk_python import durable_step
-from aws_durable_execution_sdk_python.types import StepContext
+from async_durable_execution import durable_callable
 from deepagents import create_deep_agent
 from githubkit.exception import RequestFailed
 from langfuse import observe
@@ -31,7 +30,6 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import col
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import async_session_maker
 from app.models.code_comment import CodeComment
@@ -60,8 +58,6 @@ from app.utils.branded import (
     ReviewRowId,
     UserId,
 )
-from app.utils.schema import CommentSeverityStr, CommentSideStr, ReviewVerdictStr
-from app.workflows.durable.steps.loop import runStep
 from app.workflows.durable.types import CommentRow, PublishedReview, UnpublishedReview
 from app.workflows.review_v2.steps._helpers import (
     asAsyncSandbox,
@@ -76,83 +72,79 @@ REPAIR_MAX_TOOL_CALLS = 3
 REPAIR_MAX_MODEL_CALLS = 200
 
 
-@durable_step
+@durable_callable
 @observe(name="load-unpublished-review", capture_input=False, capture_output=False)
-def loadUnpublishedReview(_ctx: StepContext, *, commitId: str) -> dict | None:
+async def loadUnpublishedReview(*, commitId: str) -> dict | None:
     """Load the publishable review for a commit, else None (nothing to do)."""
+    async with async_session_maker() as session:
+        reviews = ReviewRepository(session=session)
+        review = await reviews.find(
+            col(Review.commit_id) == commitId,
+            col(Review.github_review_id).is_(None),
+            one=True,
+        )
+        if review is None:
+            return None
+        reviewId = ReviewRowId(review.id)
 
-    async def run() -> dict | None:
-        async with async_session_maker() as session:
-            reviews = ReviewRepository(session=session)
-            review = await reviews.find(
-                col(Review.commit_id) == commitId,
-                col(Review.github_review_id).is_(None),
-                one=True,
+        summaries = ReviewSummaryRepository(session=session)
+        summary = await summaries.find(
+            col(ReviewSummary.review_id) == reviewId,
+            col(ReviewSummary.github_review_id).is_(None),
+            one=True,
+        )
+        if summary is None or summary.github_review_id is not None:
+            return None
+
+        comments_repo = CodeCommentRepository(session=session)
+        comment_rows = await comments_repo.find(
+            col(CodeComment.review_id) == reviewId,
+            col(CodeComment.github_review_id).is_(None),
+            order_by=col(CodeComment.created_at),
+        )
+        repo = await RepoRepository(session=session).get(review.repo_id)
+        if repo is None:
+            raise RuntimeError(f"no repo row for review {reviewId!r}")
+        installation = await InstallationRepository(
+            session=session
+        ).find_by_user_and_login(
+            review.user_id,
+            repo.repo_owner,
+            active_only=True,
+        )
+        if installation is None:
+            raise RuntimeError(
+                f"no installation for user {review.user_id!r} / owner "
+                f"{repo.repo_owner!r}"
             )
-            if review is None:
-                return None
-            reviewId = ReviewRowId(review.id)
 
-            summaries = ReviewSummaryRepository(session=session)
-            summary = await summaries.find(
-                col(ReviewSummary.review_id) == reviewId,
-                col(ReviewSummary.github_review_id).is_(None),
-                one=True,
+        comments = [
+            CommentRow(
+                commentId=row.id,
+                fileName=row.file_name,
+                fromLine=row.from_line,
+                toLine=row.to_line,
+                side=row.side.value,  # type: ignore[arg-type]
+                severity=row.severity.value,  # type: ignore[arg-type]
+                body=row.comment,
+                nodeType=row.node_type,
             )
-            if summary is None or summary.github_review_id is not None:
-                return None
-
-            comments_repo = CodeCommentRepository(session=session)
-            comment_rows = await comments_repo.find(
-                col(CodeComment.review_id) == reviewId,
-                col(CodeComment.github_review_id).is_(None),
-                order_by=col(CodeComment.created_at),
-            )
-            repo = await RepoRepository(session=session).get(review.repo_id)
-            if repo is None:
-                raise RuntimeError(f"no repo row for review {reviewId!r}")
-            installation = await InstallationRepository(
-                session=session
-            ).find_by_user_and_login(
-                review.user_id,
-                repo.repo_owner,
-                active_only=True,
-            )
-            if installation is None:
-                raise RuntimeError(
-                    f"no installation for user {review.user_id!r} / owner "
-                    f"{repo.repo_owner!r}"
-                )
-
-            comments = [
-                CommentRow(
-                    commentId=row.id,
-                    fileName=row.file_name,
-                    fromLine=row.from_line,
-                    toLine=row.to_line,
-                    side=row.side.value,  # type: ignore[arg-type]
-                    severity=row.severity.value,  # type: ignore[arg-type]
-                    body=row.comment,
-                    nodeType=row.node_type,
-                )
-                for row in comment_rows
-            ]
-            return UnpublishedReview(
-                reviewId=ReviewRowId(review.id),
-                userId=UserId(review.user_id),
-                repoId=RepoId(review.repo_id),
-                prNumber=PRNumber(review.pr_number),
-                commitId=CommitId(review.commit_id),
-                baseSha=review.base_sha,
-                repoOwner=RepoOwner(repo.repo_owner),
-                repoName=RepoName(repo.repo_name),
-                installationId=InstallationId(installation.github_installation_id),
-                summary=summary.summary,
-                verdict=summary.verdict.value,  # type: ignore[arg-type]
-                comments=comments,
-            ).model_dump(mode="json")
-
-    return runStep(run())
+            for row in comment_rows
+        ]
+        return UnpublishedReview(
+            reviewId=ReviewRowId(review.id),
+            userId=UserId(review.user_id),
+            repoId=RepoId(review.repo_id),
+            prNumber=PRNumber(review.pr_number),
+            commitId=CommitId(review.commit_id),
+            baseSha=review.base_sha,
+            repoOwner=RepoOwner(repo.repo_owner),
+            repoName=RepoName(repo.repo_name),
+            installationId=InstallationId(installation.github_installation_id),
+            summary=summary.summary,
+            verdict=summary.verdict.value,  # type: ignore[arg-type]
+            comments=comments,
+        ).model_dump(mode="json")
 
 
 def buildRepairMiddleware(
@@ -350,71 +342,63 @@ class RepairAgentInput(BaseModel):
     diffDir: str
 
 
-@durable_step
+@durable_callable
 @observe(name="run-repair-agent", capture_input=False, capture_output=False)
-def runRepairAgent(_ctx: StepContext, *, input: dict) -> dict | None:
+async def runRepairAgent(*, input: dict) -> dict | None:
     """Run the repair agent; returns PublishedReview dump, else None."""
+    request = RepairAgentInput.model_validate(input)
+    unpublished = request.unpublished
 
-    async def run() -> PublishedReview | None:
-        request = RepairAgentInput.model_validate(input)
-        unpublished = request.unpublished
+    agentConfig: RunnableConfig = {
+        "run_name": "repair-publish",
+        "callbacks": createTraceCallbacks(),
+    }
 
-        agentConfig: RunnableConfig = {
-            "run_name": "repair-publish",
-            "callbacks": createTraceCallbacks(),
-        }
+    chat = createLLMModel(request.llm)
+    if isinstance(chat, LLMConfigError):
+        raise RuntimeError(f"failed to build repair model: {chat}")
 
-        chat = createLLMModel(request.llm)
-        if isinstance(chat, LLMConfigError):
-            raise RuntimeError(f"failed to build repair model: {chat}")
+    sandbox = await connectSandbox(request.sandbox)
+    if isinstance(sandbox, SandboxConnectError):
+        raise RuntimeError(f"sandbox connect failed: {sandbox.message}")
 
-        sandbox = await connectSandbox(request.sandbox)
-        if isinstance(sandbox, SandboxConnectError):
-            raise RuntimeError(f"sandbox connect failed: {sandbox.message}")
+    holder = PublishOutcome()
+    agent = create_deep_agent(
+        model=chat,
+        system_prompt=buildStoryPrompt(unpublished, request.diffDir),
+        backend=sandbox,
+        tools=[buildPublishTool(unpublished, holder)],
+        middleware=buildRepairMiddleware(
+            modelCallRunLimit=REPAIR_MAX_MODEL_CALLS,
+            toolCallRunLimit=REPAIR_MAX_TOOL_CALLS,
+        ),
+    )
+    await agent.ainvoke(
+        {
+            "messages": [
+                HumanMessage(content=buildUserPrompt(unpublished, request.diffDir))
+            ]
+        },
+        config=agentConfig,
+    )
 
-        holder = PublishOutcome()
-        agent = create_deep_agent(
-            model=chat,
-            system_prompt=buildStoryPrompt(unpublished, request.diffDir),
-            backend=sandbox,
-            tools=[buildPublishTool(unpublished, holder)],
-            middleware=buildRepairMiddleware(
-                modelCallRunLimit=REPAIR_MAX_MODEL_CALLS,
-                toolCallRunLimit=REPAIR_MAX_TOOL_CALLS,
-            ),
+    if holder.github_review_id is None:
+        log.warning(
+            "runRepairAgent: agent published nothing: pr=%s review=%s",
+            unpublished.prNumber,
+            unpublished.reviewId,
         )
-        await agent.ainvoke(
-            {
-                "messages": [
-                    HumanMessage(
-                        content=buildUserPrompt(unpublished, request.diffDir)
-                    )
-                ]
-            },
-            config=agentConfig,
-        )
-
-        if holder.github_review_id is None:
-            log.warning(
-                "runRepairAgent: agent published nothing: pr=%s review=%s",
-                unpublished.prNumber,
-                unpublished.reviewId,
-            )
-            return None
-        postedIds = {row.commentId for row in holder.posted_comments}
-        return PublishedReview(
-            githubReviewId=holder.github_review_id,
-            postedComments=list(holder.posted_comments),
-            leftComments=[
-                row for row in unpublished.comments if row.commentId not in postedIds
-            ],
-            attempts=holder.attempts,
-        )
-
-    result = runStep(run())
-    if result is None:
         return None
-    return result.model_dump(mode="json")
+    postedIds = {row.commentId for row in holder.posted_comments}
+    published = PublishedReview(
+        githubReviewId=holder.github_review_id,
+        postedComments=list(holder.posted_comments),
+        leftComments=[
+            row for row in unpublished.comments if row.commentId not in postedIds
+        ],
+        attempts=holder.attempts,
+    )
+    return published.model_dump(mode="json")
 
 
 class SavePublishInput(BaseModel):
@@ -424,47 +408,43 @@ class SavePublishInput(BaseModel):
     published: PublishedReview
 
 
-@durable_step
+@durable_callable
 @observe(name="save-publish-outcome", capture_input=False, capture_output=False)
-def savePublishOutcome(_ctx: StepContext, *, input: dict) -> dict:
+async def savePublishOutcome(*, input: dict) -> dict:
     """Write posted ids onto review/summary/comments; delete left rows."""
-
-    async def run() -> None:
-        request = SavePublishInput.model_validate(input)
-        unpublished = request.unpublished
-        published = request.published
-        githubId = str(published.githubReviewId)
-        async with async_session_maker() as session:
-            reviews = ReviewRepository(session=session)
-            review = await reviews.get(unpublished.reviewId)
-            if review is not None:
-                review.github_review_id = githubId
-                if published.postedComments:
-                    review.comment_count = len(published.postedComments)
-                await reviews.add(review)
-
-            summaries = ReviewSummaryRepository(session=session)
-            summary = await summaries.find_by_review_id(unpublished.reviewId)
-            if summary is not None:
-                summary.github_review_id = githubId
-                await summaries.add(summary)
-
-            comments = CodeCommentRepository(session=session)
+    request = SavePublishInput.model_validate(input)
+    unpublished = request.unpublished
+    published = request.published
+    githubId = str(published.githubReviewId)
+    async with async_session_maker() as session:
+        reviews = ReviewRepository(session=session)
+        review = await reviews.get(unpublished.reviewId)
+        if review is not None:
+            review.github_review_id = githubId
             if published.postedComments:
-                rows = await comments.find_by_ids(
-                    [row.commentId for row in published.postedComments]
-                )
-                for row in rows:
-                    row.github_review_id = githubId
-            if published.leftComments:
-                await comments.delete(
-                    col(CodeComment.id).in_(
-                        [row.commentId for row in published.leftComments]
-                    )
-                )
-            await session.commit()
+                review.comment_count = len(published.postedComments)
+            await reviews.add(review)
 
-    runStep(run())
+        summaries = ReviewSummaryRepository(session=session)
+        summary = await summaries.find_by_review_id(unpublished.reviewId)
+        if summary is not None:
+            summary.github_review_id = githubId
+            await summaries.add(summary)
+
+        comments = CodeCommentRepository(session=session)
+        if published.postedComments:
+            rows = await comments.find_by_ids(
+                [row.commentId for row in published.postedComments]
+            )
+            for row in rows:
+                row.github_review_id = githubId
+        if published.leftComments:
+            await comments.delete(
+                col(CodeComment.id).in_(
+                    [row.commentId for row in published.leftComments]
+                )
+            )
+        await session.commit()
     return {}
 
 
@@ -475,36 +455,32 @@ class DeleteRepoInput(BaseModel):
     repoName: str
 
 
-@durable_step
+@durable_callable
 @observe(name="delete-cloned-repo", capture_input=False, capture_output=False)
-def deleteClonedRepo(_ctx: StepContext, *, input: dict) -> dict:
+async def deleteClonedRepo(*, input: dict) -> dict:
     """Remove the cloned repo from the sandbox (best-effort, never raises)."""
-
-    async def run() -> None:
-        request = DeleteRepoInput.model_validate(input)
-        sandbox = await connectSandbox(request.sandbox)
-        if isinstance(sandbox, SandboxConnectError):
-            log.warning(
-                "deleteClonedRepo: reconnect failed (continuing): %s",
-                sandbox.message,
-            )
-            return
-        backend = asAsyncSandbox(sandbox)
-        try:
-            result = await backend.aexecute(
-                f"rm -rf {shlex.quote(getRepoPath(request.repoName))}",
-                timeout=60,
-            )
-        except Exception as exc:
-            log.warning("deleteClonedRepo: rm failed (continuing): %s", exc)
-            return
-        if result.exit_code != 0:
-            log.warning(
-                "deleteClonedRepo: rm exited %s (continuing)",
-                result.exit_code,
-            )
-
-    runStep(run())
+    request = DeleteRepoInput.model_validate(input)
+    sandbox = await connectSandbox(request.sandbox)
+    if isinstance(sandbox, SandboxConnectError):
+        log.warning(
+            "deleteClonedRepo: reconnect failed (continuing): %s",
+            sandbox.message,
+        )
+        return {}
+    backend = asAsyncSandbox(sandbox)
+    try:
+        result = await backend.aexecute(
+            f"rm -rf {shlex.quote(getRepoPath(request.repoName))}",
+            timeout=60,
+        )
+    except Exception as exc:
+        log.warning("deleteClonedRepo: rm failed (continuing): %s", exc)
+        return {}
+    if result.exit_code != 0:
+        log.warning(
+            "deleteClonedRepo: rm exited %s (continuing)",
+            result.exit_code,
+        )
     return {}
 
 
@@ -516,20 +492,16 @@ class DispatchRepairInput(BaseModel):
     delivery: str
 
 
-@durable_step
+@durable_callable
 @observe(name="dispatch-repair-followup", capture_input=False, capture_output=False)
-def dispatchRepairFollowUp(_ctx: StepContext, *, input: dict) -> bool:
+async def dispatchRepairFollowUp(*, input: dict) -> bool:
     """Invoke the repair durable best-effort; False when invoke failed."""
-
-    async def run() -> bool:
-        request = DispatchRepairInput.model_validate(input)
-        return await triggerRepairAfterReview(
-            prNumber=request.prNumber,
-            commitId=request.commitId,
-            delivery=request.delivery,
-        )
-
-    return runStep(run())
+    request = DispatchRepairInput.model_validate(input)
+    return await triggerRepairAfterReview(
+        prNumber=request.prNumber,
+        commitId=request.commitId,
+        delivery=request.delivery,
+    )
 
 
 __all__ = [

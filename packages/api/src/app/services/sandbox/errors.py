@@ -24,7 +24,7 @@ class SandboxProviderError(BaseModel):
     userId: UserId | None = None
     repoId: RepoId | None = None
     id: str | None = None
-    provider: Literal["e2b", "daytona"]
+    provider: Literal["e2b", "daytona", "local", "docker"]
 
     def __str__(self) -> str:
         return self.message

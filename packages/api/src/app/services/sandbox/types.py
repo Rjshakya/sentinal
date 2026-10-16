@@ -54,8 +54,9 @@ class BaseSandboxService(ABC):
     async def kill(self) -> None | SandboxProviderError: ...
 
 
-ProviderId = Literal["e2b", "daytona"]
-"""The supported sandbox providers."""
+ProviderId = Literal["e2b", "daytona", "local", "docker"]
+"""The supported sandbox providers (``local`` / ``docker`` are eval-only,
+registered at runtime by the eval harness)."""
 
 ProviderMap = dict[ProviderId, Type[BaseSandboxService]]
 

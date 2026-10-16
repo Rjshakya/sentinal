@@ -1,8 +1,8 @@
 """Shared repair phase: load unpublished review -> sandbox -> repair -> save.
 
-Called by the repair durable handler. Linear ``ctx.step`` calls only —
-no closures, no wrappers. Ctx resolution (load + LLM + sandbox) returns
-early with ``RepairSkipped``; the agent phase is wrapped in
+Called by the repair durable handler. Linear ``await step(...)`` calls
+only — no closures, no wrappers. Ctx resolution (load + LLM + sandbox)
+returns early with ``RepairSkipped``; the agent phase is wrapped in
 try/except that issues one plain destroy step and returns
 ``RepairFailed``. Imports on top.
 """
@@ -11,17 +11,12 @@ from __future__ import annotations
 
 import logging
 
-from aws_durable_execution_sdk_python.config import StepConfig
-from aws_durable_execution_sdk_python.context import DurableContext
-from aws_durable_execution_sdk_python.retries import (
-    RetryStrategyConfig,
-    create_retry_strategy,
-)
+from async_durable_execution import step
 from langfuse import observe, propagate_attributes
 from pydantic import BaseModel, ConfigDict
 
 from app.core.config import settings
-
+from app.workflows.durable.retry import RETRY_1, RETRY_3
 from app.workflows.durable.steps import (
     buildSandboxCtxForRun,
     clonePrHead,
@@ -46,13 +41,6 @@ from app.workflows.review_v2.types import ReviewWorkflowInput
 
 log = logging.getLogger(__name__)
 
-RETRY_3 = StepConfig(
-    retry_strategy=create_retry_strategy(RetryStrategyConfig(max_attempts=3))
-)
-RETRY_1 = StepConfig(
-    retry_strategy=create_retry_strategy(RetryStrategyConfig(max_attempts=1))
-)
-
 
 class RepairPhaseInput(BaseModel):
     """Everything the repair phase needs (already validated)."""
@@ -65,11 +53,11 @@ class RepairPhaseInput(BaseModel):
 
 
 @observe(name="run-repair-phase", capture_input=False, capture_output=False)
-def runRepairPhase(ctx: DurableContext, *, input: RepairPhaseInput) -> dict:
-    unpublishedDict = ctx.step(
+async def runRepairPhase(*, input: RepairPhaseInput) -> dict:
+    unpublishedDict = await step(
         loadUnpublishedReview(commitId=input.commitId),
         name="load-unpublished",
-        config=RETRY_3,
+        retry_strategy=RETRY_3,
     )
     if unpublishedDict is None:
         return RepairSkipped(
@@ -83,17 +71,17 @@ def runRepairPhase(ctx: DurableContext, *, input: RepairPhaseInput) -> dict:
     prNumber = int(unpublished.prNumber)
     headSha = str(unpublished.commitId)
 
-    llm = ctx.step(
+    llm = await step(
         resolveActiveLlmCtx(userId=userId),
         name="resolve-llm",
-        config=RETRY_3,
+        retry_strategy=RETRY_3,
     )
-    sandbox = ctx.step(
+    sandbox = await step(
         buildSandboxCtxForRun(
             input={"userId": userId, "repoId": repoId, "repoName": repoName}
         ),
         name="build-sandbox",
-        config=RETRY_1,
+        retry_strategy=RETRY_1,
     )
 
     log.info(
@@ -132,8 +120,7 @@ def runRepairPhase(ctx: DurableContext, *, input: RepairPhaseInput) -> dict:
         environment=settings.app_env,
         trace_name="repair-run",
     ):
-        return _runRepairAgentPhaseInner(
-            ctx,
+        return await _runRepairAgentPhaseInner(
             input=input,
             unpublished=unpublished,
             unpublishedDict=dict(unpublishedDict),
@@ -142,8 +129,7 @@ def runRepairPhase(ctx: DurableContext, *, input: RepairPhaseInput) -> dict:
         )
 
 
-def _runRepairAgentPhaseInner(
-    ctx: DurableContext,
+async def _runRepairAgentPhaseInner(
     *,
     input: RepairPhaseInput,
     unpublished: UnpublishedReview,
@@ -187,12 +173,12 @@ def _runRepairAgentPhaseInner(
 
     sandboxActive: dict = dict(sandbox)
     try:
-        sandboxActive = ctx.step(
+        sandboxActive = await step(
             createEphemeralSandbox(sandbox=sandbox),
             name="create-sandbox",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        ctx.step(
+        await step(
             clonePrHead(
                 input={
                     "sandbox": sandboxActive,
@@ -204,9 +190,9 @@ def _runRepairAgentPhaseInner(
                 }
             ),
             name="clone",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        ctx.step(
+        await step(
             fetchPrDiff(
                 input={
                     "sandbox": sandboxActive,
@@ -216,9 +202,9 @@ def _runRepairAgentPhaseInner(
                 }
             ),
             name="fetch-diff",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        ctx.step(
+        await step(
             splitPrDiff(
                 input={
                     "sandbox": sandboxActive,
@@ -227,17 +213,15 @@ def _runRepairAgentPhaseInner(
                 }
             ),
             name="split-diff",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
         diffDir = getReviewDiffDirPath(prNumber, headSha)
-        ctx.step(
-            deleteClonedRepo(
-                input={"sandbox": sandboxActive, "repoName": repoName}
-            ),
+        await step(
+            deleteClonedRepo(input={"sandbox": sandboxActive, "repoName": repoName}),
             name="delete-repo",
-            config=RETRY_1,
+            retry_strategy=RETRY_1,
         )
-        publishedDict = ctx.step(
+        publishedDict = await step(
             runRepairAgent(
                 input={
                     "llm": llm,
@@ -247,13 +231,13 @@ def _runRepairAgentPhaseInner(
                 }
             ),
             name="run-repair-agent",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
         if publishedDict is None:
-            ctx.step(
+            await step(
                 destroySandbox(sandbox=sandboxActive),
                 name="kill-sandbox-done",
-                config=RETRY_1,
+                retry_strategy=RETRY_1,
             )
             return RepairCompleted(
                 delivery=input.delivery,
@@ -267,17 +251,17 @@ def _runRepairAgentPhaseInner(
                 attempts=0,
             ).model_dump(mode="json")
 
-        ctx.step(
+        await step(
             savePublishOutcome(
                 input={"unpublished": unpublishedDict, "published": publishedDict}
             ),
             name="save-published",
-            config=RETRY_3,
+            retry_strategy=RETRY_3,
         )
-        ctx.step(
+        await step(
             destroySandbox(sandbox=sandboxActive),
             name="kill-sandbox-done",
-            config=RETRY_1,
+            retry_strategy=RETRY_1,
         )
         posted = publishedDict.get("postedComments") or []
         left = publishedDict.get("leftComments") or []
@@ -303,10 +287,10 @@ def _runRepairAgentPhaseInner(
         ).model_dump(mode="json")
 
     except Exception as exc:
-        ctx.step(
+        await step(
             destroySandbox(sandbox=sandboxActive),
             name="kill-sandbox-failed",
-            config=RETRY_1,
+            retry_strategy=RETRY_1,
         )
         return RepairFailed(
             delivery=input.delivery,
