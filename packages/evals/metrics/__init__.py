@@ -1,17 +1,17 @@
-"""Metrics package: per-item scores plus the dataset roll-up."""
+"""Metrics package: per-PR scores plus the dataset roll-up."""
 
 from metrics.scoring import (
-    DatasetReport,
-    ItemScore,
-    createMetrics,
-    failedItem,
-    scoreOne,
+    DatasetMetrics,
+    PrScore,
+    createDatasetMetrics,
+    failedPrScore,
+    scoreSingleResult,
 )
 
 __all__ = [
-    "DatasetReport",
-    "ItemScore",
-    "createMetrics",
-    "failedItem",
-    "scoreOne",
+    "DatasetMetrics",
+    "PrScore",
+    "createDatasetMetrics",
+    "failedPrScore",
+    "scoreSingleResult",
 ]

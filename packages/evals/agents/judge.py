@@ -1,159 +1,287 @@
-"""Judge agent: review plus gold in, structured verdict out."""
+"""Judge agent: golden comments plus generated comments in, verdict out.
+
+Golden comments hold only a body plus a severity label. Generated
+comments carry file anchors plus body plus severity. The judge matches
+by the same underlying issue even when wording differs, flags false
+positives, and returns confidence from 0 to 1 with match counts.
+"""
 
 from __future__ import annotations
 
 import json
-from typing import Annotated, Literal
+from typing import Annotated
 
 from app.services.llm.errors import LLMConfigError
 from app.services.llm.service import createLLMModel
 from app.services.llm.types import LLMCtx
+from app.utils.schema import CodeCommentDraft
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field
 
-from agents.base import AgentRunError, ReviewOutput
-from datasets.types import GoldOutput
+from agents.base import AgentRunError
+from datasetLoader.types import GoldenComment
 
 JUDGE_SYSTEM_PROMPT = """\
-You are the evaluator for an AI code-review agent. You judge a predicted review
-against the ground-truth findings (gold) the dataset authors curated.
+You are the evaluator for an AI code-review agent. You judge generated
+review comments against golden comments (the truth).
 
-You receive two inputs:
-1. "review" -- the agent's verdict, summary, and predicted inline comments.
-2. "gold" -- the ground-truth findings a human expert expects (verdict + bugs).
+You receive golden comments (each with body plus severity) and generated
+comments (each with file, lines, body, severity).
 
-For EACH predicted comment (comment_idx is its index in the review comments list):
-- verdict: "real_bug" = a concrete issue that should be fixed (trace a failure:
-  crash, wrong result, data loss, security hole); "nitpick" = valid but minor
-  (style, naming, low-impact); "false_positive" = not a real issue (wrong claim,
-  hallucinated line, generic advice, duplicate of another comment).
-- matched_gold_idx: the gold bug's index when this comment addresses the SAME
-  issue -- match by same file + overlapping/adjacent line range + same substance
-  (line numbers may differ by a few lines). None when nothing matches.
-- severity_matches: for matched findings only, whether the predicted severity
-  (P1_CRITICAL/P2_WARNING/P3_NITPICK) equals the gold severity. None when unmatched.
-- reason: one short paragraph justifying verdict + match.
+For EACH generated comment (generatedIndex is its index in the list):
+- Match it to a golden comment when both describe the SAME underlying
+  issue. Wording may differ. Severity may differ. The substance must
+  match: the same bug, the same risk, the same wrong behavior.
+- A generated comment with no matching golden comment is a false
+  positive: wrong claim, hallucinated issue, generic advice, duplicate
+  of another generated comment, or a real nit that no golden comment
+  covers.
+- reason: one short paragraph that justifies the match or the false
+  positive flag. Quote the shared issue in plain words.
 
-Then judge the summary:
-- faithful: every claim in the summary reflects a real change in the PR.
-- concise: readable quickly; no line-by-line narration or filler.
-- missing_key_risks: real risks the gold bugs surface that the summary missed.
+For EACH golden comment, decide whether at least one generated comment
+matches it. Count matched golden comments.
 
-Finally set verdict_matches_gold: does the review's overall verdict
-(APPROVE/COMMENT/REQUEST_CHANGES) equal the gold verdict?
+Then set confidence from 0 to 1:
+- 1.0 means every golden issue is matched and no false positives exist.
+- 0.0 means nothing matches or everything is noise.
+- Penalize false positives hard. A false positive is worse than silence.
+- Penalize missed golden comments proportionally.
 
 Rules:
-- Be strict but fair. A false positive is worse than a missed nit.
-- Never invent gold matches: only match when the substance is the same issue.
-- Do not reward or punish comment count; judge substance.
+- Match by substance only. Golden comments carry no file or line.
+- Never invent a match. Match only when the issue is the same.
+- Do not reward comment count. Judge substance.
+- Return valid structured output only.
 """
 
 
-class JudgeCommentVerdict(BaseModel):
-    """The judge's verdict on one predicted comment."""
+class JudgeMatch(BaseModel):
+    """One golden comment matched by one generated comment."""
 
     model_config = ConfigDict(frozen=True)
 
-    comment_idx: int = Field(ge=0)
-    verdict: Literal["real_bug", "nitpick", "false_positive"]
-    matched_gold_idx: int | None = Field(default=None, ge=0)
-    severity_matches: bool | None = Field(default=None)
+    goldenIndex: int = Field(ge=0)
+    generatedIndex: int = Field(ge=0)
     reason: str = Field(default="")
 
 
-class JudgeSummaryVerdict(BaseModel):
-    """The judge's verdict on the review summary."""
+class JudgeFalsePositive(BaseModel):
+    """One generated comment that matches no golden comment."""
 
     model_config = ConfigDict(frozen=True)
 
-    faithful: bool
-    concise: bool
-    missing_key_risks: Annotated[list[str], Field(default_factory=list)]
+    generatedIndex: int = Field(ge=0)
+    reason: str = Field(default="")
 
 
-class JudgeVerdict(BaseModel):
-    """The full structured judgement for one review run."""
+class JudgeDraft(BaseModel):
+    """Raw structured output from the judge model."""
 
     model_config = ConfigDict(frozen=True)
 
-    verdict_matches_gold: bool
-    comments: Annotated[list[JudgeCommentVerdict], Field(default_factory=list)]
-    summary: JudgeSummaryVerdict
-    overall_reasoning: str = Field(default="")
+    confidence: float = Field(ge=0.0, le=1.0)
+    matches: Annotated[list[JudgeMatch], Field(default_factory=list)]
+    falsePositives: Annotated[list[JudgeFalsePositive], Field(default_factory=list)]
+    overallReasoning: str = Field(default="")
+
+
+class JudgeResult(BaseModel):
+    """Final judge verdict with derived counts. Counts come from code."""
+
+    model_config = ConfigDict(frozen=True)
+
+    confidence: float = Field(ge=0.0, le=1.0)
+    matchedCount: int = Field(ge=0)
+    totalGoldenCount: int = Field(ge=0)
+    falsePositiveCount: int = Field(ge=0)
+    generatedCount: int = Field(ge=0)
+    matches: Annotated[list[JudgeMatch], Field(default_factory=list)]
+    falsePositives: Annotated[list[JudgeFalsePositive], Field(default_factory=list)]
+    overallReasoning: str = Field(default="")
+    judgeModel: str = Field(default="")
+
+    def summary(self) -> str:
+        return (
+            f"confidence={self.confidence:.3f} "
+            f"matched={self.matchedCount}/{self.totalGoldenCount} "
+            f"falsePositives={self.falsePositiveCount} "
+            f"generated={self.generatedCount}"
+        )
+
+
+def buildJudgePayload(
+    generatedComments: list[CodeCommentDraft], goldenComments: list[GoldenComment]
+) -> dict[str, object]:
+    return {
+        "goldenComments": [
+            {"index": index, **golden.model_dump(mode="json")}
+            for index, golden in enumerate(goldenComments)
+        ],
+        "generatedComments": [
+            {"index": index, **generated.model_dump(mode="json")}
+            for index, generated in enumerate(generatedComments)
+        ],
+    }
+
+
+def clampConfidence(rawConfidence: float) -> float:
+    if rawConfidence != rawConfidence:  # NaN guard without importing math
+        return 0.0
+    if rawConfidence < 0.0:
+        return 0.0
+    if rawConfidence > 1.0:
+        return 1.0
+    return rawConfidence
+
+
+def deduplicateMatches(rawMatches: list[JudgeMatch], goldenTotal: int, generatedTotal: int) -> list[JudgeMatch]:
+    seenPairs: set[tuple[int, int]] = set()
+    seenGolden: set[int] = set()
+    cleanMatches: list[JudgeMatch] = []
+    for match in rawMatches:
+        if match.goldenIndex < 0 or match.goldenIndex >= goldenTotal:
+            continue
+        if match.generatedIndex < 0 or match.generatedIndex >= generatedTotal:
+            continue
+        pairKey = (match.goldenIndex, match.generatedIndex)
+        if pairKey in seenPairs:
+            continue
+        if match.goldenIndex in seenGolden:
+            continue
+        seenPairs.add(pairKey)
+        seenGolden.add(match.goldenIndex)
+        cleanMatches.append(match)
+    return sorted(cleanMatches, key=lambda match: (match.goldenIndex, match.generatedIndex))
+
+
+def deduplicateFalsePositives(
+    rawFalsePositives: list[JudgeFalsePositive],
+    generatedTotal: int,
+    matchedGenerated: set[int],
+) -> list[JudgeFalsePositive]:
+    seenGenerated: set[int] = set()
+    cleanFalsePositives: list[JudgeFalsePositive] = []
+    for falsePositive in rawFalsePositives:
+        if falsePositive.generatedIndex < 0 or falsePositive.generatedIndex >= generatedTotal:
+            continue
+        if falsePositive.generatedIndex in matchedGenerated:
+            continue
+        if falsePositive.generatedIndex in seenGenerated:
+            continue
+        seenGenerated.add(falsePositive.generatedIndex)
+        cleanFalsePositives.append(falsePositive)
+    return sorted(cleanFalsePositives, key=lambda item: item.generatedIndex)
+
+
+def buildJudgeResult(
+    draft: JudgeDraft,
+    goldenTotal: int,
+    generatedTotal: int,
+    judgeModel: str,
+) -> JudgeResult:
+    cleanMatches = deduplicateMatches(draft.matches, goldenTotal, generatedTotal)
+    matchedGenerated: set[int] = {match.generatedIndex for match in cleanMatches}
+    cleanFalsePositives = deduplicateFalsePositives(draft.falsePositives, generatedTotal, matchedGenerated)
+    # Any generated comment that is neither matched nor flagged counts as noise.
+    flaggedGenerated: set[int] = set(matchedGenerated) | {item.generatedIndex for item in cleanFalsePositives}
+    implicitNoise = sorted(set(range(generatedTotal)) - flaggedGenerated)
+    extendedFalsePositives = list(cleanFalsePositives)
+    for generatedIndex in implicitNoise:
+        # Only treat unmatched output as noise when golden comments exist.
+        # Empty golden plus empty generated is a clean pass, not noise.
+        if goldenTotal > 0:
+            extendedFalsePositives.append(
+                JudgeFalsePositive(generatedIndex=generatedIndex, reason="No golden comment covers this issue.")
+            )
+    extendedFalsePositives = sorted(extendedFalsePositives, key=lambda item: item.generatedIndex)
+    # Empty golden set: confidence is 1 when nothing was generated, else 0.
+    if goldenTotal == 0:
+        derivedConfidence = 1.0 if generatedTotal == 0 else 0.0
+    else:
+        derivedConfidence = clampConfidence(draft.confidence)
+    return JudgeResult(
+        confidence=derivedConfidence,
+        matchedCount=len(cleanMatches),
+        totalGoldenCount=goldenTotal,
+        falsePositiveCount=len(extendedFalsePositives),
+        generatedCount=generatedTotal,
+        matches=cleanMatches,
+        falsePositives=extendedFalsePositives,
+        overallReasoning=draft.overallReasoning,
+        judgeModel=judgeModel,
+    )
+
+
+def coerceJudgeDraft(rawOutput: object) -> JudgeDraft | AgentRunError:
+    try:
+        if isinstance(rawOutput, JudgeDraft):
+            return rawOutput
+        if isinstance(rawOutput, dict):
+            return JudgeDraft.model_validate(rawOutput)
+        dumpMethod = getattr(rawOutput, "model_dump", None)
+        if callable(dumpMethod):
+            dumpedOutput: object = dumpMethod()
+            if isinstance(dumpedOutput, dict):
+                return JudgeDraft.model_validate(dumpedOutput)
+        return AgentRunError(message="judge returned an unknown shape", agent="judge")
+    except Exception as caughtError:
+        return AgentRunError(
+            message=f"judge parse failed: {type(caughtError).__name__}: {caughtError}",
+            agent="judge",
+        )
 
 
 async def runJudgeAgent(
     *,
-    review: ReviewOutput,
-    gold: GoldOutput,
+    generatedComments: list[CodeCommentDraft],
+    goldenComments: list[GoldenComment],
     llm: LLMCtx,
     systemPrompt: str = JUDGE_SYSTEM_PROMPT,
-) -> JudgeVerdict | AgentRunError:
-    """Judge one review run against its gold output.
+) -> JudgeResult | AgentRunError:
+    """Judge generated comments against golden comments.
 
-    Returns the structured verdict, or an :class:`AgentRunError` value
-    on expected failure. Never raises for business failures.
+    Returns the structured verdict with confidence plus match counts,
+    or an AgentRunError value on expected failure. Never raises for
+    business failures.
     """
     model = createLLMModel(llm)
     if isinstance(model, LLMConfigError):
-        return AgentRunError(
-            message=f"bad judge model config: {model}", agent="judge"
-        )
-    payload = {
-        "review": {
-            "verdict": review.verdict,
-            "summary": review.summary,
-            "comments": [
-                {"index": i, **c.model_dump(mode="json")}
-                for i, c in enumerate(review.comments)
-            ],
-        },
-        "gold": {
-            "verdict": gold.verdict,
-            "bugs": [
-                {"index": i, **b.model_dump(mode="json")}
-                for i, b in enumerate(gold.bugs)
-            ],
-        },
-    }
+        return AgentRunError(message=f"bad judge model config: {model}", agent="judge")
+    payload = buildJudgePayload(generatedComments, goldenComments)
     try:
-        structured = model.with_structured_output(JudgeVerdict)
-        raw: object = await structured.ainvoke(
+        structured = model.with_structured_output(JudgeDraft)
+        rawOutput: object = await structured.ainvoke(
             [
                 SystemMessage(content=systemPrompt),
                 HumanMessage(content=json.dumps(payload, indent=2)[:60000]),
             ]
         )
-    except Exception as exc:
+    except Exception as caughtError:
         return AgentRunError(
-            message=f"judge call failed: {type(exc).__name__}: {exc}",
+            message=f"judge call failed: {type(caughtError).__name__}: {caughtError}",
             agent="judge",
             retryable=True,
         )
-    try:
-        if isinstance(raw, JudgeVerdict):
-            return raw
-        if isinstance(raw, dict):
-            return JudgeVerdict.model_validate(raw)
-        dump = getattr(raw, "model_dump", None)
-        if callable(dump):
-            dumped: object = dump()
-            if isinstance(dumped, dict):
-                return JudgeVerdict.model_validate(dumped)
-        return AgentRunError(
-            message="judge returned an unknown shape", agent="judge"
-        )
-    except Exception as exc:
-        return AgentRunError(
-            message=f"judge parse failed: {type(exc).__name__}: {exc}",
-            agent="judge",
-        )
+    draft = coerceJudgeDraft(rawOutput)
+    if isinstance(draft, AgentRunError):
+        return draft
+    return buildJudgeResult(
+        draft,
+        goldenTotal=len(goldenComments),
+        generatedTotal=len(generatedComments),
+        judgeModel=llm.model,
+    )
 
 
 __all__ = [
     "JUDGE_SYSTEM_PROMPT",
-    "JudgeCommentVerdict",
-    "JudgeSummaryVerdict",
-    "JudgeVerdict",
+    "JudgeDraft",
+    "JudgeFalsePositive",
+    "JudgeMatch",
+    "JudgeResult",
+    "buildJudgePayload",
+    "buildJudgeResult",
+    "coerceJudgeDraft",
     "runJudgeAgent",
 ]

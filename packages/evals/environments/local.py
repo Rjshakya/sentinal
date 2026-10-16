@@ -43,13 +43,13 @@ _SANDBOX_HOME_ALIAS = "/home/user"
 """Production layout root the review workers hardcode.
 
 The local backend mounts its temp dir at this path: commands have the
-alias rewritten to the temp root, and ``_resolve`` maps the alias back
+alias rewritten to the temp root, and ``resolveSandboxPath`` maps the alias back
 to the temp dir. Docker/E2B have a real ``/home/user`` and need no
 shim.
 """
 
 
-def _mount(command: str, root: str) -> str:
+def rewriteMountPrefix(command: str, root: str) -> str:
     """Rewrite the ``/home/user`` prefix to the sandbox temp root."""
     prefix = root.rstrip("/")
     out: list[str] = []
@@ -72,7 +72,7 @@ def _mount(command: str, root: str) -> str:
     return "".join(out)
 
 
-def _posix_path(path: Path) -> str:
+def toPosixPath(path: Path) -> str:
     text = str(path)
     if os.name != "nt":
         return text
@@ -82,7 +82,7 @@ def _posix_path(path: Path) -> str:
     return text.replace("\\", "/")
 
 
-def _find_sh() -> str | None:
+def findShellBinary() -> str | None:
     if os.name != "nt":
         return None
     for candidate in _GIT_SH_CANDIDATES:
@@ -91,7 +91,7 @@ def _find_sh() -> str | None:
     return shutil.which("sh")
 
 
-def _as_text(value: object) -> str:
+def coerceToText(value: object) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, bytes):
@@ -106,7 +106,7 @@ class LocalBackend(BaseSandbox):
         self._root = root
         self._posix_prefix = posix_prefix.rstrip("/")
         self._backend_id = backend_id
-        self._sh = _find_sh()
+        self._sh = findShellBinary()
 
     @property
     def id(self) -> str:
@@ -115,7 +115,7 @@ class LocalBackend(BaseSandbox):
     def execute(
         self, command: str, *, timeout: int | None = None
     ) -> ExecuteResponse:
-        command = _mount(command, self._posix_prefix or "/home/user")
+        command = rewriteMountPrefix(command, self._posix_prefix or "/home/user")
         try:
             if self._sh is None:
                 completed = subprocess.run(
@@ -135,15 +135,15 @@ class LocalBackend(BaseSandbox):
                     timeout=timeout,
                 )
         except subprocess.TimeoutExpired as exc:
-            combined = _as_text(exc.stdout) + _as_text(exc.stderr)
+            combined = coerceToText(exc.stdout) + coerceToText(exc.stderr)
             return ExecuteResponse(output=combined[-8000:], exit_code=124)
         except Exception as exc:
             return ExecuteResponse(
                 output=f"execute failed: {type(exc).__name__}: {exc}"[:2000],
                 exit_code=-1,
             )
-        stdout_text = _as_text(completed.stdout)
-        stderr_text = _as_text(completed.stderr)
+        stdout_text = coerceToText(completed.stdout)
+        stderr_text = coerceToText(completed.stderr)
         output = stdout_text + stderr_text
         return ExecuteResponse(
             output=output[-8000:],
@@ -162,7 +162,7 @@ class LocalBackend(BaseSandbox):
         responses: list[FileUploadResponse] = []
         for raw_path, content in files:
             try:
-                dest = self._resolve(raw_path)
+                dest = self.resolveSandboxPath(raw_path)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content)
                 responses.append(FileUploadResponse(path=raw_path, error=None))
@@ -184,7 +184,7 @@ class LocalBackend(BaseSandbox):
         responses: list[FileDownloadResponse] = []
         for raw_path in paths:
             try:
-                src = self._resolve(raw_path)
+                src = self.resolveSandboxPath(raw_path)
                 if not src.is_file():
                     responses.append(
                         FileDownloadResponse(
@@ -212,7 +212,7 @@ class LocalBackend(BaseSandbox):
     ) -> list[FileDownloadResponse]:
         return await asyncio.to_thread(self.download_files, paths)
 
-    def _resolve(self, raw_path: str) -> Path:
+    def resolveSandboxPath(self, raw_path: str) -> Path:
         cleaned = raw_path.strip().replace("\\", "/")
         if self._posix_prefix and cleaned.startswith(self._posix_prefix):
             rel = cleaned[len(self._posix_prefix) :].lstrip("/")
@@ -226,11 +226,11 @@ class LocalBackend(BaseSandbox):
             return self._root
         return self._root.joinpath(*Path(rel).parts)
 
-    def _posix(self, native: Path) -> str:
+    def toPosixDisplay(self, native: Path) -> str:
         try:
             rel = native.relative_to(self._root).as_posix()
         except ValueError:
-            return _posix_path(native)
+            return toPosixPath(native)
         if rel == ".":
             return self._posix_prefix
         return self._posix_prefix + "/" + rel
@@ -239,8 +239,8 @@ class LocalBackend(BaseSandbox):
     # that a native Windows interpreter cannot resolve, so local reads and
     # listings run in-process instead of through the shell.
 
-    def _read_native(self, path: str, offset: int, limit: int) -> ReadResult:
-        src = self._resolve(path)
+    def readNativeFile(self, path: str, offset: int, limit: int) -> ReadResult:
+        src = self.resolveSandboxPath(path)
         if not src.is_file():
             return ReadResult(error=f"File '{path}': file_not_found")
         try:
@@ -266,15 +266,15 @@ class LocalBackend(BaseSandbox):
     def read(
         self, file_path: str, offset: int = 0, limit: int = 2000
     ) -> ReadResult:
-        return self._read_native(file_path, offset, limit)
+        return self.readNativeFile(file_path, offset, limit)
 
     async def aread(
         self, file_path: str, offset: int = 0, limit: int = 2000
     ) -> ReadResult:
-        return await asyncio.to_thread(self._read_native, file_path, offset, limit)
+        return await asyncio.to_thread(self.readNativeFile, file_path, offset, limit)
 
-    def _ls_native(self, path: str) -> LsResult:
-        target = self._resolve(path)
+    def listNativePath(self, path: str) -> LsResult:
+        target = self.resolveSandboxPath(path)
         if not target.exists():
             return LsResult(error=f"Path '{path}': path_not_found")
         if target.is_file():
@@ -296,7 +296,7 @@ class LocalBackend(BaseSandbox):
             try:
                 entries.append(
                     FileInfo(
-                        path=self._posix(child),
+                        path=self.toPosixDisplay(child),
                         is_dir=child.is_dir(),
                         size=child.stat().st_size if child.is_file() else 0,
                     )
@@ -306,13 +306,13 @@ class LocalBackend(BaseSandbox):
         return LsResult(entries=entries)
 
     def ls(self, path: str) -> LsResult:
-        return self._ls_native(path)
+        return self.listNativePath(path)
 
     async def als(self, path: str) -> LsResult:
-        return await asyncio.to_thread(self._ls_native, path)
+        return await asyncio.to_thread(self.listNativePath, path)
 
-    def _glob_native(self, pattern: str, path: str | None) -> GlobResult:
-        base = self._resolve(path or self._posix_prefix)
+    def globNativePattern(self, pattern: str, path: str | None) -> GlobResult:
+        base = self.resolveSandboxPath(path or self._posix_prefix)
         if not base.is_dir():
             return GlobResult(error=f"Path '{path}': path_not_found")
         if "**" in pattern:
@@ -326,7 +326,7 @@ class LocalBackend(BaseSandbox):
         return GlobResult(
             matches=[
                 FileInfo(
-                    path=self._posix(p),
+                    path=self.toPosixDisplay(p),
                     is_dir=False,
                     size=p.stat().st_size,
                 )
@@ -335,10 +335,10 @@ class LocalBackend(BaseSandbox):
         )
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        return self._glob_native(pattern, path)
+        return self.globNativePattern(pattern, path)
 
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
-        return await asyncio.to_thread(self._glob_native, pattern, path)
+        return await asyncio.to_thread(self.globNativePattern, pattern, path)
 
 
 class LocalService(BaseSandboxService):
@@ -361,7 +361,7 @@ class LocalService(BaseSandboxService):
             self._root = Path(
                 tempfile.mkdtemp(prefix="sentinel-eval-", dir=str(base) if base else None)
             )
-            self._posix_root = _posix_path(self._root)
+            self._posix_root = toPosixPath(self._root)
             backend = LocalBackend(
                 self._root,
                 self._posix_root,

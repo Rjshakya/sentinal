@@ -1,25 +1,24 @@
-"""Eval runner: dataset in, production agent stages, one report out.
+"""Eval runner: dataset list in, review plus judge, stored evaluations out.
 
-``runEval`` loads the dataset, builds the production ctxs
-(``SandboxCtx`` / ``LLMCtx`` / ``RepoSnapshot`` / ``ReviewWorkflowInput``)
-from each ``inputs[i]`` plus ``RunConfig``, runs
-:func:`runReviewAgent` (the production agent stages, called directly),
-judges each review against ``outputs[i]``, and rolls the per-item
-scores into a dataset report. The dataset carries PR facts only;
-sandbox, model, and the clone token come from ``RunConfig``.
+``runEval`` loads dataset entries (title, PR URL, description, golden
+comments), resolves each PR URL to live GitHub facts (SHAs, branches),
+runs ``runReviewAgent`` (production stages, called directly), judges
+generated comments against golden comments, prints per-PR plus dataset
+metrics, and stores ``results/{modelId}/evaluations.json``.
 """
 
 from __future__ import annotations
 
-import json
 import logging
+import os
 from pathlib import Path
+from typing import cast
 
 from app.core.config import settings
 from app.models.enums import PRStatus
 from app.services.llm.types import LLMCtx
 from app.services.sandbox.service import createSandboxCtx
-from app.services.sandbox.types import SanboxProviderApiKey
+from app.services.sandbox.types import ProviderId, SanboxProviderApiKey
 from app.utils.branded import (
     ApiKey,
     BaseUrl,
@@ -30,6 +29,7 @@ from app.utils.branded import (
     RepoOwner,
     UserId,
 )
+from app.utils.schema import CodeCommentDraft
 from app.workflows.review_v2.types import (
     RepoSnapshot,
     ReviewLimits,
@@ -37,36 +37,52 @@ from app.workflows.review_v2.types import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
-from agents.base import AgentRunError
-from agents.judge import JUDGE_SYSTEM_PROMPT, runJudgeAgent
+from agents.base import AgentRunError, ReviewOutput
+from agents.judge import JUDGE_SYSTEM_PROMPT, JudgeResult, runJudgeAgent
 from agents.review import runReviewAgent
-from datasets.loader import DatasetError, loadDataset
-from datasets.types import PrInput
+from datasetLoader.loader import loadDatasetEntries
+from datasetLoader.prResolver import parsePrUrlParts, resolvePrUrl
+from datasetLoader.types import (
+    DatasetEntry,
+    DatasetLoaderError,
+    GoldenComment,
+    PrContext,
+    PrResolverError,
+)
 from environments.base import EnvKind
 from metrics.scoring import (
-    DatasetReport,
-    ItemScore,
-    createMetrics,
-    failedItem,
-    scoreOne,
+    DatasetMetrics,
+    PrScore,
+    createDatasetMetrics,
+    failedPrScore,
+    scoreSingleResult,
 )
 from providers import registerEvalProviders
+from resultStore.types import PrEvaluation, buildResolvedRef
+from resultStore.writer import (
+    buildEvaluationsFile,
+    buildEvaluationsFilePath,
+    saveEvaluationsFile,
+)
 
 log = logging.getLogger(__name__)
 
+evalUserId = UserId("eval-user")
+
 
 class RunConfig(BaseModel):
-    """Everything one ``runEval`` needs. Dataset holds PR facts only."""
+    """Everything one ``runEval`` needs."""
 
     model_config = ConfigDict(frozen=True)
 
-    dataset_path: str = Field(min_length=1)
+    datasetPath: str = Field(min_length=1)
     env: EnvKind = Field(default="local")
     model: str = Field(default="openai:gpt-5-mini", min_length=3)
-    base_url: str = Field(default="")
-    api_key: str = Field(default="")
-    judge_prompt: str = Field(default=JUDGE_SYSTEM_PROMPT, min_length=1)
-    out_dir: str = Field(default="report", min_length=1)
+    baseUrl: str = Field(default="")
+    apiKey: str = Field(default="")
+    githubToken: str = Field(default="")
+    judgePrompt: str = Field(default=JUDGE_SYSTEM_PROMPT, min_length=1)
+    resultsDir: str = Field(default="results", min_length=1)
 
 
 class RunError(BaseModel):
@@ -81,45 +97,87 @@ class RunError(BaseModel):
         return self.message
 
 
-def _build_llm(cfg: RunConfig) -> LLMCtx | RunError:
-    if ":" not in cfg.model:
+def buildLlmContext(runConfig: RunConfig) -> LLMCtx | RunError:
+    if ":" not in runConfig.model:
         return RunError(
-            message=f"model must be 'provider:model', got {cfg.model!r}",
+            message=f"model must be 'provider:model', got {runConfig.model!r}",
             phase="config",
         )
     return LLMCtx(
-        model=cfg.model,
+        model=runConfig.model,
         origin="system",
-        apiKey=ApiKey(cfg.api_key) if cfg.api_key else None,
-        baseUrl=BaseUrl(cfg.base_url) if cfg.base_url else None,
+        apiKey=ApiKey(runConfig.apiKey) if runConfig.apiKey else None,
+        baseUrl=BaseUrl(runConfig.baseUrl) if runConfig.baseUrl else None,
         defaultHeaders={},
         maxRetries=3,
         rateLimitRps=0.5,
     )
 
 
-def _sandbox_api_key(cfg: RunConfig) -> str:
-    if cfg.api_key:
-        return cfg.api_key
-    if cfg.env == "e2b":
+def resolveSandboxApiKey(runConfig: RunConfig) -> str:
+    if runConfig.apiKey:
+        return runConfig.apiKey
+    if runConfig.env == "e2b":
         return settings.e2b_api_key
     return ""
 
 
-def _workflow_input(pr: PrInput) -> ReviewWorkflowInput:
+def resolveGithubToken(runConfig: RunConfig) -> str | None:
+    cleanedFlagToken = runConfig.githubToken.strip()
+    if cleanedFlagToken:
+        return cleanedFlagToken
+    envToken = os.environ.get("GITHUB_TOKEN", "").strip()
+    return envToken or None
+
+
+def buildCaseId(entryIndex: int, datasetEntry: DatasetEntry) -> str:
+    urlParts = parsePrUrlParts(datasetEntry.prUrl)
+    if isinstance(urlParts, PrResolverError):
+        return f"case-{entryIndex + 1}"
+    return f"{urlParts.owner}-{urlParts.repo}-{urlParts.prNumber}"
+
+
+def buildRepoContext(prContext: PrContext) -> RepoSnapshot:
+    return RepoSnapshot(
+        id=RepoId(f"eval-{prContext.owner}-{prContext.repoName}-{prContext.prNumber}"),
+        repoOwner=RepoOwner(prContext.owner),
+        repoName=RepoName(prContext.repoName),
+        defaultBranch=prContext.baseBranch,
+    )
+
+
+def selectEntryTitle(datasetEntry: DatasetEntry, resolvedContext: PrContext) -> str:
+    cleanedEntryTitle = datasetEntry.title.strip()
+    if cleanedEntryTitle:
+        return datasetEntry.title
+    if resolvedContext.fetchedTitle:
+        return resolvedContext.fetchedTitle
+    return f"{resolvedContext.repoName} PR {resolvedContext.prNumber}"
+
+
+def selectEntryBody(datasetEntry: DatasetEntry, resolvedContext: PrContext) -> str:
+    cleanedEntryBody = datasetEntry.description.strip()
+    if cleanedEntryBody:
+        return datasetEntry.description
+    return resolvedContext.fetchedBody
+
+
+def buildWorkflowInput(
+    datasetEntry: DatasetEntry, resolvedContext: PrContext
+) -> ReviewWorkflowInput:
     return ReviewWorkflowInput(
-        userId=UserId("eval-user"),
+        userId=evalUserId,
         ghRepoId=0,
         ghPrId=0,
-        prNumber=PRNumber(pr.pr_number),
-        baseBranch=pr.base_branch,
-        defaultBranch=pr.base_branch,
-        baseSha=pr.base_sha,
-        headSha=CommitId(pr.head_sha),
-        headBranch=pr.head_branch or "eval",
-        author=pr.author,
-        title=pr.title,
-        body=pr.body,
+        prNumber=PRNumber(resolvedContext.prNumber),
+        baseBranch=resolvedContext.baseBranch,
+        defaultBranch=resolvedContext.baseBranch,
+        baseSha=resolvedContext.baseSha,
+        headSha=CommitId(resolvedContext.headSha),
+        headBranch=resolvedContext.headBranch,
+        author=resolvedContext.author,
+        title=selectEntryTitle(datasetEntry, resolvedContext),
+        body=selectEntryBody(datasetEntry, resolvedContext),
         status=PRStatus.OPEN,
         trigger="eval",
         postToGithub=False,
@@ -128,97 +186,182 @@ def _workflow_input(pr: PrInput) -> ReviewWorkflowInput:
     )
 
 
-async def runEval(cfg: RunConfig) -> DatasetReport | RunError:
-    """Run the full dataset and return the dataset-level report."""
-    dataset = loadDataset(cfg.dataset_path)
-    if isinstance(dataset, DatasetError):
-        return RunError(message=str(dataset), phase="load")
+def buildPrEvaluation(
+    caseId: str,
+    datasetEntry: DatasetEntry,
+    prScore: PrScore,
+    judgeResult: JudgeResult | None,
+    generatedComments: list[CodeCommentDraft],
+    goldenComments: list[GoldenComment],
+    prContext: PrContext | None,
+    error: str | None,
+) -> PrEvaluation:
+    return PrEvaluation(
+        caseId=caseId,
+        prUrl=datasetEntry.prUrl,
+        title=datasetEntry.title,
+        prScore=prScore,
+        judgeResult=judgeResult,
+        generatedComments=list(generatedComments),
+        goldenComments=list(goldenComments),
+        resolved=buildResolvedRef(prContext),
+        error=error,
+    )
 
-    llm = _build_llm(cfg)
-    if isinstance(llm, RunError):
-        return llm
+
+def recordFailedEvaluation(
+    caseId: str,
+    datasetEntry: DatasetEntry,
+    prContext: PrContext | None,
+    reason: str,
+    itemScores: list[PrScore],
+    evaluations: list[PrEvaluation],
+) -> None:
+    failedScore = failedPrScore(caseId, datasetEntry.prUrl, datasetEntry.title, reason)
+    itemScores.append(failedScore)
+    evaluations.append(
+        buildPrEvaluation(
+            caseId,
+            datasetEntry,
+            failedScore,
+            None,
+            [],
+            list(datasetEntry.comments),
+            prContext,
+            reason,
+        )
+    )
+    printSinglePrResult(failedScore)
+
+
+def recordReviewEvaluation(
+    caseId: str,
+    datasetEntry: DatasetEntry,
+    prContext: PrContext,
+    reviewOutput: ReviewOutput,
+    judgeResult: JudgeResult,
+    itemScores: list[PrScore],
+    evaluations: list[PrEvaluation],
+) -> None:
+    prScore = scoreSingleResult(
+        judgeResult,
+        caseId=caseId,
+        prUrl=datasetEntry.prUrl,
+        title=datasetEntry.title,
+    )
+    itemScores.append(prScore)
+    evaluations.append(
+        buildPrEvaluation(
+            caseId,
+            datasetEntry,
+            prScore,
+            judgeResult,
+            list(reviewOutput.comments),
+            list(datasetEntry.comments),
+            prContext,
+            None,
+        )
+    )
+    printSinglePrResult(prScore)
+
+
+def printSinglePrResult(prScore: PrScore) -> None:
+    print(
+        f"[{prScore.caseId}] {prScore.title} | {prScore.prUrl} | "
+        f"confidence={prScore.confidence:.3f} "
+        f"matched={prScore.matchedCount}/{prScore.totalGoldenCount} "
+        f"falsePositives={prScore.falsePositiveCount} "
+        f"generated={prScore.generatedCount} "
+        f"recall={prScore.recall:.3f}"
+        + (f" error={prScore.error}" if prScore.error is not None else "")
+    )
+
+
+def printDatasetMetricsReport(datasetMetrics: DatasetMetrics, evaluationsPath: Path) -> None:
+    print(f"dataset: {datasetMetrics.summary()}")
+    if datasetMetrics.failedIds:
+        print(f"failed: {', '.join(datasetMetrics.failedIds)}")
+    print(f"saved: {evaluationsPath}")
+
+
+async def runEval(runConfig: RunConfig) -> DatasetMetrics | RunError:
+    """Run the dataset list, print metrics, and store evaluations.json."""
+    loadedDataset = loadDatasetEntries(runConfig.datasetPath)
+    if isinstance(loadedDataset, DatasetLoaderError):
+        return RunError(message=str(loadedDataset), phase="load")
+
+    llmContext = buildLlmContext(runConfig)
+    if isinstance(llmContext, RunError):
+        return llmContext
 
     registerEvalProviders()
-    limits = ReviewLimits(modelCallRunLimit=120, toolCallRunLimit=120)
+    reviewLimits = ReviewLimits(modelCallRunLimit=120, toolCallRunLimit=120)
+    githubToken = resolveGithubToken(runConfig)
+    sandboxApiKey = resolveSandboxApiKey(runConfig)
 
-    items: list[ItemScore] = []
-    reviews: list[dict[str, object]] = []
-    for idx, pr in enumerate(dataset.inputs):
-        case_id = dataset.ids[idx] if idx < len(dataset.ids) else f"case-{idx}"
-        gold = dataset.outputs[idx]
-        repo = RepoSnapshot(
-            id=RepoId(f"eval-{pr.owner}-{pr.name}-{pr.pr_number}"),
-            repoOwner=RepoOwner(pr.owner),
-            repoName=RepoName(pr.name),
-            defaultBranch=pr.base_branch,
-        )
+    itemScores: list[PrScore] = []
+    evaluations: list[PrEvaluation] = []
+    for entryIndex, datasetEntry in enumerate(loadedDataset.entries):
+        caseId = buildCaseId(entryIndex, datasetEntry)
+        prContext = await resolvePrUrl(datasetEntry.prUrl, githubToken)
+        if isinstance(prContext, PrResolverError):
+            log.warning("eval resolve failed: %s: %s", caseId, prContext.message)
+            recordFailedEvaluation(caseId, datasetEntry, None, prContext.message, itemScores, evaluations)
+            continue
+        repoContext = buildRepoContext(prContext)
         try:
-            sandbox_ctx = createSandboxCtx(
-                userId=UserId("eval-user"),
-                repoId=repo.id,
-                repoName=pr.name,
-                providerId=cfg.env,
-                apiKey=SanboxProviderApiKey(_sandbox_api_key(cfg)),
-                sandboxName=f"eval-{pr.name}-{pr.pr_number}",
+            sandboxContext = createSandboxCtx(
+                userId=evalUserId,
+                repoId=repoContext.id,
+                repoName=prContext.repoName,
+                providerId=cast(ProviderId, runConfig.env),
+                apiKey=SanboxProviderApiKey(sandboxApiKey),
+                sandboxName=f"eval-{prContext.repoName}-{prContext.prNumber}",
                 rootPath="/home/user",
             )
-        except Exception as exc:
-            items.append(failedItem(case_id, reason=f"sandbox ctx: {exc}"))
+        except Exception as caughtError:
+            failureMessage = f"sandbox ctx: {type(caughtError).__name__}: {caughtError}"
+            log.warning("eval case failed: %s: %s", caseId, failureMessage)
+            recordFailedEvaluation(caseId, datasetEntry, prContext, failureMessage, itemScores, evaluations)
             continue
-        workflow_input = _workflow_input(pr)
-        review = await runReviewAgent(
-            sandboxCtx=sandbox_ctx,
-            llm=llm,
-            repo=repo,
-            input=workflow_input,
-            limits=limits,
+        workflowInput = buildWorkflowInput(datasetEntry, prContext)
+        reviewOutput = await runReviewAgent(
+            sandboxCtx=sandboxContext,
+            llm=llmContext,
+            repo=repoContext,
+            input=workflowInput,
+            limits=reviewLimits,
         )
-        if isinstance(review, AgentRunError):
-            log.warning("eval case failed: %s: %s", case_id, review.message)
-            items.append(failedItem(case_id, reason=review.message))
-            continue
-        reviews.append({"case_id": case_id, **review.model_dump(mode="json")})
-        verdict = await runJudgeAgent(
-            review=review,
-            gold=gold,
-            llm=llm,
-            systemPrompt=cfg.judge_prompt,
-        )
-        if isinstance(verdict, AgentRunError):
-            log.warning("eval judge failed: %s: %s", case_id, verdict.message)
-            items.append(failedItem(case_id, reason=verdict.message))
-            continue
-        items.append(scoreOne(verdict, gold, case_id=case_id))
-    report = createMetrics(items)
-    saved = _save_report(cfg.out_dir, report, reviews)
-    if isinstance(saved, RunError):
-        return saved
-    log.info("eval complete: %s", report.summary())
-    return report
-
-
-def _save_report(
-    out_dir: str, report: DatasetReport, reviews: list[dict[str, object]]
-) -> None | RunError:
-    try:
-        out = Path(out_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "report.json").write_text(
-            report.model_dump_json(indent=2), encoding="utf-8"
-        )
-        results_dir = out / "results"
-        results_dir.mkdir(parents=True, exist_ok=True)
-        for entry in reviews:
-            case_id = str(entry.get("case_id", "case"))
-            safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in case_id)
-            (results_dir / f"{safe}.json").write_text(
-                json.dumps(entry, indent=2, default=str), encoding="utf-8"
+        if isinstance(reviewOutput, AgentRunError):
+            log.warning("eval case failed: %s: %s", caseId, reviewOutput.message)
+            recordFailedEvaluation(
+                caseId, datasetEntry, prContext, reviewOutput.message, itemScores, evaluations
             )
-        return None
-    except Exception as exc:
-        return RunError(
-            message=f"save failed: {type(exc).__name__}: {exc}", phase="save"
+            continue
+        judgeResult = await runJudgeAgent(
+            generatedComments=list(reviewOutput.comments),
+            goldenComments=list(datasetEntry.comments),
+            llm=llmContext,
+            systemPrompt=runConfig.judgePrompt,
         )
+        if isinstance(judgeResult, AgentRunError):
+            log.warning("eval judge failed: %s: %s", caseId, judgeResult.message)
+            recordFailedEvaluation(
+                caseId, datasetEntry, prContext, judgeResult.message, itemScores, evaluations
+            )
+            continue
+        recordReviewEvaluation(caseId, datasetEntry, prContext, reviewOutput, judgeResult, itemScores, evaluations)
+    datasetMetrics = createDatasetMetrics(itemScores)
+    evaluationsFile = buildEvaluationsFile(
+        runConfig.datasetPath, str(runConfig.env), datasetMetrics, evaluations
+    )
+    evaluationsPath = buildEvaluationsFilePath(Path(runConfig.resultsDir), runConfig.model)
+    saveError = saveEvaluationsFile(evaluationsPath, evaluationsFile)
+    if saveError is not None:
+        return RunError(message=str(saveError), phase="save")
+    printDatasetMetricsReport(datasetMetrics, evaluationsPath)
+    log.info("eval complete: %s", datasetMetrics.summary())
+    return datasetMetrics
 
 
 __all__ = ["RunConfig", "RunError", "runEval"]

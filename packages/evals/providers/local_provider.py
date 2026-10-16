@@ -19,7 +19,7 @@ from environments.local import LocalBackend, LocalService
 _REGISTRY: dict[str, tuple[LocalBackend, LocalService]] = {}
 
 
-def _provider_error(ctx: SandboxCtx, message: str) -> SandboxProviderError:
+def buildProviderError(ctx: SandboxCtx, message: str) -> SandboxProviderError:
     return SandboxProviderError(
         message=message,
         userId=ctx.userId,
@@ -42,7 +42,7 @@ class LocalProvider(BaseSandboxService):
         svc = LocalService(EnvConfig(kind="local"))
         backend = await svc.create()
         if isinstance(backend, EnvError):
-            return _provider_error(self.ctx, backend.message)
+            return buildProviderError(self.ctx, backend.message)
         _REGISTRY[backend.id] = (backend, svc)
         self.ctx.sandboxId = SandboxId(backend.id)
         root = svc.sandbox_root
@@ -53,7 +53,7 @@ class LocalProvider(BaseSandboxService):
     async def connect(self) -> None | SandboxProviderError:
         sid = self.ctx.sandboxId
         if sid is None or str(sid) not in _REGISTRY:
-            return _provider_error(self.ctx, "local sandbox is not initialised")
+            return buildProviderError(self.ctx, "local sandbox is not initialised")
         return None
 
     async def kill(self) -> None | SandboxProviderError:
@@ -66,7 +66,7 @@ class LocalProvider(BaseSandboxService):
         _, svc = entry
         result = await svc.kill()
         if isinstance(result, EnvError):
-            return _provider_error(self.ctx, result.message)
+            return buildProviderError(self.ctx, result.message)
         return None
 
 

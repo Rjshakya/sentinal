@@ -3,7 +3,9 @@
 from agents.base import AgentRunError, ReviewOutput
 from agents.judge import (
     JUDGE_SYSTEM_PROMPT,
-    JudgeVerdict,
+    JudgeFalsePositive,
+    JudgeMatch,
+    JudgeResult,
     runJudgeAgent,
 )
 from agents.review import runReviewAgent
@@ -11,7 +13,9 @@ from agents.review import runReviewAgent
 __all__ = [
     "AgentRunError",
     "JUDGE_SYSTEM_PROMPT",
-    "JudgeVerdict",
+    "JudgeFalsePositive",
+    "JudgeMatch",
+    "JudgeResult",
     "ReviewOutput",
     "runJudgeAgent",
     "runReviewAgent",

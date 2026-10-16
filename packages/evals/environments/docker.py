@@ -28,7 +28,7 @@ _DEFAULT_IMAGE = "python:3.13-slim"
 _START_TIMEOUT_S = 120
 
 
-def _run_docker(args: list[str], *, timeout: int | None) -> subprocess.CompletedProcess[str]:
+def runDockerCommand(args: list[str], *, timeout: int | None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["docker", *args],
         capture_output=True,
@@ -51,7 +51,7 @@ class DockerBackend(BaseSandbox):
         self, command: str, *, timeout: int | None = None
     ) -> ExecuteResponse:
         try:
-            completed = _run_docker(
+            completed = runDockerCommand(
                 ["exec", self._container_id, "sh", "-c", command],
                 timeout=timeout,
             )
@@ -83,7 +83,7 @@ class DockerBackend(BaseSandbox):
     ) -> list[FileUploadResponse]:
         responses: list[FileUploadResponse] = []
         for raw_path, content in files:
-            responses.append(self._upload_one(raw_path, content))
+            responses.append(self.uploadSingleFile(raw_path, content))
         return responses
 
     async def aupload_files(
@@ -94,7 +94,7 @@ class DockerBackend(BaseSandbox):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         responses: list[FileDownloadResponse] = []
         for raw_path in paths:
-            responses.append(self._download_one(raw_path))
+            responses.append(self.downloadSingleFile(raw_path))
         return responses
 
     async def adownload_files(
@@ -102,14 +102,14 @@ class DockerBackend(BaseSandbox):
     ) -> list[FileDownloadResponse]:
         return await asyncio.to_thread(self.download_files, paths)
 
-    def _upload_one(self, raw_path: str, content: bytes) -> FileUploadResponse:
+    def uploadSingleFile(self, raw_path: str, content: bytes) -> FileUploadResponse:
         cleaned = raw_path.strip().lstrip("/")
         try:
             with tempfile.TemporaryDirectory(prefix="sentinel-docker-up-") as tmp:
                 local = Path(tmp) / Path(*Path(cleaned).parts).name
                 local.write_bytes(content)
                 parent = str(Path("/") / Path(cleaned).parent)
-                mkdir = _run_docker(
+                mkdir = runDockerCommand(
                     ["exec", self._container_id, "mkdir", "-p", parent],
                     timeout=30,
                 )
@@ -118,7 +118,7 @@ class DockerBackend(BaseSandbox):
                         path=raw_path,
                         error=f"mkdir failed: {(mkdir.stderr or '').strip()[:300]}",
                     )
-                copied = _run_docker(
+                copied = runDockerCommand(
                     ["cp", str(local), f"{self._container_id}:/{cleaned}"],
                     timeout=60,
                 )
@@ -136,12 +136,12 @@ class DockerBackend(BaseSandbox):
                 error=f"upload failed: {type(exc).__name__}: {exc}",
             )
 
-    def _download_one(self, raw_path: str) -> FileDownloadResponse:
+    def downloadSingleFile(self, raw_path: str) -> FileDownloadResponse:
         cleaned = raw_path.strip().lstrip("/")
         try:
             with tempfile.TemporaryDirectory(prefix="sentinel-docker-dl-") as tmp:
                 local = Path(tmp) / f"dl-{uuid.uuid4().hex[:8]}"
-                pulled = _run_docker(
+                pulled = runDockerCommand(
                     ["cp", f"{self._container_id}:/{cleaned}", str(local)],
                     timeout=60,
                 )
@@ -189,7 +189,7 @@ class DockerService(BaseSandboxService):
     async def create(self) -> DockerBackend | EnvError:
         try:
             completed = await asyncio.to_thread(
-                _run_docker,
+                runDockerCommand,
                 [
                     "run",
                     "-d",
@@ -219,7 +219,7 @@ class DockerService(BaseSandboxService):
         try:
             check = await backend.aexecute(setup, timeout=30)
         except Exception as exc:
-            await self._remove(container_id)
+            await self.removeContainer(container_id)
             return EnvError(
                 message=f"docker setup check failed: {type(exc).__name__}: {exc}",
                 provider="docker",
@@ -233,13 +233,13 @@ class DockerService(BaseSandboxService):
             try:
                 installed = await backend.aexecute(install_cmd, timeout=300)
             except Exception as exc:
-                await self._remove(container_id)
+                await self.removeContainer(container_id)
                 return EnvError(
                     message=f"docker setup failed: {type(exc).__name__}: {exc}",
                     provider="docker",
                 )
             if installed.exit_code != 0:
-                await self._remove(container_id)
+                await self.removeContainer(container_id)
                 return EnvError(
                     message="docker image has no git/python3 and install failed",
                     provider="docker",
@@ -253,7 +253,7 @@ class DockerService(BaseSandboxService):
     async def connect(self, sandbox_id: str) -> DockerBackend | EnvError:
         try:
             completed = await asyncio.to_thread(
-                _run_docker, ["inspect", "-f", "{{.State.Running}}", sandbox_id],
+                runDockerCommand, ["inspect", "-f", "{{.State.Running}}", sandbox_id],
                 timeout=30,
             )
         except FileNotFoundError:
@@ -277,15 +277,15 @@ class DockerService(BaseSandboxService):
         if self._container_id is None:
             self._backend = None
             return None
-        await self._remove(self._container_id)
+        await self.removeContainer(self._container_id)
         self._container_id = None
         self._backend = None
         return None
 
-    async def _remove(self, container_id: str) -> None:
+    async def removeContainer(self, container_id: str) -> None:
         try:
             await asyncio.to_thread(
-                _run_docker, ["rm", "-f", container_id], timeout=60
+                runDockerCommand, ["rm", "-f", container_id], timeout=60
             )
         except Exception:
             return

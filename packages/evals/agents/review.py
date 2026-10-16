@@ -59,15 +59,15 @@ from agents.base import AgentRunError, ReviewOutput
 log = logging.getLogger(__name__)
 
 
-def _step_message(exc: ReviewStepFailure) -> str:
-    return exc.error.message
+def getStepMessage(stepFailure: ReviewStepFailure) -> str:
+    return stepFailure.error.message
 
 
-def _failure(agent: str, exc: ReviewStepFailure) -> AgentRunError:
+def createStepError(agentName: str, stepFailure: ReviewStepFailure) -> AgentRunError:
     return AgentRunError(
-        message=_step_message(exc),
-        agent=agent,
-        retryable=isinstance(exc, TransientReviewStepFailure),
+        message=getStepMessage(stepFailure),
+        agent=agentName,
+        retryable=isinstance(stepFailure, TransientReviewStepFailure),
     )
 
 
@@ -247,13 +247,13 @@ async def runReviewAgent(
             model=llm.model,
             usages=combined.usages,
         )
-    except TransientReviewStepFailure as exc:
-        return _failure("review", exc)
-    except ReviewStepFailure as exc:
-        return _failure("review", exc)
-    except Exception as exc:  # noqa: BLE001 -- boundary converts to a value
+    except TransientReviewStepFailure as stepFailure:
+        return createStepError("review", stepFailure)
+    except ReviewStepFailure as stepFailure:
+        return createStepError("review", stepFailure)
+    except Exception as caughtError:  # noqa: BLE001 -- boundary converts to a value
         return AgentRunError(
-            message=f"unexpected: {type(exc).__name__}: {exc}",
+            message=f"unexpected: {type(caughtError).__name__}: {caughtError}",
             agent="review",
         )
     finally:
