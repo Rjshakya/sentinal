@@ -1,16 +1,15 @@
 """Persist/post/lifecycle steps: DB rows and GitHub post.
 
-Each step validates its input first, runs one worker via runStep,
-returns model_dump. Imports on top. Fail-closed steps propagate for
-SDK retry; post returns posted=False on terminal 4xx.
+Each step validates its input first, runs one worker, and returns
+model_dump. Imports on top. Fail-closed steps propagate for SDK retry;
+post returns posted=False on terminal 4xx.
 """
 
 from __future__ import annotations
 
 from uuid import UUID
 
-from aws_durable_execution_sdk_python import durable_step
-from aws_durable_execution_sdk_python.types import StepContext
+from async_durable_execution import durable_callable
 from langfuse import observe
 from pydantic import BaseModel, ConfigDict
 
@@ -23,7 +22,6 @@ from app.utils.branded import (
     UserId,
 )
 from app.utils.schema import CodeCommentDraft, ReviewResult
-from app.workflows.durable.steps.loop import runStep
 from app.workflows.review_v2.steps.persist import (
     persistCodeCommentsTx,
     persistReviewSummaryTx,
@@ -49,17 +47,15 @@ class UpsertPrInput(BaseModel):
     workflowInput: ReviewWorkflowInput
 
 
-@durable_step
+@durable_callable
 @observe(name="upsert-pr-row", capture_input=False, capture_output=False)
-def upsertPrRow(_ctx: StepContext, *, input: dict) -> str:
+async def upsertPrRow(*, input: dict) -> str:
     """Insert/update the pull_requests row; returns the row id."""
     request = UpsertPrInput.model_validate(input)
     return str(
-        runStep(
-            upsertPullRequestTx(
-                repoId=request.repoId,
-                input=request.workflowInput,
-            )
+        await upsertPullRequestTx(
+            repoId=request.repoId,
+            input=request.workflowInput,
         )
     )
 
@@ -79,25 +75,23 @@ class MarkRunningInput(BaseModel):
     llmBaseUrl: str | None
 
 
-@durable_step
+@durable_callable
 @observe(name="mark-review-running", capture_input=False, capture_output=False)
-def markReviewRunning(_ctx: StepContext, *, input: dict) -> str:
+async def markReviewRunning(*, input: dict) -> str:
     """Find-or-create the RUNNING lifecycle row; returns review row id."""
     request = MarkRunningInput.model_validate(input)
     return str(
-        runStep(
-            markReviewRunningStep(
-                userId=request.userId,
-                repo=request.repo,
-                input=request.workflowInput,
-                prRowId=request.prRowId,
-                sandboxId=request.sandboxId,
-                workflowId=request.workflowId,
-                llmProvider=request.llmProvider,
-                llmClient=request.llmClient,
-                llmModel=request.llmModel,
-                llmBaseUrl=request.llmBaseUrl,
-            )
+        await markReviewRunningStep(
+            userId=request.userId,
+            repo=request.repo,
+            input=request.workflowInput,
+            prRowId=request.prRowId,
+            sandboxId=request.sandboxId,
+            workflowId=request.workflowId,
+            llmProvider=request.llmProvider,
+            llmClient=request.llmClient,
+            llmModel=request.llmModel,
+            llmBaseUrl=request.llmBaseUrl,
         )
     )
 
@@ -112,19 +106,17 @@ class MarkSucceededInput(BaseModel):
     repoId: RepoId
 
 
-@durable_step
+@durable_callable
 @observe(name="mark-review-succeeded", capture_input=False, capture_output=False)
-def markReviewSucceeded(_ctx: StepContext, *, input: dict) -> dict:
+async def markReviewSucceeded(*, input: dict) -> dict:
     """Flip the lifecycle row to SUCCESS."""
     request = MarkSucceededInput.model_validate(input)
-    runStep(
-        markReviewStoppedStep(
-            reviewRowId=request.reviewRowId,
-            commentCount=request.commentCount,
-            githubReviewId=request.githubReviewId,
-            userId=request.userId,
-            repoId=request.repoId,
-        )
+    await markReviewStoppedStep(
+        reviewRowId=request.reviewRowId,
+        commentCount=request.commentCount,
+        githubReviewId=request.githubReviewId,
+        userId=request.userId,
+        repoId=request.repoId,
     )
     return {}
 
@@ -140,20 +132,18 @@ class MarkFailedInput(BaseModel):
     repoId: RepoId
 
 
-@durable_step
+@durable_callable
 @observe(name="mark-review-failed", capture_input=False, capture_output=False)
-def markReviewFailed(_ctx: StepContext, *, input: dict) -> dict:
+async def markReviewFailed(*, input: dict) -> dict:
     """Flip the lifecycle row to FAILED (noops when row was never made)."""
     request = MarkFailedInput.model_validate(input)
-    runStep(
-        markReviewErroredStep(
-            reviewRowId=request.reviewRowId,
-            errorName=request.errorName,
-            errorMessage=request.errorMessage,
-            errorContext=request.errorContext,
-            userId=request.userId,
-            repoId=request.repoId,
-        )
+    await markReviewErroredStep(
+        reviewRowId=request.reviewRowId,
+        errorName=request.errorName,
+        errorMessage=request.errorMessage,
+        errorContext=request.errorContext,
+        userId=request.userId,
+        repoId=request.repoId,
     )
     return {}
 
@@ -167,19 +157,17 @@ class PersistSummaryInput(BaseModel):
     review: ReviewResult
 
 
-@durable_step
+@durable_callable
 @observe(name="persist-summary", capture_input=False, capture_output=False)
-def persistSummary(_ctx: StepContext, *, input: dict) -> str:
+async def persistSummary(*, input: dict) -> str:
     """Persist the review_summaries row; returns the summary id."""
     request = PersistSummaryInput.model_validate(input)
     return str(
-        runStep(
-            persistReviewSummaryTx(
-                prRowId=request.prRowId,
-                reviewRowId=request.reviewRowId,
-                commitId=request.commitId,
-                review=request.review,
-            )
+        await persistReviewSummaryTx(
+            prRowId=request.prRowId,
+            reviewRowId=request.reviewRowId,
+            commitId=request.commitId,
+            review=request.review,
         )
     )
 
@@ -193,19 +181,17 @@ class PersistCommentsInput(BaseModel):
     comments: list[CodeCommentDraft]
 
 
-@durable_step
+@durable_callable
 @observe(name="persist-comments", capture_input=False, capture_output=False)
-def persistComments(_ctx: StepContext, *, input: dict) -> list[str]:
+async def persistComments(*, input: dict) -> list[str]:
     """Persist the code_comments rows; returns the row ids."""
     request = PersistCommentsInput.model_validate(input)
     return list(
-        runStep(
-            persistCodeCommentsTx(
-                prRowId=request.prRowId,
-                reviewRowId=request.reviewRowId,
-                commitId=request.commitId,
-                comments=list(request.comments),
-            )
+        await persistCodeCommentsTx(
+            prRowId=request.prRowId,
+            reviewRowId=request.reviewRowId,
+            commitId=request.commitId,
+            comments=list(request.comments),
         )
     )
 
@@ -228,30 +214,28 @@ class PersistUsageInput(BaseModel):
     llmBaseUrl: str | None
 
 
-@durable_step
+@durable_callable
 @observe(name="persist-usage", capture_input=False, capture_output=False)
-def persistUsage(_ctx: StepContext, *, input: dict) -> str:
+async def persistUsage(*, input: dict) -> str:
     """Persist the review_usages row; returns the row id."""
     request = PersistUsageInput.model_validate(input)
     return str(
-        runStep(
-            persistReviewUsageTx(
-                userId=request.userId,
-                prRowId=request.prRowId,
-                prNumber=request.prNumber,
-                repoId=request.repoId,
-                reviewRowId=request.reviewRowId,
-                reviewSummaryId=UUID(request.reviewSummaryId)
-                if request.reviewSummaryId
-                else None,
-                inputTokens=request.inputTokens,
-                outputTokens=request.outputTokens,
-                totalTokens=request.totalTokens,
-                inputTokenDetails=request.inputTokenDetails,
-                llmModelId=request.llmModelId,
-                llmProvider=request.llmProvider,
-                llmBaseUrl=request.llmBaseUrl,
-            )
+        await persistReviewUsageTx(
+            userId=request.userId,
+            prRowId=request.prRowId,
+            prNumber=request.prNumber,
+            repoId=request.repoId,
+            reviewRowId=request.reviewRowId,
+            reviewSummaryId=UUID(request.reviewSummaryId)
+            if request.reviewSummaryId
+            else None,
+            inputTokens=request.inputTokens,
+            outputTokens=request.outputTokens,
+            totalTokens=request.totalTokens,
+            inputTokenDetails=request.inputTokenDetails,
+            llmModelId=request.llmModelId,
+            llmProvider=request.llmProvider,
+            llmBaseUrl=request.llmBaseUrl,
         )
     )
 
@@ -264,18 +248,17 @@ class PostReviewInput(BaseModel):
     review: ReviewResult
 
 
-@durable_step
+@durable_callable
 @observe(name="post-github-review", capture_input=False, capture_output=False)
-def postGithubReview(_ctx: StepContext, *, input: dict) -> dict:
+async def postGithubReview(*, input: dict) -> dict:
     """Post the review inline; 4xx returns posted=False."""
     request = PostReviewInput.model_validate(input)
-    return runStep(
-        postReviewStep(
-            repo=request.repo,
-            input=request.workflowInput,
-            review=request.review,
-        )
-    ).model_dump(mode="json")
+    posted = await postReviewStep(
+        repo=request.repo,
+        input=request.workflowInput,
+        review=request.review,
+    )
+    return posted.model_dump(mode="json")
 
 
 class BacklinksInput(BaseModel):
@@ -289,20 +272,18 @@ class BacklinksInput(BaseModel):
     prNumber: PRNumber
 
 
-@durable_step
+@durable_callable
 @observe(name="update-github-backlinks", capture_input=False, capture_output=False)
-def updateGithubBacklinks(_ctx: StepContext, *, input: dict) -> dict:
+async def updateGithubBacklinks(*, input: dict) -> dict:
     """Write GitHub review/comment ids back onto local rows."""
     request = BacklinksInput.model_validate(input)
-    runStep(
-        updatePostBacklinksTx(
-            reviewRowId=request.reviewRowId,
-            reviewSummaryId=request.reviewSummaryId,
-            commentRowIds=list(request.commentRowIds),
-            githubReviewId=request.githubReviewId,
-            repoId=request.repoId,
-            prNumber=request.prNumber,
-        )
+    await updatePostBacklinksTx(
+        reviewRowId=request.reviewRowId,
+        reviewSummaryId=request.reviewSummaryId,
+        commentRowIds=list(request.commentRowIds),
+        githubReviewId=request.githubReviewId,
+        repoId=request.repoId,
+        prNumber=request.prNumber,
     )
     return {}
 

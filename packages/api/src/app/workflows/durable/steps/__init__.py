@@ -1,7 +1,7 @@
 """Flat durable steps: one cohesive file per phase, no god-files.
 
-Each ``@durable_step`` follows the same contract: validate the input
-model first, run one operation, return ``model_dump(mode="json")``.
+Each ``@durable_callable`` step follows the same contract: validate the
+input model first, run one operation, return ``model_dump(mode="json")``.
 Imports live on top of each file, never inside function bodies.
 """
 

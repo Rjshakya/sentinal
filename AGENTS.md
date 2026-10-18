@@ -113,9 +113,10 @@ Data flow at a glance:
 
 - **FastAPI** on Python 3.13, async end-to-end
 - **SQLModel** + **SQLAlchemy async** + **asyncpg** → PostgreSQL
-- **AWS Lambda Durable Execution SDK** (`aws_durable_execution_sdk_python`)
-  for durable review/repair functions (checkpointed `@durable_step`s,
-  per-step `StepConfig` retries, deterministic `DurableExecutionName`s)
+- **Native async durable execution** (`async_durable_execution`, locked at
+  2.5.0) for durable review/repair functions (`@durable_execution` handlers,
+  `@durable_callable` steps awaited with `step(...)`, per-step
+  `RetryStrategy` retries, deterministic `DurableExecutionName`s)
 - **Alembic** for migrations
 - **pydantic-settings** for env-driven configuration
 - **WorkOS SDK** (`AsyncWorkOSClient`) for User Management
@@ -167,7 +168,7 @@ Windows, the `__main__` block runs uvicorn directly on `0.0.0.0` at
 - `db.py` — async engine + `async_session_maker`, `get_session` dependency,
   and `create_db_and_tables`. Workers open their own sessions via
   `async_session_maker()` and own their transactions; the durable
-  `@durable_step` edges just `asyncio.run` them.
+  `@durable_callable` steps await them on the handler's event loop.
 - `auth.py` — the `Session` pydantic model (user_id, user_name, email,
   profile_picture, session_id, external_id, created_at, updated_at,
   github_login) and `get_current_session` dependency: reads the cookie,
@@ -268,8 +269,8 @@ them on `SQLModel.metadata`.
   `pipeline.py` (`runAgentPhase`) / `repair_pipeline.py`
   (`runRepairPhase`) agent phases, flat `steps/` (one cohesive file
   per phase: `resolve`, `github`, `sandbox`, `agents`, `persist`,
-  `repair` — each `@durable_step` validates its input model, runs
-  one worker via `asyncio.run`, returns `model_dump`), plus
+  `repair` — each `@durable_callable` step validates its input model,
+  awaits one worker, returns `model_dump`), plus
   `invoke.py` (best-effort async Lambda Invoke), `naming.py`
   (deterministic execution names), and `types.py` (strict
   event/result contract: `OpenedDurableEvent` /
@@ -627,8 +628,9 @@ one `ReviewWorkflowInput`, and runs the shared `runAgentPhase`
 
 The `except` block issues two plain steps — `markReviewFailed` (noops
 when the running step never completed) + `destroySandbox` — and
-returns `ReviewFailed`. Retries come from per-step `StepConfig`
-(`RETRY_3` for infra/persist, `RETRY_1` for degrade/batch steps);
+returns `ReviewFailed`. Retries come from per-step `RetryStrategy`
+(`RETRY_3` for infra/persist, `RETRY_1` for degrade/batch steps, defined
+in `durable/retry.py`);
 the running step's find-or-create semantics keep retries idempotent
 via the unique `workflow_id`.
 
@@ -806,15 +808,15 @@ corresponding route file does not exist yet.
 - **TanStack Query owns server state on the web.** No `useEffect` fetching;
   `ApiError` is the failure contract.
 - **Durable work belongs in durable executions.** Routers only validate +
-  dispatch; handlers checkpoint every I/O step via `ctx.step`, and
-  transient errors are retried per-step via `StepConfig` retry strategies.
+  dispatch; handlers checkpoint every I/O step via `await step(...)`, and
+  transient errors are retried per-step via `RetryStrategy` objects.
 - **Execution names are deterministic and encode the domain**
   (`review-v2:{gh_repo}:{pr}:{head_sha[:7]}` for opened reviews,
   `review-v2:{gh_repo}:{pr}:{delivery}` for comment re-reviews,
   `repair:{pr}:{head_sha[:7]}` for repair runs) so duplicate deliveries
   dedupe and restarts are safe.
-- **Step inputs are validated Pydantic models.** Each `@durable_step`
-  validates its input model first, runs one operation, and returns
+- **Step inputs are validated Pydantic models.** Each `@durable_callable`
+  step validates its input model first, runs one operation, and returns
   `model_dump(mode="json")`. Handlers validate the event once at entry
   and the result once at exit — never `dict[str, Any]` in between.
 - **LLM configuration is a frozen value object** (`LLMCtx`) resolved

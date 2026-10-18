@@ -1,8 +1,8 @@
 """Ctx-resolution steps: installation -> user, repo, LLM, sandbox.
 
 Each step validates its input model first, runs one DB/settings lookup,
-and returns ``model_dump(mode="json")``. No lazy imports, no private
-async helpers — the async worker is inline via ``runStep``.
+and returns ``model_dump(mode="json")``. Every step is a native
+``async def``; the worker runs inline.
 """
 
 from __future__ import annotations
@@ -10,8 +10,7 @@ from __future__ import annotations
 import logging
 from typing import cast
 
-from aws_durable_execution_sdk_python import durable_step
-from aws_durable_execution_sdk_python.types import StepContext
+from async_durable_execution import durable_callable
 from langfuse import observe
 from pydantic import BaseModel, ConfigDict
 
@@ -26,9 +25,8 @@ from app.services.sandbox.service import (
     createSandboxCtx,
     getDefaulSandboxName,
 )
-from app.services.sandbox.types import ProviderId, SanboxProviderApiKey, SandboxCtx
+from app.services.sandbox.types import ProviderId, SanboxProviderApiKey
 from app.utils.branded import RepoId, UserId
-from app.workflows.durable.steps.loop import runStep
 from app.workflows.review_v2.types import RepoSnapshot
 
 log = logging.getLogger(__name__)
@@ -40,64 +38,48 @@ class RepoSnapshotOutput(RepoSnapshot):
     model_config = ConfigDict(frozen=True)
 
 
-@durable_step
+@durable_callable
 @observe(name="get-user-by-installation", capture_input=False, capture_output=False)
-def getUserIdByInstallation(
-    _ctx: StepContext, *, installationId: int
-) -> str | None:
+async def getUserIdByInstallation(*, installationId: int) -> str | None:
     """Return the WorkOS user_id owning a GitHub installation, else None."""
-
-    async def run() -> str | None:
-        async with async_session_maker() as session:
-            row = await InstallationRepository(
-                session=session
-            ).find_by_github_installation_id(installationId)
-            if row is None:
-                return None
-            return str(row.user_id)
-
-    return runStep(run())
+    async with async_session_maker() as session:
+        row = await InstallationRepository(
+            session=session
+        ).find_by_github_installation_id(installationId)
+        if row is None:
+            return None
+        return str(row.user_id)
 
 
-@durable_step
+@durable_callable
 @observe(name="get-repo-by-github-id", capture_input=False, capture_output=False)
-def getRepoByGithubId(_ctx: StepContext, *, ghRepoId: int) -> dict | None:
+async def getRepoByGithubId(*, ghRepoId: int) -> dict | None:
     """Return the local repo snapshot for a GitHub repo id, else None."""
-
-    async def run() -> dict | None:
-        async with async_session_maker() as session:
-            row = await RepoRepository(session=session).find_by_github_repo_id(
-                ghRepoId
-            )
-            if row is None:
-                return None
-            return RepoSnapshotOutput(
-                id=RepoId(row.id),
-                repoOwner=row.repo_owner,  # type: ignore[arg-type]
-                repoName=row.repo_name,  # type: ignore[arg-type]
-                defaultBranch=row.default_branch,
-            ).model_dump(mode="json")
-
-    return runStep(run())
+    async with async_session_maker() as session:
+        row = await RepoRepository(session=session).find_by_github_repo_id(ghRepoId)
+        if row is None:
+            return None
+        return RepoSnapshotOutput(
+            id=RepoId(row.id),
+            repoOwner=row.repo_owner,  # type: ignore[arg-type]
+            repoName=row.repo_name,  # type: ignore[arg-type]
+            defaultBranch=row.default_branch,
+        ).model_dump(mode="json")
 
 
-@durable_step
+@durable_callable
 @observe(name="resolve-llm-ctx", capture_input=False, capture_output=False)
-def resolveActiveLlmCtx(_ctx: StepContext, *, userId: str) -> dict:
+async def resolveActiveLlmCtx(*, userId: str) -> dict:
     """Return the run LLM ctx: user's stored row, else settings default."""
-
-    async def run() -> dict:
-        async with async_session_maker() as session:
-            result = await createUserLLMContext(session, UserId(userId))
-            if isinstance(result, LLMCtx):
-                return result.model_dump(mode="json")
-            log.info(
-                "resolveActiveLlmCtx: no user config, using settings: user_id=%s",
-                userId,
-            )
-            return createDefaultLLMContext().model_dump(mode="json")
-
-    return runStep(run())
+    async with async_session_maker() as session:
+        result = await createUserLLMContext(session, UserId(userId))
+        if isinstance(result, LLMCtx):
+            return result.model_dump(mode="json")
+        log.info(
+            "resolveActiveLlmCtx: no user config, using settings: user_id=%s",
+            userId,
+        )
+        return createDefaultLLMContext().model_dump(mode="json")
 
 
 class SandboxCtxInput(BaseModel):
@@ -110,9 +92,9 @@ class SandboxCtxInput(BaseModel):
     repoName: str
 
 
-@durable_step
+@durable_callable
 @observe(name="build-sandbox-ctx", capture_input=False, capture_output=False)
-def buildSandboxCtxForRun(_ctx: StepContext, *, input: dict) -> dict:
+async def buildSandboxCtxForRun(*, input: dict) -> dict:
     """Assemble the settings-driven sandbox ctx (pure, no I/O)."""
     request = SandboxCtxInput.model_validate(input)
     provider = cast(ProviderId, settings.sandbox_provider)

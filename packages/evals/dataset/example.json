@@ -1,0 +1,37 @@
+[
+  {
+    "title": "Add endpoints",
+    "pr_url": "https://github.com/Rjshakya/code-review-test/pull/2",
+    "description": "",
+    "comments": [
+      {
+        "body": "Pagination off-by-one: start = page * limit so default page=1 skips the first page of users",
+        "severity": "P1_CRITICAL"
+      },
+      {
+        "body": "Search compares exact match (===) instead of substring (includes) — partial queries return empty",
+        "severity": "P2_WARNING"
+      },
+      {
+        "body": "Cart total applies 10% tax via subtotal * 1.1 without rounding — floating-point artifacts in total",
+        "severity": "P2_WARNING"
+      },
+      {
+        "body": "Cart accepts negative or zero qty/price — no input validation",
+        "severity": "P2_WARNING"
+      },
+      {
+        "body": "PUT /user/:id appends a new record (users.push) instead of replacing the existing user",
+        "severity": "P1_CRITICAL"
+      },
+      {
+        "body": "DELETE handler registered at /:id instead of /user/:id — intended endpoint never matches",
+        "severity": "P1_CRITICAL"
+      },
+      {
+        "body": "POST /user trusts client-supplied id with no duplicate check",
+        "severity": "P2_WARNING"
+      }
+    ]
+  }
+]

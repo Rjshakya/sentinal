@@ -12,7 +12,7 @@ resume instead of re-running.
 - `durable/` — the durable handlers (`opened_handler.py`,
   `comment_handler.py`, `repair_handler.py`), the shared
   `pipeline.py` / `repair_pipeline.py` agent phases, and the dispatch
-  helper `invoke.py`. Checkpointed `@durable_step`s invoke the
+  helper `invoke.py`. Checkpointed `@durable_callable` steps invoke the
   `review_v2/steps/` workers. Ids
   `review-v2:{gh_repo}:{pr}:{head_sha[:7]}` and `repair:{pr}:{head_sha[:7]}`.
 - `review_v2/` — the PR review worker library: sandbox/LLM/agent
