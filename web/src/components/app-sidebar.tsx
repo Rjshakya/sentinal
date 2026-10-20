@@ -41,7 +41,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" render={<a href="/dashboard" />}>
-              <BrandMark className="p-3 bg-background " />
+              <BrandMark className=" " />
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">AI Code Review</span>
                 <span className="truncate text-xs">Dashboard</span>

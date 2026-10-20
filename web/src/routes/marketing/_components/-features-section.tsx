@@ -1,39 +1,31 @@
-import { IconGitPullRequest, IconMessage2, IconSparkles, type Icon } from "@tabler/icons-react";
+import { Feat1 } from "./-feat-1";
+import { Feat2 } from "./-feat-2";
+import { Feat3 } from "./-feat-3";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-
-import { SectionHeading } from "./-section-heading";
-
-const features: { icon: Icon; title: string; description: string }[] = [
-  { icon: IconSparkles, title: "Context-aware reviews", description: "reviewpr understands your repository, not just the patch in front of it." },
-  { icon: IconMessage2, title: "Feedback where it matters", description: "Clear comments land directly on the changed lines your team needs to inspect." },
-  { icon: IconGitPullRequest, title: "A verdict for every PR", description: "Severity-tagged findings and a concise summary make every pull request easier to triage." },
+const features = [
+  { title: "Context of your repo", art: <Feat1 className="h-full w-full [&_svg]:block [&_svg]:h-full [&_svg]:w-full [&_svg]:object-cover" /> },
+  { title: "Configure as per your need", art: <Feat2 className="h-full w-full [&_svg]:block [&_svg]:h-full [&_svg]:w-full [&_svg]:object-cover" /> },
+  { title: "Comments where you fix them", art: <Feat3 className="h-full w-full [&_svg]:block [&_svg]:h-full [&_svg]:w-full [&_svg]:object-cover" /> },
 ];
 
 export function FeaturesSection() {
   return (
-    <section id="product" className="border-y border-border bg-muted/30 px-5 py-20 lg:px-8">
-      <div className="mx-auto max-w-6xl">
-        <div className="max-w-2xl">
-          <SectionHeading
-            align="left"
-            eyebrow="Review signal, not noise"
-            title="A sharper way to move every pull request forward."
-          />
-        </div>
-        <div className="mt-12 grid gap-4 md:grid-cols-3">
-          {features.map(({ icon: Icon, title, description }) => (
-            <Card key={title}>
-              <CardHeader>
-                <span className="mb-3 grid size-10 place-items-center rounded-lg bg-primary/10 text-primary">
-                  <Icon className="size-5" />
-                </span>
-                <CardTitle>{title}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <CardDescription>{description}</CardDescription>
-              </CardContent>
-            </Card>
+    <section id="product" className=" max-w-2xl mx-auto ">
+      <div className="mx-auto w-full max-w-6xl px-4 py-14 sm:px-6  md:py-20">
+        <h2 className="text-white w-full ">Features</h2>
+        <div className="mx-auto mt-8 flex w-full max-w-2xl flex-col gap-8 md:mt-10">
+          {features.map((feature) => (
+            <figure
+              key={feature.title}
+              className="overflow-hidden bg-white p-2 grid gap-2 "
+            >
+              <div className=" w-full overflow-hidden bg-black">
+                {feature.art}
+              </div>
+              <figcaption className="">
+                <h3 className="text-black">{feature.title}</h3>
+              </figcaption>
+            </figure>
           ))}
         </div>
       </div>
