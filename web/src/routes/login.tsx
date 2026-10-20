@@ -29,7 +29,7 @@ function LoginPage() {
         <Card className="w-full max-w-72 text-center bg-background ring-0 gap-2 ">
           <CardHeader className=" items-start text-start gap-10 mb-2 ">
             <Link to="/" aria-label="Go home" className="w-full flex  items-start  ">
-              <BrandMark className="border bg-primary   p-3 " />
+              <BrandMark className=" " />
             </Link>
             <div className="space-y-1">
               <CardTitle className=" text-sm tracking-tighter  ">Sign in</CardTitle>

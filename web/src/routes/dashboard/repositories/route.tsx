@@ -165,7 +165,7 @@ function ConnectedView() {
 
   return (
     <div className="grid gap-12">
-      <div className="flex flex-col sm:flex-row gap-4  sm:items-end sm:justify-between">
+      <div className=" sticky top-0 p-2  bg-background flex flex-col sm:flex-row gap-4  sm:items-end sm:justify-between">
         <div className="">
           <h1 className="text-2xl font-semibold tracking-tight">Repositories</h1>
           <p className="text-muted-foreground mt-1 text-sm">
@@ -174,7 +174,7 @@ function ConnectedView() {
         </div>
 
         <div className="flex gap-2 items-center">
-          <Input placeholder="SEARCH" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <Input placeholder="Search" value={query} onChange={(e) => setQuery(e.target.value)} />
           {allConfigured ? (
             <p className="text-muted-foreground text-sm">
               All repositories are already configured.

@@ -141,7 +141,7 @@ export function LlmConfigCard({ existing }: LlmConfigCardProps) {
               <CardTitle>LLM provider</CardTitle>
             </div>
             {existing ? (
-              <span className="flex items-center gap-2 border-2 border-dashed px-2 py-1 text-green-500">
+              <span className="flex items-center gap-2 border-2 border-dashed px-2 py-1 rounded-md  text-green-500">
                 <IconCheck className="size-3" />
                 <p className="text-[10px]">configured</p>
               </span>

@@ -31,9 +31,11 @@ export function HeroSection() {
       {/* Visual */}
       <div className="mt-32 w-full px-3 md:mt-28 md:px-6">
         <div className="relative h-[430px] md:h-[750px] w-full overflow-hidden bg-[url(/hero-bg.png)] bg-cover bg-center bg-no-repeat p-0 md:px-8 md:py-16">
+
           <div className="absolute md:top-50 top-20 right-0 bottom-0 md:left-80 left-20 w-full h-full ">
-            <BrandMark className="hidden shrink-0 drop-shadow-2xl h-full " />
-            <div className="w-full h-full md:scale-110 scale-105 ">
+            <div className="w-full h-full relative  md:scale-115 scale-105  ">
+              <BrandMark className="absolute -left-15 z-10  " />
+              <div className="absolute -left-11.5  w-0.5 h-full  bg-white/50  " />
               <HeroReviewCard />
             </div>
           </div>
