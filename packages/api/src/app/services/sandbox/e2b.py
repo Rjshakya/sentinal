@@ -54,7 +54,7 @@ class E2BService(BaseSandboxService):
 
         except Exception as exc:
             return SandboxProviderError(
-                message="Failed to create sandbox",
+                message=f"Failed to create sandbox: {type(exc).__name__}: {exc}",
                 userId=self.ctx.userId,
                 repoId=self.ctx.repoId,
                 id="/services/sandbox/e2b",
