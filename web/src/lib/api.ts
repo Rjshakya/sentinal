@@ -100,6 +100,54 @@ export type LlmConfigPayload = {
   api_key: string;
 };
 
+export type PiProvider = {
+  piProvider: string;
+  modelsDevProvider: string | null;
+  label: string;
+  apiKeyEnvs: string[];
+};
+
+export type PiModel = {
+  id: string;
+  name: string;
+  contextTokens: number | null;
+  inputCost: number | null;
+  outputCost: number | null;
+};
+
+export type PiModelsResponse = {
+  provider: string;
+  models: PiModel[];
+  manualEntry: boolean;
+};
+
+export type PiConfig = {
+  id: string;
+  user_id: string;
+  provider: string;
+  model_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PiTestResult = {
+  response: string | null;
+  exception: string | null;
+};
+
+export type PiConfigUpsertResponse = {
+  data: PiConfig | null;
+  success: boolean;
+  error: string | null;
+  test_result: PiTestResult;
+};
+
+export type PiConfigPayload = {
+  provider: string;
+  model_id: string;
+  api_key: string;
+};
+
 export type UserRepo = {
   id: string;
   user_id: string;
@@ -394,6 +442,16 @@ export const apiClient = {
     }),
   testLlmConfig: (payload: LlmConfigPayload) =>
     request<LlmConfigTestResponse>("/llm_config/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  piProviders: () => request<PiProvider[]>("/llm-config/providers"),
+  piModels: (provider: string) =>
+    request<PiModelsResponse>(`/llm-config/models?provider=${encodeURIComponent(provider)}`),
+  getPiConfig: () => request<PiConfig | null>("/llm-config/"),
+  savePiConfig: (payload: PiConfigPayload) =>
+    request<PiConfigUpsertResponse>("/llm-config/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

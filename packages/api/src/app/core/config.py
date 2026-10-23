@@ -103,7 +103,7 @@ class Settings(BaseSettings):
         description="E2B API key.",
     )
     e2b_template: str = Field(
-        default="code-interpreter-v1",
+        default="sentinel-sanbox",
         description=(
             "E2B template name. The default is the E2B-hosted "
             "'code-interpreter-v1' template, which requires no "

@@ -29,6 +29,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/api/ai",
         "/api/users",
         "/api/llm_config",
+        "/api/llm-config",
         "/api/review",
         "/api/pulls",
     )

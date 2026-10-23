@@ -5,6 +5,7 @@ import { protectPage } from "@/lib/auth";
 import { useLlmConfig } from "@/lib/llm";
 
 import { LlmConfigCard } from "./_components/-llm-config-card";
+import { PiConfigSection } from "./_components/-pi-config-card";
 
 export const Route = createFileRoute("/dashboard/settings")({
   component: SettingsPage,
@@ -21,7 +22,7 @@ function SettingsPage() {
           Manage how Sentinel reviews your pull requests.
         </p>
       </div>
-      <LlmConfigSection />
+      <PiConfigSection />
     </div>
   );
 }
