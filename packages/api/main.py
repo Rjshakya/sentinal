@@ -15,6 +15,7 @@ from app.routers import (
     github,
     health,
     llm_configs,
+    pi_llm_config,
     pulls,
     reviews,
     users,
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(reviews.router, prefix=settings.api_prefix)
     app.include_router(pulls.router, prefix=settings.api_prefix)
     app.include_router(llm_configs.router, prefix=settings.api_prefix)
+    app.include_router(pi_llm_config.router, prefix=settings.api_prefix)
     app.include_router(webhooks.router, prefix=settings.api_prefix)
 
     return app
