@@ -9,6 +9,7 @@ The review pipeline runs pi inside an ephemeral sandbox rooted at
         ├── plan.jsonl                 <- pi planner output
         ├── review.jsonl               <- pi file-review output
         ├── summary.jsonl              <- walkthrough + verdict
+        ├── cost.json                  <- cost data
         └── diff/                      <- host-produced inputs (read-only for pi)
             ├── file.diff
             ├── overview.md
@@ -32,6 +33,7 @@ OVERVIEW_FILE_NAME: str = "overview.md"
 PLAN_FILE_NAME: str = "plan.jsonl"
 REVIEW_FILE_NAME: str = "review.jsonl"
 SUMMARY_FILE_NAME: str = "summary.jsonl"
+COST_FILE_NAME: str = "cost.json"
 
 
 def _checkSegment(value: str, *, field: str) -> str:
@@ -93,7 +95,13 @@ def getSummaryFile(headSha: str) -> str:
     return f"{getReviewDir(headSha)}/{SUMMARY_FILE_NAME}"
 
 
+def getCostFile(headSha: str) -> str:
+    """Return the cost-data path for ``headSha``."""
+    return f"{getReviewDir(headSha)}/{COST_FILE_NAME}"
+
+
 __all__ = [
+    "COST_FILE_NAME",
     "DIFF_DIR_NAME",
     "DIFF_FILE_NAME",
     "OVERVIEW_FILE_NAME",
@@ -103,6 +111,7 @@ __all__ = [
     "SENTINEL_DIR_NAME",
     "SPLIT_DIR_NAME",
     "SUMMARY_FILE_NAME",
+    "getCostFile",
     "getDiffDir",
     "getDiffFile",
     "getOverviewFile",

@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.db import get_session
+from app.core.config import settings
 from app.routers.schemas.pi_llm_config import (
     CreatePiLLMConfigRequest,
     PiLLMConfigResponse,
@@ -39,6 +40,7 @@ from app.services.llm_config import (
     runPiProbe,
     savePiLLMConfig,
 )
+from app.services.api_key_crypto.service import ApiKeyCipher
 from app.services.llm_config.types import LLMConfigCtx, PiProviderEntry
 from app.utils.branded import ApiKey, UserId
 
@@ -151,7 +153,22 @@ async def create_or_replace_my_pi_llm_config(
             test_result=PiTestResultPublic(response=None, exception=probe.error),
         )
 
-    record = await savePiLLMConfig(session, userId=UserId(user_id), ctx=ctx)
+    if not settings.api_key_encryption_key:
+        log.info("pi_llm_config: upsert failed (key storage unconfigured)")
+        return PiLLMConfigUpsertResponse(
+            data=None,
+            success=False,
+            error="server key storage is not configured",
+            test_result=PiTestResultPublic(response=probe.output, exception=None),
+        )
+    cipher = ApiKeyCipher(settings.api_key_encryption_key)
+    record = await savePiLLMConfig(
+        session,
+        userId=UserId(user_id),
+        provider=body.provider,
+        modelId=body.model_id,
+        encryptedKey=cipher.encrypt(ApiKey(body.api_key)),
+    )
     if isinstance(record, LLMConfigStoreError):
         log.info(
             "pi_llm_config: upsert failed (db): user_id=%s error=%s",

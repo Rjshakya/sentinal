@@ -11,8 +11,11 @@ Entry points (all async except the provider-map loader):
   **Never raises**; failures fold into :class:`PiProbeResult`.
   The sandbox is always destroyed (best-effort).
 - :func:`savePiLLMConfig` — upsert the user's ``llmconfig`` row (one
-  row per user). Returns ``LLMConfig | LLMConfigStoreError``.
+  row per user). Takes an already-encrypted key: plaintext never
+  reaches the table. Returns ``LLMConfig | LLMConfigStoreError``.
 - :func:`getPiLLMConfig` — load the user's stored row, if any.
+- :func:`getDecryptedPiKey` — the stored provider key, decrypted for
+  use. Legacy plaintext rows fall back to direct use.
 
 The DB session is owned by the caller; committing is the caller's
 job too. No logging here (edge logs). Error contract: expected
@@ -36,6 +39,9 @@ from typing_extensions import Protocol
 from app.core.config import settings
 from app.models.pi_llm_config import LLMConfig
 from app.repositories.pi_llm_config import PiLLMConfigRepository
+from app.services.api_key_crypto.errors import ApiKeyDecryptError
+from app.services.api_key_crypto.service import ApiKeyCipher
+from app.services.api_key_crypto.types import EncryptedApiKey
 from app.services.llm_config.errors import LLMConfigStoreError
 from app.services.llm_config.types import (
     LLMConfigCtx,
@@ -362,12 +368,16 @@ async def savePiLLMConfig(
     session: AsyncSession,
     *,
     userId: UserId,
-    ctx: LLMConfigCtx,
+    provider: str,
+    modelId: str,
+    encryptedKey: EncryptedApiKey,
 ) -> LLMConfig | LLMConfigStoreError:
     """Upsert the user's ``llmconfig`` row; never raises.
 
-    One row per user: an existing row is replaced. The caller owns the
-    session and the commit.
+    The key arrives already encrypted (edge encrypts via
+    :class:`ApiKeyCipher` before calling) — plaintext never reaches
+    the table. One row per user: an existing row is replaced. The
+    caller owns the session and the commit.
     """
     from datetime import UTC, datetime
 
@@ -375,9 +385,9 @@ async def savePiLLMConfig(
     try:
         existing = await repo.find_by_user(userId)
         if existing is not None:
-            existing.provider = ctx.provider
-            existing.model_id = ctx.modelId
-            existing.api_key = str(ctx.apiKey)
+            existing.provider = provider
+            existing.model_id = modelId
+            existing.api_key = str(encryptedKey)
             existing.updated_at = datetime.now(UTC)
             await repo.add(existing)
             await session.flush()
@@ -386,9 +396,9 @@ async def savePiLLMConfig(
 
         row = LLMConfig(
             user_id=userId,
-            provider=ctx.provider,
-            model_id=ctx.modelId,
-            api_key=str(ctx.apiKey),
+            provider=provider,
+            model_id=modelId,
+            api_key=str(encryptedKey),
         )
         await repo.add(row)
         await session.flush()
@@ -409,8 +419,35 @@ async def getPiLLMConfig(
     return await repo.find_by_user(userId)
 
 
+async def getDecryptedPiKey(
+    session: AsyncSession,
+    *,
+    userId: UserId,
+    cipher: ApiKeyCipher,
+) -> ApiKey | ApiKeyDecryptError | LLMConfigStoreError:
+    """Return the user's stored provider key, decrypted for use.
+
+    Legacy plaintext rows (written before at-rest encryption) fall
+    back to direct use — they re-encrypt opportunistically on the
+    next save. Never raises.
+    """
+    try:
+        row = await PiLLMConfigRepository(session=session).find_by_user(userId)
+    except Exception as exc:
+        return LLMConfigStoreError(
+            message=f"database error: {type(exc).__name__}: {exc}"
+        )
+    if row is None or not row.api_key:
+        return LLMConfigStoreError(message=f"no pi config for user {userId!r}")
+    decrypted = cipher.decrypt(EncryptedApiKey(row.api_key))
+    if isinstance(decrypted, ApiKeyDecryptError):
+        return ApiKey(row.api_key)
+    return decrypted
+
+
 __all__ = [
     "findProviderEntry",
+    "getDecryptedPiKey",
     "getPiLLMConfig",
     "listPiModels",
     "listPiProviders",

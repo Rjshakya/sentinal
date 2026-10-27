@@ -260,6 +260,16 @@ class Settings(BaseSettings):
         "blank.",
     )
 
+    # --- At-rest API-key encryption (per-user provider keys) ---
+    api_key_encryption_key: str = Field(
+        default="",
+        description="Fernet key (32 urlsafe-b64 bytes, e.g. from "
+        "cryptography.fernet.Fernet.generate_key()) used to encrypt "
+        "per-user provider API keys at rest in the llmconfig table. "
+        "Leave empty to disable API-key persistence. Rotation "
+        "invalidates previously stored keys.",
+    )
+
     # --- Observability (Langfuse: tracing + metrics for LLM/agent calls) ---
     # When LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are empty, tracing
     # stays disabled and all helpers are no-ops (same code runs locally
