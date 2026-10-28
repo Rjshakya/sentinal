@@ -45,9 +45,22 @@ class PiRunResult(BaseModel):
     error: str | None = None
 
 
+class PiSessionCost(BaseModel):
+    """Validated token totals summed across one pi session file."""
+
+    model_config = ConfigDict(frozen=True)
+
+    input: int = 0
+    output: int = 0
+    cacheRead: int = 0
+    cacheWrite: int = 0
+    total: int = 0
+
+
 __all__ = [
     "DEFAULT_TOOLS",
     "PiModel",
     "PiRunResult",
+    "PiSessionCost",
     "ThinkingLevel",
 ]

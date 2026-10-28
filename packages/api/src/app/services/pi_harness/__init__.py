@@ -6,6 +6,12 @@ Builds ``pi`` CLI commands and runs them inside a sandbox
 ``LLMConfigCtx`` shape for model projection).
 """
 
+from app.services.pi_harness.cost import (
+    addTotalCosts,
+    findCostsOfSession,
+    getPiSessionCost,
+)
+from app.services.pi_harness.errors import PiCostError
 from app.services.pi_harness.harness import (
     PiAgentHarness,
     modelFromCtx,
@@ -16,15 +22,21 @@ from app.services.pi_harness.types import (
     DEFAULT_TOOLS,
     PiModel,
     PiRunResult,
+    PiSessionCost,
     ThinkingLevel,
 )
 
 __all__ = [
     "DEFAULT_TOOLS",
     "PiAgentHarness",
+    "PiCostError",
     "PiModel",
     "PiRunResult",
+    "PiSessionCost",
     "ThinkingLevel",
+    "addTotalCosts",
+    "findCostsOfSession",
+    "getPiSessionCost",
     "modelFromCtx",
     "phaseSessionId",
     "validateSessionId",
