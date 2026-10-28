@@ -9,8 +9,8 @@ nothing here imports it.
 from app.services.llm_config.errors import LLMConfigStoreError
 from app.services.llm_config.service import (
     findProviderEntry,
-    getDecryptedPiKey,
     getPiLLMConfig,
+    getPiLLMConfigWithDecryptedKey,
     listPiModels,
     listPiProviders,
     loadProviderMap,
@@ -33,8 +33,8 @@ __all__ = [
     "PiProbeResult",
     "PiProviderEntry",
     "findProviderEntry",
-    "getDecryptedPiKey",
     "getPiLLMConfig",
+    "getPiLLMConfigWithDecryptedKey",
     "listPiModels",
     "listPiProviders",
     "loadProviderMap",

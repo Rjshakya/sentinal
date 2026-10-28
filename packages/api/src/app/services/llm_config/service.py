@@ -14,8 +14,9 @@ Entry points (all async except the provider-map loader):
   row per user). Takes an already-encrypted key: plaintext never
   reaches the table. Returns ``LLMConfig | LLMConfigStoreError``.
 - :func:`getPiLLMConfig` — load the user's stored row, if any.
-- :func:`getDecryptedPiKey` — the stored provider key, decrypted for
-  use. Legacy plaintext rows fall back to direct use.
+- :func:`getPiLLMConfigWithDecryptedKey` — the stored row with the
+  provider key decrypted for use. Legacy plaintext rows fall back to
+  direct use.
 
 The DB session is owned by the caller; committing is the caller's
 job too. No logging here (edge logs). Error contract: expected
@@ -53,7 +54,7 @@ from app.services.llm_config.types import (
 from app.services.sandbox.errors import SandboxProviderError
 from app.services.sandbox.service import createSandboxCtx, getProvider
 from app.services.sandbox.types import ProviderId, SandboxCtx
-from app.utils.branded import ApiKey, RepoId, UserId
+from app.utils.branded import RepoId, UserId
 from app.utils.branded import SanboxProviderApiKey
 
 _MODELS_DEV_API_URL = "https://models.dev/api.json"
@@ -419,17 +420,19 @@ async def getPiLLMConfig(
     return await repo.find_by_user(userId)
 
 
-async def getDecryptedPiKey(
+async def getPiLLMConfigWithDecryptedKey(
     session: AsyncSession,
     *,
     userId: UserId,
     cipher: ApiKeyCipher,
-) -> ApiKey | ApiKeyDecryptError | LLMConfigStoreError:
-    """Return the user's stored provider key, decrypted for use.
+) -> LLMConfig | LLMConfigStoreError:
+    """Return the user's stored row with the provider key decrypted.
 
-    Legacy plaintext rows (written before at-rest encryption) fall
-    back to direct use — they re-encrypt opportunistically on the
-    next save. Never raises.
+    The returned :class:`LLMConfig` is a transient copy — never the
+    session-attached row — so a later flush cannot overwrite the
+    encrypted column with plaintext. Legacy plaintext rows (written
+    before at-rest encryption) fall back to direct use; they
+    re-encrypt opportunistically on the next save. Never raises.
     """
     try:
         row = await PiLLMConfigRepository(session=session).find_by_user(userId)
@@ -440,15 +443,22 @@ async def getDecryptedPiKey(
     if row is None or not row.api_key:
         return LLMConfigStoreError(message=f"no pi config for user {userId!r}")
     decrypted = cipher.decrypt(EncryptedApiKey(row.api_key))
-    if isinstance(decrypted, ApiKeyDecryptError):
-        return ApiKey(row.api_key)
-    return decrypted
+    key = row.api_key if isinstance(decrypted, ApiKeyDecryptError) else str(decrypted)
+    return LLMConfig(
+        id=row.id,
+        user_id=row.user_id,
+        provider=row.provider,
+        model_id=row.model_id,
+        api_key=key,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
 
 
 __all__ = [
     "findProviderEntry",
-    "getDecryptedPiKey",
     "getPiLLMConfig",
+    "getPiLLMConfigWithDecryptedKey",
     "listPiModels",
     "listPiProviders",
     "loadProviderMap",

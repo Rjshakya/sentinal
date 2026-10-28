@@ -25,6 +25,10 @@ Design notes:
   ``providerId``, so no provider-specific class is defined or imported
   here. Lifecycle (create/connect/kill) is owned by the LangChain provider
   objects, not by this package.
+- :data:`BaseSandbox` and :data:`ExecuteResponse` are re-exported from
+  ``deepagents`` as the canonical backend types: workflow steps import
+  them from here, never from ``deepagents`` directly, so the
+  third-party import path has a single source.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Coroutine, Literal, Type
 
+from deepagents.backends.protocol import ExecuteResponse
 from deepagents.backends.sandbox import BaseSandbox
 from pydantic import BaseModel
 
@@ -84,6 +89,8 @@ class SandboxCtx(BaseModel):
 
 
 __all__ = [
+    "BaseSandbox",
+    "ExecuteResponse",
     "ProviderId",
     "RepoId",
     "SanboxProviderApiKey",
