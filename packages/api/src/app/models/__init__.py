@@ -10,6 +10,7 @@ from app.models.enums import (
 )
 from app.models.installation import Installation
 from app.models.llm_config import LLMConfigRecord
+from app.models.pi_llm_config import LLMConfig
 from app.models.pull_request import PullRequest
 from app.models.repo import Repo
 from app.models.review import Review, ReviewState
@@ -23,6 +24,7 @@ __all__ = [
     "CommentSide",
     "CommentState",
     "Installation",
+    "LLMConfig",
     "LLMConfigRecord",
     "PRStatus",
     "PullRequest",

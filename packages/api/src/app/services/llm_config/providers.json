@@ -1,0 +1,254 @@
+[
+  {
+    "piProvider": "amazon-bedrock",
+    "modelsDevProvider": "amazon-bedrock",
+    "label": "Amazon Bedrock",
+    "apiKeyEnvs": ["AWS_BEARER_TOKEN_BEDROCK"]
+  },
+  {
+    "piProvider": "anthropic",
+    "modelsDevProvider": "anthropic",
+    "label": "Anthropic",
+    "apiKeyEnvs": ["ANTHROPIC_API_KEY"]
+  },
+  {
+    "piProvider": "ant-ling",
+    "modelsDevProvider": null,
+    "label": "Ant Ling",
+    "apiKeyEnvs": ["ANT_LING_API_KEY"]
+  },
+  {
+    "piProvider": "azure",
+    "modelsDevProvider": "azure",
+    "label": "Azure",
+    "apiKeyEnvs": ["AZURE_OPENAI_API_KEY"]
+  },
+  {
+    "piProvider": "baseten",
+    "modelsDevProvider": "baseten",
+    "label": "Baseten",
+    "apiKeyEnvs": ["BASETEN_API_KEY"]
+  },
+  {
+    "piProvider": "cerebras",
+    "modelsDevProvider": "cerebras",
+    "label": "Cerebras",
+    "apiKeyEnvs": ["CEREBRAS_API_KEY"]
+  },
+  {
+    "piProvider": "cloudflare-ai-gateway",
+    "modelsDevProvider": "cloudflare-ai-gateway",
+    "label": "Cloudflare AI Gateway",
+    "apiKeyEnvs": ["CLOUDFLARE_API_KEY"]
+  },
+  {
+    "piProvider": "cloudflare-workers-ai",
+    "modelsDevProvider": "cloudflare-workers-ai",
+    "label": "Cloudflare Workers AI",
+    "apiKeyEnvs": ["CLOUDFLARE_API_KEY"]
+  },
+  {
+    "piProvider": "deepseek",
+    "modelsDevProvider": "deepseek",
+    "label": "DeepSeek",
+    "apiKeyEnvs": ["DEEPSEEK_API_KEY"]
+  },
+  {
+    "piProvider": "fireworks",
+    "modelsDevProvider": "fireworks-ai",
+    "label": "Fireworks",
+    "apiKeyEnvs": ["FIREWORKS_API_KEY"]
+  },
+  {
+    "piProvider": "github-copilot",
+    "modelsDevProvider": "github-copilot",
+    "label": "GitHub Copilot",
+    "apiKeyEnvs": ["COPILOT_GITHUB_TOKEN"]
+  },
+  {
+    "piProvider": "google",
+    "modelsDevProvider": "google",
+    "label": "Google",
+    "apiKeyEnvs": ["GEMINI_API_KEY"]
+  },
+  {
+    "piProvider": "google-vertex",
+    "modelsDevProvider": "google-vertex",
+    "label": "Google Vertex AI",
+    "apiKeyEnvs": ["GOOGLE_CLOUD_API_KEY"]
+  },
+  {
+    "piProvider": "groq",
+    "modelsDevProvider": "groq",
+    "label": "Groq",
+    "apiKeyEnvs": ["GROQ_API_KEY"]
+  },
+  {
+    "piProvider": "huggingface",
+    "modelsDevProvider": "huggingface",
+    "label": "Hugging Face",
+    "apiKeyEnvs": ["HF_TOKEN"]
+  },
+  {
+    "piProvider": "kimi-coding",
+    "modelsDevProvider": null,
+    "label": "Kimi For Coding",
+    "apiKeyEnvs": ["KIMI_API_KEY"]
+  },
+  {
+    "piProvider": "meta",
+    "modelsDevProvider": "meta",
+    "label": "Meta",
+    "apiKeyEnvs": ["META_API_KEY"]
+  },
+  {
+    "piProvider": "minimax",
+    "modelsDevProvider": "minimax",
+    "label": "MiniMax",
+    "apiKeyEnvs": ["MINIMAX_API_KEY"]
+  },
+  {
+    "piProvider": "minimax-cn",
+    "modelsDevProvider": null,
+    "label": "MiniMax CN",
+    "apiKeyEnvs": ["MINIMAX_CN_API_KEY"]
+  },
+  {
+    "piProvider": "mistral",
+    "modelsDevProvider": "mistral",
+    "label": "Mistral",
+    "apiKeyEnvs": ["MISTRAL_API_KEY"]
+  },
+  {
+    "piProvider": "moonshotai",
+    "modelsDevProvider": "moonshotai",
+    "label": "Moonshot AI",
+    "apiKeyEnvs": ["MOONSHOT_API_KEY"]
+  },
+  {
+    "piProvider": "moonshotai-cn",
+    "modelsDevProvider": null,
+    "label": "Moonshot AI CN",
+    "apiKeyEnvs": ["MOONSHOT_API_KEY"]
+  },
+  {
+    "piProvider": "nvidia",
+    "modelsDevProvider": null,
+    "label": "NVIDIA",
+    "apiKeyEnvs": ["NVIDIA_API_KEY"]
+  },
+  {
+    "piProvider": "openai",
+    "modelsDevProvider": "openai",
+    "label": "OpenAI",
+    "apiKeyEnvs": ["OPENAI_API_KEY"]
+  },
+  {
+    "piProvider": "openai-codex",
+    "modelsDevProvider": null,
+    "label": "OpenAI Codex (legacy)",
+    "apiKeyEnvs": []
+  },
+  {
+    "piProvider": "opencode",
+    "modelsDevProvider": "opencode",
+    "label": "OpenCode Zen",
+    "apiKeyEnvs": ["OPENCODE_API_KEY"]
+  },
+  {
+    "piProvider": "opencode-go",
+    "modelsDevProvider": "opencode-go",
+    "label": "OpenCode Go",
+    "apiKeyEnvs": ["OPENCODE_API_KEY"]
+  },
+  {
+    "piProvider": "openrouter",
+    "modelsDevProvider": "openrouter",
+    "label": "OpenRouter",
+    "apiKeyEnvs": ["OPENROUTER_API_KEY"]
+  },
+  {
+    "piProvider": "qwen-token-plan",
+    "modelsDevProvider": null,
+    "label": "Qwen Token Plan",
+    "apiKeyEnvs": ["QWEN_TOKEN_PLAN_API_KEY"]
+  },
+  {
+    "piProvider": "qwen-token-plan-cn",
+    "modelsDevProvider": null,
+    "label": "Qwen Token Plan CN",
+    "apiKeyEnvs": ["QWEN_TOKEN_PLAN_CN_API_KEY"]
+  },
+  {
+    "piProvider": "qwen-token-plan-individual",
+    "modelsDevProvider": null,
+    "label": "Qwen Token Plan Individual",
+    "apiKeyEnvs": ["QWEN_TOKEN_PLAN_API_KEY"]
+  },
+  {
+    "piProvider": "radius",
+    "modelsDevProvider": null,
+    "label": "Radius",
+    "apiKeyEnvs": ["RADIUS_API_KEY"]
+  },
+  {
+    "piProvider": "together",
+    "modelsDevProvider": "togetherai",
+    "label": "Together",
+    "apiKeyEnvs": ["TOGETHER_API_KEY"]
+  },
+  {
+    "piProvider": "typesafe",
+    "modelsDevProvider": null,
+    "label": "TypeSafe",
+    "apiKeyEnvs": ["TYPESAFE_API_KEY"]
+  },
+  {
+    "piProvider": "vercel-ai-gateway",
+    "modelsDevProvider": null,
+    "label": "Vercel AI Gateway",
+    "apiKeyEnvs": ["AI_GATEWAY_API_KEY"]
+  },
+  {
+    "piProvider": "xai",
+    "modelsDevProvider": "xai",
+    "label": "xAI",
+    "apiKeyEnvs": ["XAI_API_KEY"]
+  },
+  {
+    "piProvider": "xiaomi",
+    "modelsDevProvider": "xiaomi",
+    "label": "Xiaomi",
+    "apiKeyEnvs": ["XIAOMI_API_KEY"]
+  },
+  {
+    "piProvider": "xiaomi-token-plan-ams",
+    "modelsDevProvider": null,
+    "label": "Xiaomi Token Plan AMS",
+    "apiKeyEnvs": ["XIAOMI_TOKEN_PLAN_AMS_API_KEY"]
+  },
+  {
+    "piProvider": "xiaomi-token-plan-cn",
+    "modelsDevProvider": null,
+    "label": "Xiaomi Token Plan CN",
+    "apiKeyEnvs": ["XIAOMI_TOKEN_PLAN_CN_API_KEY"]
+  },
+  {
+    "piProvider": "xiaomi-token-plan-sgp",
+    "modelsDevProvider": null,
+    "label": "Xiaomi Token Plan SGP",
+    "apiKeyEnvs": ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"]
+  },
+  {
+    "piProvider": "zai",
+    "modelsDevProvider": "zai",
+    "label": "Z.AI",
+    "apiKeyEnvs": ["ZAI_API_KEY"]
+  },
+  {
+    "piProvider": "zai-coding-cn",
+    "modelsDevProvider": null,
+    "label": "Z.AI Coding CN",
+    "apiKeyEnvs": ["ZAI_CODING_CN_API_KEY"]
+  }
+]

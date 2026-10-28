@@ -103,7 +103,7 @@ class Settings(BaseSettings):
         description="E2B API key.",
     )
     e2b_template: str = Field(
-        default="code-interpreter-v1",
+        default="sentinel-sanbox",
         description=(
             "E2B template name. The default is the E2B-hosted "
             "'code-interpreter-v1' template, which requires no "
@@ -258,6 +258,16 @@ class Settings(BaseSettings):
         description="HMAC secret used to sign the GitHub App install "
         "flow's state token. Falls back to workos_cookie_password when "
         "blank.",
+    )
+
+    # --- At-rest API-key encryption (per-user provider keys) ---
+    api_key_encryption_key: str = Field(
+        default="",
+        description="Fernet key (32 urlsafe-b64 bytes, e.g. from "
+        "cryptography.fernet.Fernet.generate_key()) used to encrypt "
+        "per-user provider API keys at rest in the llmconfig table. "
+        "Leave empty to disable API-key persistence. Rotation "
+        "invalidates previously stored keys.",
     )
 
     # --- Observability (Langfuse: tracing + metrics for LLM/agent calls) ---
